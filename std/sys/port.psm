@@ -3,7 +3,7 @@
 // that is not x86 -- the error names the target -- rather than assembled into
 // something the assembler rejects with a line number inside generated text.
 //
-//     import std.port
+//     import std.sys.port
 //
 //     portOutU8(0x3F8, 65)             // a byte to the first serial port
 //     let status = portInU8(0x3FD)

@@ -2,13 +2,13 @@
 // named width, and the floats other than `Float`.
 //
 // An integer of up to 64 bits prints as the `I64` or `U64` it widens to. A wider one is
-// rewritten to `intText` (std/number_text.psm), which takes the value apart in 32-bit
+// rewritten to `intText` (std/fmt/number.psm), which takes the value apart in 32-bit
 // digits. A float prints the fewest digits that read back *in its own type* -- an `F32`
 // written as 0.1 prints as 0.1, not as the 0.10000000149011612 its double widening has.
 
 import std.io
-import std.display
-import std.number_text
+import std.fmt.display
+import std.fmt.number
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

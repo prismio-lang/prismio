@@ -5,8 +5,8 @@
 // runs this under `--verify` and requires 0 leaked.
 
 import std.io
-import std.vec
-import std.display
+import std.core.vec
+import std.fmt.display
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

@@ -12,9 +12,9 @@
 // the caller owns, which no path can hand to the deallocator while it still
 // points into `argv`.
 
-import std.option
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 private extern let prismio_argc: Int
 private extern let prismio_argv: Ptr
@@ -216,7 +216,7 @@ impl Stream {
     // child closed its end (or the stream has none), because a read that waits
     // returns at least one byte otherwise.
     //
-    // This is the call to make after `waitReadable` (std.poll) says the descriptor
+    // This is the call to make after `waitReadable` (std.io.poll) says the descriptor
     // has something, and in a loop that also watches other things: `readAll` waits
     // for the end and so cannot be one of several things a program is doing.
     public fn readSome(self, max: Int) -> String {

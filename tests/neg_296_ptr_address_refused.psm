@@ -5,14 +5,14 @@
 // expect-error: this must be a pointer to the same type, Int, and this is Int
 // expect-error: `Ptr<T>` has no associated function `nosuch`
 // expect-error: no method `step` on Ptr<Int>
-// expect-error: `Ptr<T>.at` makes a pointer the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
+// expect-error: `Ptr<T>.at` makes a pointer the compiler cannot vouch for, which is `std.sys.raw`'s: add `import std.sys.raw`
 // expect-error: aborting due to 8 previous errors
 // What the address methods and constructors refuse, one error each; the count holds that.
 //
 //   - `addr` is read without parentheses, and every method takes the number of arguments it
 //     names.
 //   - A step is an `Int`; a distance or an identity test is between pointers to one type.
-//   - A constructor is `std.raw`'s: a file that has not imported it cannot make a pointer
+//   - A constructor is `std.sys.raw`'s: a file that has not imported it cannot make a pointer
 //     from a number (neg_297 is the file that has, and refuses the casts).
 struct Header { magic: U32 }
 

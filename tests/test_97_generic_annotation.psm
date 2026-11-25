@@ -17,9 +17,9 @@
 // so the two cannot disagree about a written type again.
 
 import std.io
-import std.map
-import std.key
-import std.option
+import std.core.map
+import std.core.key
+import std.core.option
 
 struct Bag<T> {
     items: Vec<T>

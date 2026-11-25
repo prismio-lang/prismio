@@ -19,7 +19,8 @@ import aifcore.layout_search
 import aifcore.ownership
 import aifcore.solver
 
-from std import { fs, io, string, option, vec }
+from std import {fs, io, string}
+from std.core import {option, vec}
 import index.command
 import build.BUILD_VERSION
 from lexer import { scanner, token, identifier_security }
@@ -531,7 +532,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     // After the IR is written and before anything native: `--jit` spawns no
     // clang and links nothing. It does merge the standard library's compiled
     // bitcode, which is what a build does with the same file -- without that, a
-    // program using `std.map` found none of the functions `.plib`s ship. What
+    // program using `std.core.map` found none of the functions `.plib`s ship. What
     // runs is what a `build` of the same source would have optimised.
     if (options.jit) {
         // Reported exactly as the non-JIT `run` reports it, and deliberately:

@@ -1,5 +1,5 @@
 // expect-error: cannot infer the type arguments of `Result` here; write them, as `Result<...>.Ok`
-import std.option
+import std.core.option
 
 fn main() -> Int {
     let e = Result.Ok(1)

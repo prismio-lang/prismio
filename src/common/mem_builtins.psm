@@ -36,7 +36,7 @@
 //
 //   __builtin_syscall(number, a0, a1, a2, a3, a4, a5: U64) -> I64
 //                     a system call of the target's operating system, all seven operands
-//                     always given; std.syscall pads the unused ones with 0. Answers the
+//                     always given; std.sys.syscall pads the unused ones with 0. Answers the
 //                     kernel's result, **as -errno on failure on every supported target**
 //                     (see syscallAsmText for how macOS's carry flag becomes that).
 
@@ -197,7 +197,7 @@ public fn ptrAccessIsVolatile(name: String) -> Bool {
 // Atomic access on the pointer, with the ordering written at the call:
 // `__builtin_ptr_atomic_<op>`. 1 load, 2 store, 3 swap, 4 add, 5 sub, 6 and, 7 or, 8 xor,
 // 9 compare-exchange; 0 for any other name. The operands are the pointer, the values the op
-// takes, and last the ordering, a variant of `AtomicOrder` (std/raw.psm) that sema has read
+// takes, and last the ordering, a variant of `AtomicOrder` (std/sys/raw.psm) that sema has read
 // as a number -- an ordering is an instruction's property, so it cannot be a runtime value.
 public fn ptrAtomicKind(name: String) -> Int {
     if (name.startsWith("__builtin_ptr_atomic_") == false) { return 0 }
@@ -313,7 +313,7 @@ public fn asmBuiltinKind(name: String) -> Int {
     return 0
 }
 
-// `asmOps` / `asmOpsOut` (std.asm): any number of register inputs `$1`.. (`$0` is the result of
+// `asmOps` / `asmOpsOut` (std.sys.asm): any number of register inputs `$1`.. (`$0` is the result of
 // the second), and a list of registers the text changes, written as a string: "x0,x1,cc". Memory
 // is always clobbered, for the reason asmBuiltinConstraints gives. The operand count and the
 // clobbers are known where the call is written, so the constraint string is built there.

@@ -454,7 +454,7 @@ fn floatWriteGeneral(d: Decimal, precision: Int, inout out: [U8]) -> Int {
 // disagree about them (`inf`, `INF`, MSVC's `1.#INF`).
 //
 // `out` needs 32 bytes. Returns how many were written.
-internal fn floatFormat(value: Float, inout out: [U8]) -> Int {
+public fn floatFormat(value: Float, inout out: [U8]) -> Int {
     let bits = __builtin_float_bits(value)
     if (((bits >> 52) & 0x7FF) == 0x7FF) {
         return floatPutWord(out, 0, (bits >> 63) != 0, (bits & 0xFFFFFFFFFFFFF) != 0)
@@ -520,8 +520,8 @@ fn floatWriteRounded(exact: Decimal, digits: Int, inout out: [U8]) -> Int {
 
 // The value to `digits` significant digits, not the fewest that read back: what a
 // narrower float needs, because "reads back" is a question about *its* precision and
-// only the caller knows which float that is (std/number_text.psm). `out` needs 32 bytes.
-internal fn floatFormatDigits(value: Float, digits: Int, inout out: [U8]) -> Int {
+// only the caller knows which float that is (std/fmt/number.psm). `out` needs 32 bytes.
+public fn floatFormatDigits(value: Float, digits: Int, inout out: [U8]) -> Int {
     let bits = __builtin_float_bits(value)
     if (((bits >> 52) & 0x7FF) == 0x7FF) {
         return floatPutWord(out, 0, (bits >> 63) != 0, (bits & 0xFFFFFFFFFFFFF) != 0)
@@ -533,7 +533,7 @@ internal fn floatFormatDigits(value: Float, digits: Int, inout out: [U8]) -> Int
 
 // The double a `digits`-digit rounding of `value` reads as, as its bits. A finite
 // `value` only.
-internal fn floatDigitsBits(value: Float, digits: Int) -> U64 {
+public fn floatDigitsBits(value: Float, digits: Int) -> U64 {
     let mut exact = Decimal.empty()
     exact.setBits(__builtin_float_bits(value))
     exact.round(digits)
@@ -542,7 +542,7 @@ internal fn floatDigitsBits(value: Float, digits: Int) -> U64 {
 
 // Fixed point with `decimals` places (0 to 30), correctly rounded: a column
 // rather than a value, so it does not round-trip. `out` needs 345 bytes.
-internal fn floatFormatFixed(value: Float, decimals: Int, inout out: [U8]) -> Int {
+public fn floatFormatFixed(value: Float, decimals: Int, inout out: [U8]) -> Int {
     let mut places = decimals
     if (places < 0) { places = 0 }
     if (places > 30) { places = 30 }
@@ -739,7 +739,7 @@ fn floatFromHex(mantissa: U64, exponent: Int, negative: Bool, truncated: Bool) -
 // scales by at most 10^22 is one multiplication or division, correctly rounded
 // because both operands are exact. Anything else goes through `Decimal`, which
 // is exact for every input.
-internal fn floatParse(text: String) -> Float? {
+public fn floatParse(text: String) -> Float? {
     let length = __builtin_string_len(text)
     if (length == 0) { return none }
     let mut i = 0

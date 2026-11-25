@@ -18,7 +18,7 @@
 // and the comments say what each one is for.
 
 import std.string
-import std.vec
+import std.core.vec
 import fmt.scan
 
 private fn fmtText(text: String, tokens: FmtTokens, at: Int) -> String {

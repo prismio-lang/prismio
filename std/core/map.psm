@@ -15,8 +15,8 @@
 // > Give it bounds and this file becomes a hash table without its callers
 // > changing.
 //
-// That is exactly what happened. `K: Key + Copy` uses `Key` (std/key.psm) for
-// `hash`/`eq` and `Copy` (std/copy.psm) for storage; `indexOf` went from a
+// That is exactly what happened. `K: Key + Copy` uses `Key` (std/core/key.psm) for
+// `hash`/`eq` and `Copy` (std/core/copy.psm) for storage; `indexOf` went from a
 // linear scan to a probe, and **no caller
 // changed** -- `tests/test_65_map.psm` is untouched and still passes.
 //
@@ -104,10 +104,10 @@
 // phase. `keyMixInt` folds the high half into the low half and stops, and
 // `mapRehash` below is what makes that safe.
 module prelude freestanding(runtime)
-import std.key
-import std.copy
-import std.default
-import std.option
+import std.core.key
+import std.core.copy
+import std.core.default
+import std.core.option
 
 // `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
 // always a power of two, so `hash & mask` is the bucket.
@@ -450,7 +450,7 @@ private inline(always) fn mapProbe<K: Key + Copy, V: Copy>(m: HashMap<K, V>, key
             __builtin_assume((entry as U32) < (list_len(m.entryKeys) as U32))
             let existing = list_get(m.entryKeys, entry)
             // Trait-qualified: `Eq` spells its method `eq` too, and a program that
-            // imports std.vec has both traits in scope.
+            // imports std.core.vec has both traits in scope.
             if (Key.eq(existing, key)) { return entry }
         }
         // `longest + 1` buckets probed, and no entry sits further from its home:
@@ -507,7 +507,7 @@ private fn mapRehash<K: Key + Copy, V: Copy>(m: HashMap<K, V>) {
     // just doubled costs about 0.2 displaced probes per entry when the hashes
     // spread; three per entry is not a run of bad luck at any size, it is a hash
     // that is not separating these keys. `i * 65537` under the fold in
-    // std/key.psm is the family that does it — the two halves cancel and every
+    // std/core/key.psm is the family that does it — the two halves cancel and every
     // key lands in bucket 0 — and it reaches an average of three by the ninth
     // entry, so the wasted work before the switch is thirty-six probe steps.
     //

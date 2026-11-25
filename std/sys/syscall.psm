@@ -5,7 +5,7 @@
 // System calls, with no C library under them: the raw instruction, and the calls of Linux and
 // macOS by name.
 //
-//     import std.syscall
+//     import std.sys.syscall
 //
 //     linux.syscall.write(1, buffer, count)
 //     macos.syscall.write(1, buffer, count)
@@ -35,7 +35,7 @@
 //
 // **Nothing here checks anything.** An address is a number, a length is whatever is passed, and
 // a bad one is as undefined as it is in C. A path is a pointer to a NUL-terminated byte string
-// -- a `Buffer` or an `alloc` block -- not a `String`. **An address is a `Usize`**, as in std.raw
+// -- a `Buffer` or an `alloc` block -- not a `String`. **An address is a `Usize`**, as in std.sys.raw
 // and std.mem, so what `alloc` answers goes in as it is.
 
 

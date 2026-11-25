@@ -1,9 +1,9 @@
-// expect-error: `offset` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
-// expect-error: `byteOffset` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
-// expect-error: `wrappingOffset` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
+// expect-error: `offset` steps a pointer somewhere the compiler cannot vouch for, which is `std.sys.raw`'s: add `import std.sys.raw`
+// expect-error: `byteOffset` steps a pointer somewhere the compiler cannot vouch for, which is `std.sys.raw`'s: add `import std.sys.raw`
+// expect-error: `wrappingOffset` steps a pointer somewhere the compiler cannot vouch for, which is `std.sys.raw`'s: add `import std.sys.raw`
 // expect-error: aborting due to 3 previous errors
 // A pointer carries no length, so one stepped out of its block is not caught, and a byte step
-// leaves a `Ptr<Int>` that is not aligned for an Int. Stepping is `std.raw`'s, as the
+// leaves a `Ptr<Int>` that is not aligned for an Int. Stepping is `std.sys.raw`'s, as the
 // constructors are. `advance` is bounded by its `limit`, and reading where a pointer is
 // (`addr`, `offsetFrom`, `isAligned`, `sameAs`) moves nothing, so neither needs the import.
 

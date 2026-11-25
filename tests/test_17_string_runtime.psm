@@ -1,6 +1,6 @@
 import std.io
 import std.string
-import std.option
+import std.core.option
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

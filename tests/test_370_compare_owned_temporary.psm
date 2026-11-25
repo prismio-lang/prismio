@@ -7,7 +7,7 @@
 // 0 released; the ownership probes hold this file to 0 leaked.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
 
 // Longer than the 12 bytes a String keeps inline, so each call allocates.

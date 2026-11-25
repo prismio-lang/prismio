@@ -21,7 +21,7 @@
 import std.string
 import std.io
 import std.fs
-import std.vec
+import std.core.vec
 import ums.dependency.dependency
 import ums.model.project
 import ums.model.diagnostic

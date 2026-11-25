@@ -1,4 +1,4 @@
-// sizeOf<T>() and offsetOf<S>("field") from std.raw: layout facts as constants.
+// sizeOf<T>() and offsetOf<S>("field") from std.sys.raw: layout facts as constants.
 //
 // `sizeOf` is read off the pointer type (how far a Ptr<T> moves for one element), so it
 // is the array stride C's sizeof gives: a repr(C) struct is padded to its alignment, a
@@ -6,7 +6,7 @@
 // whose fields stay in the order they were written.
 
 import std.io
-import std.raw
+import std.sys.raw
 import std.string
 
 repr(C) struct Header {

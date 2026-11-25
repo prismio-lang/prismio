@@ -4,7 +4,7 @@
 // read back by address to prove where they went. A Buffer's `pointer` is its bytes, or none
 // when it has none.
 import std.mem
-import std.raw
+import std.sys.raw
 
 repr(C) struct Header {
     magic: U32,

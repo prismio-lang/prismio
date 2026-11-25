@@ -1046,7 +1046,7 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
         }
         // A `T?` parameter is solved from an optional, and only from one. A bare
         // value would be wrapped by the call, but it is not evidence of what `T` is:
-        // std.option's `map<T, U, F>(o: T?, f: F)` would otherwise take `a.map(f)`
+        // std.core.option's `map<T, U, F>(o: T?, f: F)` would otherwise take `a.map(f)`
         // for every `a` that is not an optional, ahead of the `map` it has itself.
         if (tn.i3 == 1) { return ptr_to_node(ptr_null()) }
         return monoAnnotationFromType(actual)
@@ -1142,7 +1142,7 @@ internal fn monoTypeArgsFromExpected(module: ASTNode, call: ASTNode, expected: T
         let template = ptr_to_node(templatePtr)
         // A template taking a different number of arguments is not this
         // call's callee, and solving it anyway named one: `return expect(x)`
-        // on an `Int?` became `expect<Int>`, std.option's two-parameter
+        // on an `Int?` became `expect<Int>`, std.core.option's two-parameter
         // function, instead of the builtin.
         if (template.kind == NodeKind.FUNCTION and template.s1.equals(name)
                 and nodeExists(template.child3)

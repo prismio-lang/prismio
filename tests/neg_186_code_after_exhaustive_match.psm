@@ -1,5 +1,5 @@
 // expect-error: unreachable code: control cannot continue past the previous statement
-import std.option
+import std.core.option
 
 fn orZero(r: Result<Int, String>) -> Int {
     match (r) {

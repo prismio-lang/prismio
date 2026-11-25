@@ -13,9 +13,9 @@
 // and the stale view then reads correct.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 fn make(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
 

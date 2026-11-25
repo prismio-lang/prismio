@@ -13,7 +13,7 @@
 
 import std.io
 import std.string
-import std.vec
+import std.core.vec
 
 struct Job {
     name: String,

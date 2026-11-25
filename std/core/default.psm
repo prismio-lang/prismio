@@ -18,7 +18,7 @@
 // `T.default()` a promise rather than a hope. The builtin types below answer
 // with the value the keyword gives them, so a bound on `Default` admits them.
 module prelude freestanding(runtime)
-import std.copy
+import std.core.copy
 import std.string
 
 trait Default {
@@ -40,8 +40,8 @@ impl Default for Bool   { fn default() -> Bool { return false } }
 impl Default for Char   { fn default() -> Char { return '\0' } }
 impl Default for String { fn default() -> String { return "" } }
 
-// A `Vec` starts empty. It lives here, not in std.vec, because an impl is written in the
-// module that declares the trait or the type, and std.vec does not import this one.
+// A `Vec` starts empty. It lives here, not in std.core.vec, because an impl is written in the
+// module that declares the trait or the type, and std.core.vec does not import this one.
 impl<T: Copy> Default for Vec<T> {
     fn default() -> Vec<T> {
         let v: Vec<T> = []

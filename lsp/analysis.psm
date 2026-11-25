@@ -14,10 +14,10 @@ import documents
 import projects
 import report
 import std.fs
-import std.option
+import std.core.option
 import std.process
 import std.string
-import std.vec
+import std.core.vec
 
 public struct Analysis {
     public active: Bool,

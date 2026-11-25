@@ -2,8 +2,8 @@
 // through `Eq`, the four relational ones through `Ord`.
 
 import std.io
-import std.eq
-import std.ord
+import std.core.eq
+import std.core.ord
 import std.string
 
 struct Version { major: Int, minor: Int }

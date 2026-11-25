@@ -11,7 +11,7 @@
 import fmt.scan
 import common.source_files
 import std.string
-import std.vec
+import std.core.vec
 
 public struct IxSources {
     // The file ids loaded so far, and for each its text, tokens and the offset of every line.

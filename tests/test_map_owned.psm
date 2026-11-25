@@ -11,12 +11,12 @@
 // Every string is longer than twelve bytes: a shorter one is stored inline and never
 // reaches the ledger.
 
-import std.copy
+import std.core.copy
 import std.io
-import std.map
-import std.option
+import std.core.map
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

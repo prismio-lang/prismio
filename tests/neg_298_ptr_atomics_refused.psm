@@ -15,7 +15,7 @@
 //     refused with the reason rather than at the backend.
 //   - The ordering is written as a variant of `AtomicOrder`: it is a property of the
 //     instruction, so a variable or any other value cannot supply it.
-import std.raw
+import std.sys.raw
 
 struct Header { magic: U32 }
 

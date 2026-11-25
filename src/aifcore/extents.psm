@@ -27,8 +27,8 @@ from aifcore import {
     tiers
 }
 
-import std.raw
-import std.vec
+import std.sys.raw
+import std.core.vec
 
 internal let mut arenaLo = 0
 internal let mut arenaHi = 0

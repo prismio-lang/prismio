@@ -208,7 +208,7 @@ private fn semaDefaultStruct(module: ASTNode, target: ASTNode, t: TypeInfo, dept
 }
 
 // `mapNew<K, V>()`, with `K` and `V` read back from the instantiation's columns
-// (`entryKeys`, `entryValues` in std/map.psm).
+// (`entryKeys`, `entryValues` in std/core/map.psm).
 private fn semaDefaultMapNew(module: ASTNode, target: ASTNode, t: TypeInfo) -> String {
     let keyT = semaListElementType(semaCompilerFieldType(module, target, t.name, "entryKeys"))
     let valueT = semaListElementType(semaCompilerFieldType(module, target, t.name, "entryValues"))

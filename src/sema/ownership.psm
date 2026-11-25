@@ -8,7 +8,7 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 import std.string
-import std.option
+import std.core.option
 import aifcore.ownership
 import common.diag_codes
 

@@ -12,10 +12,10 @@ import positions
 import runner
 import uri
 import std.fs
-import std.json
-import std.option
+import std.encoding.json
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 public struct Locator {
     public utf16: Bool,

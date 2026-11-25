@@ -17,9 +17,9 @@
 
 import common.c_text
 import std.mem
-import std.raw
+import std.sys.raw
 import std.string
-import std.vec
+import std.core.vec
 
 public const DIAG_MAX_FILES = 4096
 

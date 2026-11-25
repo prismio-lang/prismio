@@ -15,7 +15,7 @@ import index.tables
 import index.write
 import std.fs
 import std.string
-import std.vec
+import std.core.vec
 
 fn ixVisibilityName(vis: Int) -> String {
     if (vis == 0) { return "public".clone() }

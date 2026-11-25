@@ -1,6 +1,6 @@
 // expect-error: no function called `missing`
 
-import std.raw
+import std.sys.raw
 
 fn main() -> Int {
     return functionAddress("missing") as Int

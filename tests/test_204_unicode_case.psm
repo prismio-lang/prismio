@@ -3,7 +3,7 @@
 // Unicode's default case conversion (The Unicode Standard, 3.13): full mappings,
 // so a string can change length; Final_Sigma, the one context-dependent rule a
 // locale-independent library applies; and titlecase for `capitalize`, which is
-// not uppercase. The tables are std/unicode_case.psm, generated from the pinned
+// not uppercase. The tables are std/_unicode/case.psm, generated from the pinned
 // UCD, and ASCII keeps its byte loop.
 
 import std.io

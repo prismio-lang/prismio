@@ -14,7 +14,8 @@ import std.string
 import build.BUILD_VERSION
 import aifcore.layout_search
 
-from std import {io, string, option, process, fs, platform, vec}
+from std import {io, string, process, fs, platform}
+from std.core import {option, vec}
 from ast import {nodes, dump}
 import common.native
 import common.diag_codes
@@ -114,7 +115,7 @@ let USAGE_DEVELOPER =
           through its program's entry, since a module uses names its program
           shares: `prismio check src/main.psm --overlay src/parse/stmt.psm buf`.
           --module names a module checked on its own, as its importers name it:
-          `prismio check std/map.psm --module std.map`.
+          `prismio check std/core/map.psm --module std.core.map`.
     """
 
 private fn printUsage() { diag_print_help(USAGE) }

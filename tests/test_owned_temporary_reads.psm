@@ -15,12 +15,12 @@
 // Each case runs in a loop, so a leak of one block per use reads as dozens, and each answer is
 // checked: a balanced ledger does not show that the wrong thing was released.
 
-import std.copy
+import std.core.copy
 import std.io
-import std.map
-import std.option
+import std.core.map
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

@@ -9,7 +9,7 @@ import common.mem_builtins
 import index.tables
 import index.write
 import std.string
-import std.vec
+import std.core.vec
 
 private fn ixBuiltinLine(inout ix: Ix, name: String, params: String, result: String, help: String) {
     if (ix.seen.putFirst("builtin ".concat(name), 1) == false) { return }

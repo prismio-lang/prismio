@@ -13,7 +13,7 @@ import ast.nodes
 import ast.types
 import symbols.bindings
 import std.string
-import std.vec
+import std.core.vec
 
 let mut inferNames: Vec<String>
 let mut inferDecls: Vec<Ptr>

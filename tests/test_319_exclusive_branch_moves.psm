@@ -5,7 +5,7 @@
 // The negative twins -- a move on a path that does reach the use -- are
 // neg_313_moved_in_one_branch.
 
-import std.vec
+import std.core.vec
 
 struct Node {
     value: Int,

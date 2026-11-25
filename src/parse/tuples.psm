@@ -1,6 +1,6 @@
 // Tuples: `(Int, String)`, `(1, "a")`, `t.0`, `let (a, b) = t`.
 //
-// A tuple is a generic struct with numbered fields (std/tuple.psm), and the parser writes
+// A tuple is a generic struct with numbered fields (std/core/tuple.psm), and the parser writes
 // the spellings that mean it, so nothing past the parser is taught tuples:
 //
 //     (Int, String)      the type     Tuple2<Int, String>
@@ -10,7 +10,7 @@
 //
 // Two to four elements. A parenthesised single expression is still just that, `(x)` has
 // no one-element tuple, and `()` is not a value. The first tuple in a file brings in
-// `import std.tuple` at the end of the file's declarations, since the file has named
+// `import std.core.tuple` at the end of the file's declarations, since the file has named
 // nothing else that could define the type.
 
 import lexer.token

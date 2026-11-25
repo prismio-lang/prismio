@@ -11,9 +11,9 @@
 // the ledger.
 
 import std.io
-import std.map
+import std.core.map
 import std.string
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

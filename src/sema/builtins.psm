@@ -125,7 +125,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // The lowering target for `String.compare`, and through it `cmp` and every
     // String sort. See `ir_str_compare` in runtime/llvm-api-backend.c.
     if (name.equals("__builtin_string_compare")) { return typeInt() }
-    // `Key for String`'s hash, the one `std.map` reaches on every lookup. A
+    // `Key for String`'s hash, the one `std.core.map` reaches on every lookup. A
     // builtin because the cost it removes is the call itself; see `ir_str_hash`.
     if (name.equals("__builtin_string_hash")) { return typeInt() }
     if (name.equals("__builtin_string_inline")) { return typeString() }
@@ -308,9 +308,9 @@ private fn semaArgCountIsTwo(argPtr: Ptr) -> Bool {
 }
 
 // `o.unwrapOr(fallback)` on a scalar's `T?`, which the compiler answers itself
-// (below) and which std.option's generic `unwrapOr` for a reference optional must
+// (below) and which std.core.option's generic `unwrapOr` for a reference optional must
 // not take: that one is a template, and a template is resolved before a builtin is
-// asked, so a program that never imported std.option would be told to.
+// asked, so a program that never imported std.core.option would be told to.
 internal fn semaIsScalarUnwrapOr(module: ASTNode, name: String, argPtr: Ptr) -> Bool {
     if (name.equals("unwrapOr") == false) { return false }
     return semaIsScalarOptionalArg(module, argPtr)
@@ -449,7 +449,7 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
         // Port I/O is an x86 instruction. Refused on every other target rather than
         // assembled into something the assembler rejects with a line number inside
         // generated text.
-        // Not asked of std/port.psm's own wrappers: they are compiled for every
+        // Not asked of std/sys/port.psm's own wrappers: they are compiled for every
         // target, and refused where a program calls one (semaCheckStdPortCall).
         if (fileHasIntrinsics(call.file) == false and semaTargetIsX86() == false) {
             semaErrorAt(call, diagQuote(name).concat(" is an x86 instruction, and the target is ", diagQuote(ir_target_triple())))
@@ -573,11 +573,11 @@ private fn semaCheckAsmOps(module: ASTNode, call: ASTNode, name: String, argPtr:
     return true
 }
 
-// The compiler's instruction a call to `std.asm`'s `asm`, `asmRead` or `asmWrite`
+// The compiler's instruction a call to `std.sys.asm`'s `asm`, `asmRead` or `asmWrite`
 // is, or "" for any other name. The assembly text has to be a string literal --
 // it is part of the instruction stream, not data a function could be handed -- so
 // these are the one place a standard-library function is not run: the declaration
-// in std/asm.psm gives the name something to resolve against, and a call to it is
+// in std/sys/asm.psm gives the name something to resolve against, and a call to it is
 // lowered here, in place. A function of the same name that is not std's is the
 // program's own and is left alone.
 internal fn semaStdAsmBuiltin(module: ASTNode, name: String) -> String {
@@ -714,7 +714,7 @@ internal fn semaTargetIsX86() -> Bool {
         or triple.startsWith("i686") or triple.startsWith("amd64")
 }
 
-// `in` and `out` are x86 instructions, so a call to one of std.port's wrappers is
+// `in` and `out` are x86 instructions, so a call to one of std.sys.port's wrappers is
 // refused on any other target, by the name the program wrote and not by the
 // builtin underneath it. A function of the same name that is not std's is the
 // program's own.
@@ -752,7 +752,7 @@ private fn semaCheckBuiltinCore(module: ASTNode, call: ASTNode, name: String, ar
     // held, so it transfers no ownership and the optional stays usable. Treating
     // it as a move would make `if (p != none) { use(expect(p)) }` fail on the
     // second visit to a loop body.
-    // Claimed for one argument only: `o.expect("message")` is std.option's, which
+    // Claimed for one argument only: `o.expect("message")` is std.core.option's, which
     // names why the value had to be there.
     if (name.equals("expect") and semaArgCountIsTwo(argPtr) == false) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }

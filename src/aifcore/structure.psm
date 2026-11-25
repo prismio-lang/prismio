@@ -8,9 +8,9 @@
 
 import aifcore.brackets
 import aifcore.constants
-import std.map
-import std.raw
-import std.vec
+import std.core.map
+import std.sys.raw
+import std.core.vec
 import symbols.names
 
 internal let mut scopeCount = 0

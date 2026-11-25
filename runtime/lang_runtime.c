@@ -921,7 +921,7 @@ static inline int str_hash_words(uint64_t lo, uint64_t hi) {
     return (int)(h & 0x7FFFFFFF);
 }
 
-// `Key for String`'s hash (std/key.psm), a word at a time. It replaced FNV-1a in
+// `Key for String`'s hash (std/core/key.psm), a word at a time. It replaced FNV-1a in
 // a Prismio byte loop, which spent a serial multiply on every byte of every key
 // a map looked up.
 //
@@ -939,7 +939,7 @@ static inline int str_hash_words(uint64_t lo, uint64_t hi) {
 // low. A map indexes with the low bits and a multiply mixes only upward, so the
 // folds are what bring the mixed half down to where the mask reads it.
 // MurmurHash3's fmix64 spends a second multiply on the same job and measured no
-// better: std.map's displacement over 80,000 `sort_strings` keys at half load is
+// better: std.core.map's displacement over 80,000 `sort_strings` keys at half load is
 // 0.214 probes per key with this, 0.212 with fmix64 and 0.208 with FNV, and
 // fmix64's lookups were the slower in both shapes the map benchmark times.
 //

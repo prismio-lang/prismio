@@ -1,5 +1,5 @@
 // A program may declare a name that a standard-library *generic* also uses.
-// `std.vec` has `filter`, `find`, `take`, `min` and more as generic functions,
+// `std.core.vec` has `filter`, `find`, `take`, `min` and more as generic functions,
 // and a program with its own `filter` -- a free function or a method -- used to
 // fail with "unknown type `T`" pointing into the library: the check that decides
 // whether a declaration shadows the library compared its signature with the
@@ -9,8 +9,8 @@
 // library's where they are a Vec.
 
 import std.io
-import std.vec
-import std.option
+import std.core.vec
+import std.core.option
 
 struct Parser {
     pos: Int

@@ -9,7 +9,7 @@
 // both used to leak one; the ledger reads clean now (fixed 2026-10-07).
 
 import std.io
-import std.map
+import std.core.map
 import std.string
 
 fn fail(message: String) -> Int {

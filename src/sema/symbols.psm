@@ -552,8 +552,8 @@ private fn semaDeclVisibleFrom(decl: ASTNode, atFile: Int) -> Bool {
 // bring it into another one.
 //
 // Gating a method on an import also gets the dependency backwards, which is the
-// sharper reason. std/map.psm calls the `eq` a *program* implements for its own
-// key type, and no import statement in std/map.psm could ever name that program's
+// sharper reason. std/core/map.psm calls the `eq` a *program* implements for its own
+// key type, and no import statement in std/core/map.psm could ever name that program's
 // file -- the library was compiled before the program existed. The same inversion
 // reaches the `call` sema synthesises for a closure: it lands in whichever file
 // wrote the closure and is invoked from the library that was handed it.
@@ -603,7 +603,7 @@ private fn semaTypeFunctionOwner(module: ASTNode, name: String) -> String {
 
 // `let x = [1, 2, 3]` is an `Array<Int, 3>`, not a `Vec`, and most of what a Vec
 // answers is not an array's: `x.push(4)` reaches resolution with no candidate for
-// an array, and a generic function of std/vec.psm (`removeAt`) is not in the decl
+// an array, and a generic function of std/core/vec.psm (`removeAt`) is not in the decl
 // index at all, so it reads as "unknown function". Neither says that `x` is the
 // surprise. Whether this call is a Vec's method asked of an array: the first
 // argument is one, and the name is one the compiler builds for a Vec, or a function
@@ -958,7 +958,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         diag_note("`separator(...)` is a marker, not a function: write it as the last argument of `".concat(langName(LangItem.PRINT), "` or `", langName(LangItem.PRINTLN), "`"))
     }
     // The other name a program can reach without writing it. `"${x}"` lowers to
-    // `show(x)`, so a missing `std.display` reports a function the author never
+    // `show(x)`, so a missing `std.fmt.display` reports a function the author never
     // typed -- with nothing to connect it to the string they did type.
     if (langNameIs(name, LangItem.SHOW)) {
         diag_note("string interpolation lowers to `".concat(name, "(...)`: add ", langImportHint(LangItem.SHOW)))

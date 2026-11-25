@@ -1,7 +1,7 @@
 // Vec's method surface: which spellings are lowered here, and onto what.
 //
 // `v.f(a)` is `f(v, a)` everywhere else, and most of Vec's reading methods are
-// exactly that -- ordinary generic functions in std/vec.psm. **A method that
+// exactly that -- ordinary generic functions in std/core/vec.psm. **A method that
 // stores an element, or reads one, is lowered here instead**, onto the runtime
 // entry point the old `list_*` spelling called. A wrapper is wrong in both
 // directions: a parameter is a borrow, so a Prismio `push` could not take
@@ -20,7 +20,7 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 import std.string
-import std.vec
+import std.core.vec
 import common.source_files
 import common.lang_items
 
@@ -75,7 +75,7 @@ private fn semaVecArity(kind: TypeKind, name: String) -> Int {
 }
 
 // Whether a Vec has a method or property of this name that the compiler builds
-// itself, so no function in std/vec.psm carries it. An array answers none of
+// itself, so no function in std/core/vec.psm carries it. An array answers none of
 // them, and a call there should say so rather than "unknown function".
 internal fn semaVecLowersMethod(name: String) -> Bool {
     return semaVecArity(TypeKind.LIST, name) >= 0
@@ -247,7 +247,7 @@ internal fn semaVecLowerIndexStore(stmt: ASTNode, target: ASTNode, store: String
 //
 // `filled` is `n` copies of `value` -- `std::vector<T>(n, value)`, `vec![value;
 // n]`. A scalar `T` lowers onto the runtime too, one allocation and one fill;
-// any other `T` has to be copied per element, which is std.vec's `vecFilled`.
+// any other `T` has to be copied per element, which is std.core.vec's `vecFilled`.
 internal fn semaVecAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode,
                               name: String) -> Int {
     if (qualifier.s1.equals("Vec") == false) { return semaVecNotLowered() }
@@ -310,7 +310,7 @@ internal fn semaVecAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
     expr.child3 = ptr_null()
     // The value is checked against `T` before the call is, because the call
     // does not know `T`: that is what re-types the literal in
-    // `Vec<U8>.filled(n, 0)`, and what gives std.vec's generic its `T`.
+    // `Vec<U8>.filled(n, 0)`, and what gives std.core.vec's generic its `T`.
     if (name.equals("filled") and nodeExists(expr.child2)) {
         let countNode = ptr_to_node(expr.child2)
         if (nodeExists(countNode.next)) {
@@ -327,8 +327,8 @@ private fn semaVecArgCount(call: ASTNode) -> Int {
     return chainLength(call.child2)
 }
 
-// Which `filled` a `T` gets: the runtime's for a scalar, std.vec's generic copy
-// loop for anything else, or "" after reporting that std.vec is not imported.
+// Which `filled` a `T` gets: the runtime's for a scalar, std.core.vec's generic copy
+// loop for anything else, or "" after reporting that std.core.vec is not imported.
 private fn semaVecFilledCallee(module: ASTNode, expr: ASTNode, elem: TypeInfo) -> String {
     // The runtime's fill takes one i64: every integer up to 64 bits and a `Float`
     // fit it, and the other floats do not (a `float` is not the bits of an i64).
@@ -407,14 +407,14 @@ private fn semaBuiltinSpelling(name: String) -> String {
     if (name.equals("__builtin_ptr_addr")) { return "addressOf(pointer)` from `std.mem" }
     if (name.equals("__builtin_addr_ptr")) { return "pointerAt(address)` from `std.mem" }
     if (name.equals("__builtin_mem_fence")) { return "fence()` from `std.mem" }
-    if (name.equals("__builtin_syscall")) { return "syscall(number, a0, a1)` from `std.syscall" }
-    if (name.equals("__builtin_asm")) { return "asm(text)` from `std.asm" }
-    if (name.equals("__builtin_asm_read")) { return "asmRead(text)` from `std.asm" }
-    if (name.equals("__builtin_asm_write")) { return "asmWrite(text, value)` from `std.asm" }
-    if (name.equals("__builtin_asm_ops")) { return "asmOps(text, clobbers, operands...)` from `std.asm" }
-    if (name.equals("__builtin_asm_ops_out")) { return "asmOpsOut(text, clobbers, operands...)` from `std.asm" }
-    if (name.startsWith("__builtin_port_in_")) { return "portInU8(port)` from `std.port" }
-    if (name.startsWith("__builtin_port_out_")) { return "portOutU8(port, value)` from `std.port" }
+    if (name.equals("__builtin_syscall")) { return "syscall(number, a0, a1)` from `std.sys.syscall" }
+    if (name.equals("__builtin_asm")) { return "asm(text)` from `std.sys.asm" }
+    if (name.equals("__builtin_asm_read")) { return "asmRead(text)` from `std.sys.asm" }
+    if (name.equals("__builtin_asm_write")) { return "asmWrite(text, value)` from `std.sys.asm" }
+    if (name.equals("__builtin_asm_ops")) { return "asmOps(text, clobbers, operands...)` from `std.sys.asm" }
+    if (name.equals("__builtin_asm_ops_out")) { return "asmOpsOut(text, clobbers, operands...)` from `std.sys.asm" }
+    if (name.startsWith("__builtin_port_in_")) { return "portInU8(port)` from `std.sys.port" }
+    if (name.startsWith("__builtin_port_out_")) { return "portOutU8(port, value)` from `std.sys.port" }
     if (name.startsWith("__builtin_mem_load_")) { return "loadU32(address)` from `std.mem" }
     if (name.startsWith("__builtin_mem_store_")) { return "storeU32(address, value)` from `std.mem" }
     if (name.startsWith("__builtin_mem_vload_")) { return "volatileLoadU32(address)` from `std.mem" }

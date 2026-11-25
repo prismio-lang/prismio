@@ -1,7 +1,7 @@
 // Inline assembly, for freestanding programs: a boot stub, a system register, a
 // barrier the language has no word for.
 //
-//     import std.asm
+//     import std.sys.asm
 //
 //     asm("nop")
 //     asmWrite("msr tpidr_el0, $0", 12345)

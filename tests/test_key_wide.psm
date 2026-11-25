@@ -1,8 +1,8 @@
 // The high word must contribute to bucket selection. Correct lookups alone
 // cannot detect a hash that silently turns structured 64-bit ids into a chain.
 import std.io
-import std.key
-import std.map
+import std.core.key
+import std.core.map
 
 fn main() -> Int {
     let signed = mapNew<I64, Int>()

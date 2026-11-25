@@ -4663,7 +4663,7 @@ private fn generateBinary(expr: ASTNode) -> String {
         // purpose -- and has no `wrapping_*` spelling to say so. An installed
         // toolchain compiled std's `.plib`s without checks, so only a program
         // built from a checkout reached them, and there `--overflow-checks`
-        // trapped at std/key.psm on the first map insert. Asked of the declaring
+        // trapped at std/core/key.psm on the first map insert. Asked of the declaring
         // module, so an instantiated std generic is exempt at every argument.
         let checked = ir_overflow_checks() == 1 and isIntegerStorageKey(opType)
                       and fileFromLibraryRoot(expr.file) == false
@@ -4870,7 +4870,7 @@ private fn generateChannelRecvCopy(expr: ASTNode) -> String {
     return ir_get_temp_name(ir_load("ptr", slot))
 }
 
-// `expect(o)` is the compiler's, and `expect(o, message)` is std.option's.
+// `expect(o)` is the compiler's, and `expect(o, message)` is std.core.option's.
 private fn callTakesOneArgument(expr: ASTNode) -> Bool {
     if (nodeIsNull(expr.child2)) { return false }
     return nodeIsNull(ptr_to_node(expr.child2).next)
@@ -4883,7 +4883,7 @@ internal fn irCallIsCoalesce(call: ASTNode) -> Bool {
     return langNameIsInstance(name, LangItem.OPTION_COALESCE)
 }
 
-// `offsetOf<S>("field")` from std.raw, which sema has checked (semaCheckStdOffsetOf): the
+// `offsetOf<S>("field")` from std.sys.raw, which sema has checked (semaCheckStdOffsetOf): the
 // byte offset of the field, a constant read from the layout the backend built for the
 // target. std's declaration only gives the name something to resolve against; by the time
 // a call is generated it names the instance, `offsetOf$Struct_Header`, and that
@@ -4912,7 +4912,7 @@ private fn irCallIsStdFunction(name: String) -> Bool {
     return false
 }
 
-// `functionAddress("name")` from std.raw, checked by sema: the function's symbol as a pointer,
+// `functionAddress("name")` from std.sys.raw, checked by sema: the function's symbol as a pointer,
 // then as the target's address integer. The symbol is the mangled name for a Prismio function
 // and the C name for an extern, both of which sema cached on the declaration.
 private fn generateFunctionAddress(call: ASTNode) -> String {

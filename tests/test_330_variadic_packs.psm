@@ -4,7 +4,7 @@
 
 import std.io
 import std.string
-import std.display
+import std.fmt.display
 
 typelist Printable { Display }
 typelist Row (Int, String, Bool)

@@ -1,6 +1,6 @@
 // expect-error: `cString` takes one string literal; a String built at run time is not read-only data
 
-import std.raw
+import std.sys.raw
 import std.string
 
 fn main() -> Int {

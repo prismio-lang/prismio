@@ -13,7 +13,7 @@ import ums.model.project
 import ums.model.build_module
 import std.string
 import std.fs
-import std.vec
+import std.core.vec
 
 
 fn umsTestFail(message: String) -> Int {

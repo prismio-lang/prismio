@@ -25,12 +25,12 @@ import aifcore.sites
 import aifcore.structure
 import aifcore.tiers
 import std.io
-import std.map
-import std.option
+import std.core.map
+import std.core.option
 import std.process
-import std.raw
+import std.sys.raw
 import std.string
-import std.vec
+import std.core.vec
 import symbols.names
 
 // 1 once `aif_place_arenas` has run. Read by the bracket pass to decide whether a cost-model arena is a region it

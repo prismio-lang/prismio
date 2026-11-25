@@ -6,9 +6,9 @@
 // Run by `ownership_probes`.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 fn find(items: Vec<String>, key: String) -> String? {
     for item in items {

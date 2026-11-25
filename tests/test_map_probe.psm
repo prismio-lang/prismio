@@ -1,10 +1,10 @@
 // Collision chains must survive wraparound, growth and overwrite without
 // changing insertion order. A negative constant hash is a valid Key impl.
 import std.io
-import std.map
-import std.key
-import std.copy
-import std.option
+import std.core.map
+import std.core.key
+import std.core.copy
+import std.core.option
 
 public struct CollidingKey { id: Int }
 

@@ -19,9 +19,9 @@ from pathlib import Path
 
 PROGRAM = """\
 import std.io
-import std.vec
-import std.map
-import std.option
+import std.core.vec
+import std.core.map
+import std.core.option
 
 struct Note { id: Int }
 

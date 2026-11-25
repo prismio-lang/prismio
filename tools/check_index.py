@@ -136,8 +136,9 @@ def default_jobs(include_compiler):
     for pattern in ("tests/test_*.psm", "benchmarks/hosted/prismio/*.psm"):
         jobs += [(p, ()) for p in sorted(ROOT.glob(pattern))]
     jobs.append((ROOT / "lsp" / "main.psm", ()))
-    for module in sorted((ROOT / "std").glob("*.psm")):
-        jobs.append((module, ("--module", "std." + module.stem)))
+    for module in sorted((ROOT / "std").rglob("*.psm")):
+        name = ".".join(module.relative_to(ROOT / "std").with_suffix("").parts)
+        jobs.append((module, ("--module", "std." + name)))
     if include_compiler:
         jobs.append((ROOT / "src" / "main.psm", ()))
     return jobs

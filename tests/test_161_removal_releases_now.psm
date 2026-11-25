@@ -11,7 +11,7 @@
 // (KNOWN_ISSUES). test_162 has the cases that must park.
 
 import std.io
-import std.vec
+import std.core.vec
 import std.string
 
 fn churnWord(i: Int) -> String {

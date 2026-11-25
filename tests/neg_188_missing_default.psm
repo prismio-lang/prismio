@@ -1,5 +1,5 @@
 // expect-error: Plain does not implement `Default`
-import std.default
+import std.core.default
 
 struct Plain { n: Int }
 

@@ -7,10 +7,10 @@
 //    itself with the argument `child`, and the child prints what it sees.
 
 import std.io
-import std.option
+import std.core.option
 import std.process
 import std.string
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

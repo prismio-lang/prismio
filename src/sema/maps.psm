@@ -17,7 +17,7 @@
 // `Vec` value is the same case as a computed key.)
 //
 // **So the entries of such a literal are arguments: `mapEntriesN(k0, v0, k1, v1, ...)`**
-// (std/map.psm), as a Vec literal is one `vecOf`, for each run of up to twelve, and the runs
+// (std/core/map.psm), as a Vec literal is one `vecOf`, for each run of up to twelve, and the runs
 // are merged with `mapMerge`. Each temporary is released after the call it is an argument
 // of, and every function builds the map it returns, so the result is owned wherever it
 // lands. A chain of `mapPut`s, which this replaced, passes the map through, and a
@@ -235,7 +235,7 @@ private fn semaMapCall(at: ASTNode, name: String, keyT: TypeInfo, valueT: TypeIn
     return call
 }
 
-// Whether `t` is an instantiation of std.map's `HashMap` -- `HashMap$String$Int`.
+// Whether `t` is an instantiation of std.core.map's `HashMap` -- `HashMap$String$Int`.
 internal fn semaMapIsInstance(module: ASTNode, t: TypeInfo) -> Bool {
     if (typeIsValid(t) == false or t.kind != TypeKind.STRUCT) { return false }
     return langDeclared(LangItem.HASH_MAP) and t.name.startsWith(langName(LangItem.HASH_MAP).concat(monoSeparator()))

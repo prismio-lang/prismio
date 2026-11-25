@@ -26,7 +26,7 @@ import index.source
 import index.tables
 import index.walk
 import std.string
-import std.vec
+import std.core.vec
 
 // A file belongs to the user unless it came from the toolchain library
 // (the entry and the files an editor has open are the user's whatever they are called). `build` is not the

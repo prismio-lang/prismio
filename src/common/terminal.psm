@@ -11,7 +11,7 @@
 
 import std.io
 import std.mem
-import std.option
+import std.core.option
 import std.platform
 import std.process
 import std.string

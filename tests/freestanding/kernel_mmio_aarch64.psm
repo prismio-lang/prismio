@@ -7,8 +7,8 @@
 // address must be two characters: a plain store could be merged into one, which is
 // what `vstore` exists to forbid.
 import std.mem
-import std.raw
-import std.asm
+import std.sys.raw
+import std.sys.asm
 
 fn put(c: U8) {
     volatileStoreU32(0x09000000, c as U32)

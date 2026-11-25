@@ -5,7 +5,7 @@
 // and `writeVolatile` are the one-off form on a pointer that is not itself volatile.
 //
 //   Uart (repr(C), 12 bytes): data +0 (U32), status +4 (U32), baud +8 (U16)
-import std.raw
+import std.sys.raw
 
 repr(C) struct Uart {
     data: U32,

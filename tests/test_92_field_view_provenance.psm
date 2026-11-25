@@ -30,7 +30,7 @@
 
 import std.io
 import std.string
-import std.option
+import std.core.option
 
 struct Box { text: String }
 

@@ -4,7 +4,7 @@
 
 import ast.types
 import common.target
-import std.map
+import std.core.map
 
 // IR Generator
 // Traverses the AST and emits LLVM IR via bridge.psm

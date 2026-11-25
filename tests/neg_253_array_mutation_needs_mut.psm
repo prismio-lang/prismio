@@ -3,7 +3,7 @@
 // An array's in-place methods change it, so the array has to be one the code may
 // change, as for a Vec.
 
-import std.vec
+import std.core.vec
 
 fn main() -> Int {
     let a = [3, 1, 2]

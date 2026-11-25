@@ -33,7 +33,7 @@ import common.source_files
 import std.io
 import std.process
 import std.string
-import std.vec
+import std.core.vec
 
 let mut reductionsStrict = false
 // 0 until asked, then 1 for off and 2 for on.

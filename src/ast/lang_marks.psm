@@ -1,7 +1,7 @@
 import ast.nodes
 import std.string
-import std.option
-import std.vec
+import std.core.option
+import std.core.vec
 
 // The `lang("id")` marker: which library declarations are what the language itself asks the
 // library for (`==` needs the equality trait, `for` needs the iterator trait, ...). A declaration says

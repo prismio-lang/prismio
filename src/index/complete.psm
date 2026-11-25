@@ -19,7 +19,7 @@ import index.tables
 import index.write
 import sema.vec
 import std.string
-import std.vec
+import std.core.vec
 import common.source_files
 import common.lang_items
 
@@ -197,7 +197,7 @@ public fn ixVisibleFrom(ix: Ix, id: Int, file: Int) -> Bool {
 // program's functions, types and globals.
 public fn ixCompleteScope(inout ix: Ix, inout src: IxSources, names: Vec<String>, ids: Vec<Int>, file: Int) {
     ix.out.push(ixContextLine("scope"))
-    // The `__builtin_*` functions are the library's own vocabulary (std/raw.psm, port.psm, asm.psm wrap them); a program
+    // The `__builtin_*` functions are the library's own vocabulary (std/sys/raw.psm, port.psm, asm.psm wrap them); a program
     // is refused the call, so only a file of the library itself is offered them.
     if (fileHasIntrinsics(file)) { ixCompleteCompilerBuiltins(ix) }
     let mut written = ixMap()

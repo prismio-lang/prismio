@@ -116,7 +116,7 @@ C reports failure with a negative code and a side effect. Prismio makes the fail
 of the type:
 
 ```prismio
-import std.option
+import std.core.option
 
 enum DecodeError { InvalidData, Unsupported }
 

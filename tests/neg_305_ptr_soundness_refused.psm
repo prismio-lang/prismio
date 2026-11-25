@@ -13,7 +13,7 @@
 //   - Every field of a packed struct is aligned to one byte or is a scalar the backend reads
 //     at one byte. What is reached through a field -- an inner struct's fields, an array's
 //     elements, an optional's flag -- would be read at its own type's alignment.
-import std.raw
+import std.sys.raw
 
 repr(C) struct Header { magic: U32 }
 

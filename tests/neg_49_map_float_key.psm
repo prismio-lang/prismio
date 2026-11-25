@@ -1,6 +1,6 @@
 // expect-error: Float does not implement `Key`
-import std.map
-import std.key
+import std.core.map
+import std.core.key
 
 fn main() -> Int {
     let m = mapNew<Float, Int>()

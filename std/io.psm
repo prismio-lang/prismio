@@ -23,7 +23,7 @@
 // left, and under the default that view would be copied -- the whole remainder,
 // on every iteration -- to supply a terminator the write does not look at.
 
-import std.float_text
+import std._fmt.float
 
 internal extern fn str_with_capacity(length: Int) -> String produce(rt_free)
 
@@ -182,7 +182,7 @@ private fn prismioStdIoFloat(value: Float, terminator: Char) -> String {
 }
 
 // What the console takes: every builtin that has a text, and the optional of each. A type of your
-// own prints through `Display` (std.display), whose functions take whatever these do not.
+// own prints through `Display` (std.fmt.display), whose functions take whatever these do not.
 //
 // **Optionals are entries, not a trait.** A list of types needs no `impl` and so no import: this
 // is the whole reason `import std.io` is enough to print a number, a `String?` or a mixed line.

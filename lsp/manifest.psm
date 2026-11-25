@@ -7,9 +7,9 @@
 // the lowering accepts, so a key it offers is never one `ums` rejects.
 
 import positions
-import std.json
+import std.encoding.json
 import std.string
-import std.vec
+import std.core.vec
 
 public fn manifestIsPath(path: String) -> Bool {
     return path.endsWith(".ums")

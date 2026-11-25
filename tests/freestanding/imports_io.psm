@@ -1,5 +1,5 @@
 // Refused with a message that names the import: `std.io` writes to a console
-// through the operating system, and a freestanding program has none. `std.vec`
+// through the operating system, and a freestanding program has none. `std.core.vec`
 // was the module here until the freestanding runtime made it importable.
 
 import std.io

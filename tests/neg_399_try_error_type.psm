@@ -1,5 +1,5 @@
 // expect-error: `?` returns this error as it is
-import std.option
+import std.core.option
 import std.string
 // The error leaves as it is, so it has to be the type the function's own `Result` carries.
 fn code(s: String) -> Result<Int, Int> { return Result.Ok(1) }

@@ -171,9 +171,14 @@ def check_seed(rc: Path, work: Path) -> None:
     gone."""
     step("seed agreement")
     progress("building from the seed")
-    result = run([sys.executable, REPO / "tools" / "bootstrap.py", "--seed",
-                  "--out", work / f"seedchk{EXE}"])
-    ok("the committed seed builds the compiler") if result.returncode == 0 \
+    seeded = work / f"seedchk{EXE}"
+    result = run([sys.executable, REPO / "tools" / "bootstrap.py", "--seed", "--out", seeded])
+    # And that compiler builds this tree: one that only links is no use on a new machine, and a
+    # manifest or library change the seed cannot read fails here rather than there.
+    if result.returncode == 0:
+        progress("building the tree with it")
+        result = bootstrap(seeded, work / "seedgen" / f"g1{EXE}")
+    ok("the committed seed builds the compiler, which builds this tree") if result.returncode == 0 \
         else bad(last_line(result.stdout + result.stderr))
 
 

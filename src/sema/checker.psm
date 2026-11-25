@@ -11,7 +11,7 @@ import ast.fn_attrs
 import ir.bridge
 import common.diagnostics
 import std.string
-import std.option
+import std.core.option
 import sema.decl_index
 import common.diag_codes
 import common.source_files
@@ -328,7 +328,7 @@ internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInf
     // is generic and a template is not in the decl index -- see the note over it.
     let literalTable = semaVecLiteralTable(module)
     if (literalTable.equals("")) {
-        semaErrorAt(valNode, "a vector literal needs `import std.vec`")
+        semaErrorAt(valNode, "a vector literal needs `import std.core.vec`")
         nodeSetType(valNode, typeInvalid())
         return true
     }
@@ -356,7 +356,7 @@ internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInf
     return true
 }
 
-// The overload table a vector literal lowers to, std.vec's `vecOf`, or empty
+// The overload table a vector literal lowers to, std.core.vec's `vecOf`, or empty
 // when that module is not imported.
 private fn semaVecLiteralTable(module: ASTNode) -> String {
     if (langDeclared(LangItem.VEC_OF) and monoHasTemplate(module, langName(LangItem.VEC_OF), NodeKind.FUNCTION)) {
@@ -646,7 +646,7 @@ private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
 
 // `for k in set` over a `HashSet<K>`: `hashSetKeyAt` over positions `0..<count(set)`.
 // A set promises no order, so there is no `keyAt` method to write by hand -- the
-// loop is the way to walk one -- and `hashSetKeyAt` is std.map's lowering target,
+// loop is the way to walk one -- and `hashSetKeyAt` is std.core.map's lowering target,
 // not API. Positions are insertion order until the first removal, as a map's are.
 private fn semaForEachSet(stmt: ASTNode, source: ASTNode) -> Bool {
     let indexName = "$".concat(stmt.s1)
@@ -663,7 +663,7 @@ private fn semaForEachSet(stmt: ASTNode, source: ASTNode) -> Bool {
     return true
 }
 
-// Whether this is an instantiation of std.map's `HashSet`, as semaForIsMap asks of `HashMap`.
+// Whether this is an instantiation of std.core.map's `HashSet`, as semaForIsMap asks of `HashMap`.
 private fn semaForIsSet(module: ASTNode, t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.STRUCT) { return false }
     if (langDeclared(LangItem.HASH_SET) == false) { return false }
@@ -671,9 +671,9 @@ private fn semaForIsSet(module: ASTNode, t: TypeInfo) -> Bool {
     return monoHasTemplate(module, langName(LangItem.HASH_SET_KEY_AT), NodeKind.FUNCTION)
 }
 
-// Whether this is an instantiation of std.map's `HashMap`. An instantiated generic
+// Whether this is an instantiation of std.core.map's `HashMap`. An instantiated generic
 // struct is named after its template and its arguments, `HashMap$String$Int`, and
-// the template is only there when `std.map` is imported.
+// the template is only there when `std.core.map` is imported.
 private fn semaForIsMap(module: ASTNode, t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.STRUCT) { return false }
     if (langDeclared(LangItem.HASH_MAP) == false) { return false }
@@ -1377,7 +1377,7 @@ private fn semaUnaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 // the right is a `T` for a `T?` on the left, and the result is a `T`, or a `T?`
 // when the right is one too (`a ?? b ?? 0` tries `a`, then `b`, then `0`).
 //
-// **A call to std.option's `optionCoalesce`, bound to that module** as a String
+// **A call to std.core.option's `optionCoalesce`, bound to that module** as a String
 // operator is bound to std.string's, because what the result may alias is a
 // question the call machinery already answers: the value is the optional's own
 // or the fallback's, exactly as a function that returns one of its parameters.
@@ -1399,7 +1399,7 @@ private fn semaCoalesceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return typeInvalid()
     }
     // A generic is on the module's template list, not in the declaration index. The file has to
-    // import std.option itself: the template is in the program whenever anything imported it --
+    // import std.core.option itself: the template is in the program whenever anything imported it --
     // std.process and std.string both do -- but the call is bound to the module by name, which
     // a file that did not import it cannot reach ("declares no `optionCoalesce$Int`").
     if (langDeclared(LangItem.OPTION_COALESCE) == false
@@ -2001,7 +2001,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return typeInvalid()
     }
 
-    // `asm("nop")` from `import std.asm` is the compiler's own instruction, written
+    // `asm("nop")` from `import std.sys.asm` is the compiler's own instruction, written
     // where the text is: see semaStdAsmBuiltin.
     semaCheckStdPortCall(callee)
     semaCheckStdOffsetOf(module, expr, callee)
@@ -2902,7 +2902,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 // library spelling exists here. The language has no variadics -- a parameter is
 // a name and a type, and nothing else (parseParameter) -- and the bounded
 // generic form, `fn print<A: Display, B: Display>(a: A, b: B)`, would make
-// std.io import std.display and through it std.string: 5 potential allocation
+// std.io import std.fmt.display and through it std.string: 5 potential allocation
 // sites for a hello-world before that import and 85 after, paid by every program
 // that prints whether or not it ever passes two arguments.
 //
@@ -4211,7 +4211,7 @@ private fn semaCheckImplBlocks(module: ASTNode) {
 // Checked per module rather than per package: the module is the unit a file
 // declares in, and it is the coarsest unit this compiler can actually attribute
 // a declaration to. A built-in type is owned by nobody, so implementing a trait
-// for `Int` requires owning the trait -- which is what `std/copy.psm` does.
+// for `Int` requires owning the trait -- which is what `std/core/copy.psm` does.
 //
 // Inherent implementations are not orphans: they name only a type, and writing
 // one for a foreign type is a separate question this rule does not decide.

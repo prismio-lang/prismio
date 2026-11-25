@@ -25,7 +25,7 @@ import index.source
 import index.tables
 import index.write
 import std.string
-import std.vec
+import std.core.vec
 import common.lang_items
 
 public struct IxWalk {

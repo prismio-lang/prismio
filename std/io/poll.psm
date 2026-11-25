@@ -1,6 +1,6 @@
 // Waiting on several descriptors at once, with a timeout.
 //
-//     import std.poll
+//     import std.io.poll
 //
 //     let ready = waitReadable(0, child.stdout.descriptor, 250)
 //     if (ready == 0) { ... }          // standard input has something
@@ -28,8 +28,8 @@
 // On Windows a pipe is polled about once a millisecond, because a pipe handle cannot
 // be waited on; a console or a file is always ready. Nothing here covers sockets.
 
-import std.option
-import std.vec
+import std.core.option
+import std.core.vec
 
 // The list is pushed one descriptor at a time and waited on in a call, the shape
 // `proc_spawn_arg` has: a `Vec` does not cross into the runtime. The set is

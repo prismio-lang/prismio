@@ -1,4 +1,4 @@
-// The hardware wrappers in std.raw and std.asm: volatile access, atomics on a word,
+// The hardware wrappers in std.sys.raw and std.sys.asm: volatile access, atomics on a word,
 // the fence, an address and the pointer it names, a Float's bits, and an assembly
 // instruction written where it runs. They are one builtin each, so this checks the
 // answers and the widths -- a wrapper that picked the wrong width or returned the
@@ -6,8 +6,8 @@
 
 import std.io
 import std.mem
-import std.raw
-import std.asm
+import std.sys.raw
+import std.sys.asm
 import std.string
 
 fn fail(message: String) -> Int {

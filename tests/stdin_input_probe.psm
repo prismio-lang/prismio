@@ -1,14 +1,14 @@
-// std.input, driven by tests/test_runner.py (run_std_input_test): the runner starts this
+// std.io.input, driven by tests/test_runner.py (run_std_input_test): the runner starts this
 // program with a mode and exactly the bytes it wants on standard input -- NULs and invalid
 // UTF-8 among them, which a parent written in Prismio could not send -- and compares what
 // it prints. Output is plain ASCII so a mismatch reads.
 
-import std.input
+import std.io.input
 import std.io
-import std.option
+import std.core.option
 import std.process
 import std.string
-import std.vec
+import std.core.vec
 
 fn showResultInt(r: Result<Int?, InputError>) -> String {
     match (r) {

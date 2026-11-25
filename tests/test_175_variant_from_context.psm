@@ -3,7 +3,7 @@
 // assignment's target, a return type, a struct field, or the parameter an
 // argument is passed to. neg_185 is the one with no context at all.
 import std.io
-import std.option
+import std.core.option
 
 enum Outcome<T, E> {
     Good(T),

@@ -4,8 +4,8 @@
 // the Vec's. `first` and `last` on an array are `a[0]` and `a[N - 1]`.
 
 import std.io
-import std.vec
-import std.option
+import std.core.vec
+import std.core.option
 
 let mut visited: Int = 0
 

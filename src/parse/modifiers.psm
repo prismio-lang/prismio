@@ -11,7 +11,7 @@
 //   inline            a hint that the body is worth folding into callers
 //                     (LLVM's `inlinehint`, Rust's `#[inline]`)
 //   inline(always)    folded into every caller (`alwaysinline`, `#[inline(always)]`),
-//                     for a small function whose callers need its body: std.map's
+//                     for a small function whose callers need its body: std.core.map's
 //                     probe, which LLVM's cost model stopped inlining once a bounds
 //                     check made it larger. A debug build ignores it, as it ignores
 //                     the inlining codegen chooses itself.
@@ -41,7 +41,7 @@ import ast.nodes
 import ast.fn_attrs
 import common.diagnostics
 import std.string
-import std.option
+import std.core.option
 
 struct FnModifiers {
     flags: Int,

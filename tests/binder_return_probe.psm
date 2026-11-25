@@ -4,7 +4,7 @@
 // caller freed it. Run by `ownership_probes` under `--verify`.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
 
 fn findLiteral(key: String) -> String? {

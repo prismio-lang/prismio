@@ -24,9 +24,9 @@
 //    calls, so no call's release ever reached them.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 struct Box { text: String }
 

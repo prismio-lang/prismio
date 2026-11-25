@@ -1,7 +1,7 @@
 import std.io
-import std.map
-import std.key
-import std.copy
+import std.core.map
+import std.core.key
+import std.core.copy
 import std.string
 
 extern fn abort()
@@ -36,7 +36,7 @@ impl Copy for ProbeKey {
 }
 public struct CountUpdate { calls: Int }
 impl CountUpdate {
-    // `public` because std.map calls it. An inherent method takes the private
+    // `public` because std.core.map calls it. An inherent method takes the private
     // default, and `mapUpdate` is duck-typed -- there is no trait here whose
     // conformance would publish it, so the callback has to say so itself.
     public fn call(self, value: Int) -> Int {

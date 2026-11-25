@@ -177,7 +177,7 @@ private fn semaPtrMethodOp(method: String) -> Int {
 // `offset`, `byteOffset` and `wrappingOffset` make a pointer the type cannot vouch for: a
 // pointer carries no length, so one stepped out of its block is not caught, and a byte step
 // leaves a `Ptr<Int>` that is not aligned for an Int. Like the constructors, they are
-// `std.raw`'s. `advance` is bounded by the `limit` it is given, and the rest only read where
+// `std.sys.raw`'s. `advance` is bounded by the `limit` it is given, and the rest only read where
 // a pointer is.
 private fn semaPtrStepIsRaw(op: Int) -> Bool {
     return op == 1 or op == 2 or op == 3
@@ -284,7 +284,7 @@ internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiv
 }
 
 // The `atomic...` methods and the operation each is (src/common/mem_builtins.psm
-// ptrAtomicKind); 0 for any other name. They mirror `std.raw`'s `atomicAddU32` family, on a
+// ptrAtomicKind); 0 for any other name. They mirror `std.sys.raw`'s `atomicAddU32` family, on a
 // pointer rather than a number, and add the ordering.
 private fn semaPtrAtomicOp(method: String) -> Int {
     if (method.equals("atomicLoad")) { return 1 }
@@ -328,7 +328,7 @@ private fn semaPtrPlural(count: Int) -> String {
 }
 
 // `Ptr<T>.at(address)`, `.atUnchecked(address)`, `.cast(p)` and `.castAligned(p)`: the ways
-// a program makes a typed pointer out of something that is not one. They are `std.raw`'s,
+// a program makes a typed pointer out of something that is not one. They are `std.sys.raw`'s,
 // behind the import that already marks code that touches memory by number -- a file that
 // has not imported it cannot conjure a pointer -- and none of them checks that the memory
 // is there. `at` and `castAligned` answer `Ptr<T>?`, none for 0 or an address the pointee

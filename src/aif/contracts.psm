@@ -10,7 +10,7 @@ import common.float_builtins
 import common.int_builtins
 import common.mem_builtins
 import std.string
-import std.option
+import std.core.option
 import aifcore.keys
 
 // ---------------------------------------------------------------------------

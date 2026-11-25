@@ -19,7 +19,7 @@ import fmt.scan
 import index.source
 import index.tables
 import std.string
-import std.vec
+import std.core.vec
 
 // The name a node was written with: its `s1` up to the `$` that separates an instance's type
 // arguments from it.

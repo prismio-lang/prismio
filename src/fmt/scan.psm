@@ -13,7 +13,7 @@
 // rules. The tables are the compiler's: lexer/token.psm and lexer/vocabulary.psm.
 
 import std.string
-import std.vec
+import std.core.vec
 import common.text
 import lexer.token
 import lexer.scanner

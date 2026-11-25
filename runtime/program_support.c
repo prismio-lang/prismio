@@ -1485,7 +1485,7 @@ char* proc_read_all(int fd) {
     return buffer;
 }
 
-// A buffered reader over one descriptor: standard input's, which is std/input.psm
+// A buffered reader over one descriptor: standard input's, which is std/io/input.psm
 // (lines, tokens, bytes and the rest), and a file's, which is `readLines` in std/fs.psm.
 // The buffer holds raw bytes; it is the callers that decide what a line or a token is.
 //
@@ -1961,7 +1961,7 @@ int poll_wait(int ms) {
     return poll_wait_on(poll_descriptors, poll_count, ms < 0 ? 0 : ms);
 }
 
-// 1 when reading standard input would not block: `waitForInput` in std/input.psm.
+// 1 when reading standard input would not block: `waitForInput` in std/io/input.psm.
 int io_stdin_ready(int ms) {
     int only = 0;
     return poll_wait_on(&only, 1, ms < 0 ? 0 : ms) >= 0;

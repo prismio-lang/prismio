@@ -74,6 +74,7 @@ public extern fn compiler_plib_covers_target(path: String borrow, module: String
 // The module's header words and lang items, without reading its interface.
 public extern fn compiler_plib_meta(path: String borrow, module: String borrow) -> String produce(rt_free)
 public extern fn compiler_plib_error() -> String produce(rt_free)
+public extern fn compiler_prepare_output_path(outputPath: String borrow) -> Int
 // `--emit plib`: sections are added one target at a time, then the file is written.
 // Each section's module is generated in an LLVM context of its own.
 public extern fn ir_renew_context()

@@ -3,8 +3,8 @@
 // covered, or any match with a `_` arm. neg_186 is the dead statement that used
 // to be required after one.
 import std.io
-import std.option
-import std.vec
+import std.core.option
+import std.core.vec
 
 fn orZero(r: Result<Int, String>) -> Int {
     match (r) {

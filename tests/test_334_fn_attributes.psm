@@ -7,7 +7,7 @@
 // them, and none is a marker because none is in a run of words ending in `fn`.
 
 import std.io
-import std.vec
+import std.core.vec
 
 inline(always) fn square(x: Int) -> Int { return x * x }
 

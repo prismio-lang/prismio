@@ -5,7 +5,7 @@
 // it did, and a four-element one 0.80x.
 
 import std.io
-import std.vec
+import std.core.vec
 
 fn fail(what: String) -> Int {
     print("FAIL: ")

@@ -2,7 +2,7 @@
 // A move in one arm still reaches the code after the `if` when that arm falls
 // through, so using the value there is rejected. Exclusive branches make the other
 // arm see the value whole; they do not make the join forget the move.
-import std.vec
+import std.core.vec
 
 struct Node {
     value: Int

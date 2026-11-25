@@ -1,10 +1,10 @@
 // An array answers `length` and the four searches (docs/COLLECTION_METHODS_PLAN.md,
 // 1.1 d). Its length is in its type, so `a.length` is the literal `N` and
-// `a.contains(x)` is `contains(a, N, x)` -- the `[T]` overloads in std/vec.psm,
+// `a.contains(x)` is `contains(a, N, x)` -- the `[T]` overloads in std/core/vec.psm,
 // which a parameter's owner calls by hand with the length they carry beside it.
 
 import std.io
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

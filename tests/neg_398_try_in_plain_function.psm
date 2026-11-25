@@ -1,5 +1,5 @@
 // expect-error: the function must return a `Result`
-import std.option
+import std.core.option
 import std.string
 // `?` on a `Result` hands the error out of the function, so the function has to be able to carry it.
 fn parse(s: String) -> Result<Int, String> { return Result.Ok(1) }

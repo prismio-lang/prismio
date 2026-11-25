@@ -1,6 +1,6 @@
 import common
-import std.vec
-import std.map
+import std.core.vec
+import std.core.map
 import std.math
 import std.string
 

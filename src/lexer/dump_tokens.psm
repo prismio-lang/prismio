@@ -21,7 +21,7 @@ import ast.types
 import ast.float_width
 import std.string
 import std.io
-import std.vec
+import std.core.vec
 import common.diag_codes
 
 private fn dumpQuoted(text: String) -> String {

@@ -1,7 +1,7 @@
 // expect-error: Report does not implement `Copy`
 // A map stores a copy of every value and hands copies back, so `V` is bound by `Copy`
 // as `K` is. A struct that owns a String writes the impl (tests/test_map_owned.psm).
-import std.map
+import std.core.map
 import std.string
 
 public struct Report { title: String, pages: Int }

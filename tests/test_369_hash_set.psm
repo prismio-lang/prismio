@@ -9,10 +9,10 @@
 // 4. Removal across growth, across the in-place rebuild a quarter of tombstones
 //    triggers, and with every key in one bucket.
 
-import std.copy
+import std.core.copy
 import std.io
-import std.key
-import std.map
+import std.core.key
+import std.core.map
 import std.string
 
 // Every key hashes to one bucket, so each key's probe passes every key inserted

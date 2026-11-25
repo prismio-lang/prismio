@@ -10,7 +10,7 @@ import ast.lang_marks
 import ast.int_width
 import common.diagnostics
 import std.string
-import std.option
+import std.core.option
 import common.diag_codes
 
 impl Parser {

@@ -1,9 +1,9 @@
 // std.term styles work on anything with a `Display`, not only on a String: the
 // value is shown, then styled, and the result is what styling that text gives.
 
-import std.display
+import std.fmt.display
 import std.io
-import std.option
+import std.core.option
 import std.string
 import std.term
 

@@ -1,6 +1,6 @@
 // JSON: reading a document, and writing one.
 //
-//     import std.json
+//     import std.encoding.json
 //
 //     let doc = parseJson("{\"method\": \"initialize\", \"params\": {\"processId\": 4242}}")
 //     if (doc.ok == false) { println(doc.error) }
@@ -28,9 +28,9 @@
 // no leading zeros. Nesting deeper than 256 is refused rather than recursed into.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 enum JsonKind {
     Null,

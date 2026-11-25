@@ -17,14 +17,14 @@
 //    second `readSome` after the child closes its end returns "", and `tryWait` finds the
 //    status. `kill` then ends a child that never speaks, and `tryWait` reaps it.
 
-import std.input
+import std.io.input
 import std.io
-import std.option
-import std.poll
+import std.core.option
+import std.io.poll
 import std.process
 import std.string
 import std.time
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

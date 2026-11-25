@@ -8,7 +8,7 @@
 // spelling reads 0 violations too.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
 
 fn findLiteral(key: String) -> String? {

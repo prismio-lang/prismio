@@ -85,7 +85,7 @@ private fn overlayKey(path: String) -> String {
 }
 
 // `check --module`: the name the entry file is known by when it is a module
-// checked on its own -- `std.map` for std/map.psm -- which is what gives it its
+// checked on its own -- `std.core.map` for std/core/map.psm -- which is what gives it its
 // package's access to that package's internals. "" for a program.
 let mut entryModuleName = ""
 
@@ -650,7 +650,7 @@ private fn refuseImportTier(site: ASTNode, moduleName: String, flags: Int, fromL
 
 // An entry of `import {a, b} from dir` names a file, never a declaration
 // (parseImportGroup marks it with `i2`). Refused here because only resolution
-// can see the difference: `import {Option} from std.option` would otherwise
+// can see the difference: `import {Option} from std.core.option` would otherwise
 // reach mergeNamedModule's selective-import fallback and quietly select a name.
 // An entry that names nothing at all falls through to P1001's "no such file".
 // Answers whether it refused, like refuseImportTier.
@@ -666,6 +666,48 @@ private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
     diag_note("select a declaration with its own import: `import ".concat(stmt.s1, "`"))
     diag_note_dropped_everything()
     return true
+}
+
+// The module paths the library had before 0.3, each followed by where it is now. An import of an old
+// path reads the new one and warns. Temporary: the table goes in the release after.
+private fn renamedModules() -> String {
+    return "|std.input std.io.input|std.poll std.io.poll|std.display std.fmt.display|".concat(
+        "std.number_text std.fmt.number|std.json std.encoding.json|std.option std.core.option|",
+        "std.tuple std.core.tuple|std.eq std.core.eq|std.ord std.core.ord|std.iter std.core.iter|",
+        "std.copy std.core.copy|std.default std.core.default|std.key std.core.key|std.vec std.core.vec|",
+        "std.map std.core.map|std.raw std.sys.raw|std.asm std.sys.asm|std.port std.sys.port|",
+        "std.syscall std.sys.syscall|std.errno std.sys.errno|")
+}
+
+// Where `moduleName`, or the module a selective import names a declaration of, is now; "" when it
+// has not moved.
+private fn renamedModule(moduleName: String) -> String {
+    if (moduleName.startsWith("std.") == false) { return "".clone() }
+    let table = renamedModules()
+    let mut old = moduleName.clone()
+    let mut rest = "".clone()
+    loop {
+        let at = table.indexOf("|".concat(old, " "))
+        if (at >= 0) {
+            let start = at + old.length + 2
+            let end = table.indexOf("|", start)
+            return table.substring(start, end - start).concat(rest)
+        }
+        let cut = old.lastIndexOf(".")
+        if (cut <= 3) { return "".clone() }
+        rest = old.substring(cut, old.length - cut).concat(rest)
+        old = old.substring(0, cut)
+    }
+}
+
+// An import of a path the library had before: read as the path it has now, with a warning.
+private fn followRename(stmt: ASTNode) {
+    let now = renamedModule(stmt.s1)
+    if (now.equals("")) { return }
+    diag_warning_at_code(DIAG_DRIVER_MODULE_RENAMED, stmt.file, stmt.line, stmt.col, stmt.len,
+        diagQuote(stmt.s1).concat(" is now ", diagQuote(now)))
+    diag_note("the old path is removed in the next release")
+    stmt.s1 = now
 }
 
 // A module whose path has a segment that begins with `_` is sealed: only modules under that
@@ -734,6 +776,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
         if (stmt.kind == NodeKind.IMPORT_STATEMENT and resolveLangImport(stmt) == false) {
             // Reported; nothing to merge.
         } else if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
+            followRename(stmt)
             if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
             } else if (refuseGroupDeclaration(stmt, baseDir) == false) {
@@ -766,7 +809,7 @@ public fn libraryRoot() -> String {
     return "".clone()
 }
 
-// Where a module checked or emitted on its own (`--module std.map` on `std/map.psm`) finds its
+// Where a module checked or emitted on its own (`--module std.core.map` on `std/core/map.psm`) finds its
 // siblings: its own tree, the directory above the entry's module path. A library module is edited
 // where its source is, so its imports must see that source and not the copy beside the compiler.
 let mut entryTreeDirectory = ""
@@ -865,7 +908,7 @@ private fn resolvePackageDirectory(baseDir: String, packageName: String) -> Stri
     return library
 }
 
-// Where `import std.map` reads from.
+// Where `import std.core.map` reads from.
 //
 // An ordinary import is relative to the source root, and that is right for an
 // application's own modules. `std.*` is the library that ships with the compiler, so a

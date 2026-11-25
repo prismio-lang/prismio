@@ -37,11 +37,11 @@
 // a trap that belongs behind a wrapper, not in a doc comment nobody reads at the
 // call site.
 
-import std.iter
-import std.option
+import std.core.iter
+import std.core.option
 import std.string
 import std.time
-import std.vec
+import std.core.vec
 
 internal extern fn file_exists(path: String borrow) -> Int
 internal extern fn read_file(path: String borrow) -> String produce(rt_free)

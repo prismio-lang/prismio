@@ -4,7 +4,7 @@
 // `str_slice` whose whole purpose was avoiding a `strlen` that a fat String no
 // longer performs -- `strSubstring` reads the carried length and is O(1)-bounded.
 import std.string
-import std.option
+import std.core.option
 
 // **Renamed, and the rename is the point.** These were `isAlpha` and `isAlnum`,
 // which was wrong twice over: `_` is not alphabetic, and `std.string` now spells

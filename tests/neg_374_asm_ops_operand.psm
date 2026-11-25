@@ -1,6 +1,6 @@
 // expect-error: an assembly operand is an integer or a pointer, and this is String
 
-import std.asm
+import std.sys.asm
 
 fn main() -> Int {
     asmOps("nop", "", "text")

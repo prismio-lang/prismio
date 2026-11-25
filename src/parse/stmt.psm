@@ -7,7 +7,7 @@ import ast.nodes
 import common.diagnostics
 import common.target
 import std.string
-import std.option
+import std.core.option
 import common.diag_codes
 
 impl Parser {

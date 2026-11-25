@@ -10,7 +10,7 @@
 //
 // **The floats are overloads,** because there are four of them and no more.
 //
-// Printing either needs `import std.number_text`: a call into a module is allowed only
+// Printing either needs `import std.fmt.number`: a call into a module is allowed only
 // from a file that imports it, and this is a module a program imports only if it uses
 // one of these types. (The overloads for the four floats belong in std.io and
 // std.string beside `Float`'s, and move there once the bootstrap seed can parse the
@@ -28,7 +28,7 @@
 
 import std.io
 import std.string
-import std.float_text
+import std._fmt.float
 
 // `value` is an integer of `bits` bits, signed or not. `bits` and `signed` are what
 // sema knows of `T` and the generic cannot ask.
@@ -104,7 +104,7 @@ private fn decimalFromDigits(inout digits: Vec<U32>, negative: Bool) -> String {
 //
 // **The fewest digits that read back as the same number *in its own type*.** `Float`
 // prints with the fewest of up to fifteen that read back as the same double
-// (std/float_text.psm). An `F32` widened to a double is a number with a longer
+// (std/_fmt/float.psm). An `F32` widened to a double is a number with a longer
 // expansion than anyone wrote -- 0.1 as an `F32` is 0.10000000149011612 -- so printing
 // it as a double would show digits the type never had. Instead the search is run
 // against `T`: take the digits one at a time, read each rounding back as a double,

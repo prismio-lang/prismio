@@ -1,4 +1,4 @@
-// cString("literal") from std.raw: the `const char *` of a string literal.
+// cString("literal") from std.sys.raw: the `const char *` of a string literal.
 //
 // A pointer to read-only, NUL-terminated data that lives as long as the program, for a C interface
 // that holds a name. Checked here with C's own strlen and a byte read: the pointer's bytes are the
@@ -6,7 +6,7 @@
 
 import std.io
 import std.mem
-import std.raw
+import std.sys.raw
 import std.string
 
 extern fn strlen(text: Ptr) -> Usize

@@ -7,7 +7,7 @@
 // decomposed (`e` and U+0301) and read precomposed (U+00E9).
 
 import std.io
-import std.display
+import std.fmt.display
 
 struct Точка {
     x: Int,

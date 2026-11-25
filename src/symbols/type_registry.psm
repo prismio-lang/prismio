@@ -12,11 +12,11 @@
 // asks in C strings and keeps the answers.
 
 import common.c_text
-import std.map
+import std.core.map
 import std.mem
-import std.raw
+import std.sys.raw
 import std.string
-import std.vec
+import std.core.vec
 import symbols.names
 import aifcore.layout_search
 

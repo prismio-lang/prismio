@@ -2,8 +2,8 @@
 // string and the operand conversions are what the compiler decides, and the instructions are
 // the assembler's. Not run: it names AArch64 registers.
 
-import std.asm
-import std.raw
+import std.sys.asm
+import std.sys.raw
 
 export fn add_two(a: U64, b: U64) -> U64 {
     return asmOpsOut("add $0, $1, $2", "", a, b)

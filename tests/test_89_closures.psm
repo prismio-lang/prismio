@@ -15,9 +15,9 @@
 
 import std.io
 import std.string
-import std.vec
-import std.ord
-import std.copy
+import std.core.vec
+import std.core.ord
+import std.core.copy
 
 fn applyTwice<F>(f: F, x: Int) -> Int {
     return f(f(x))

@@ -5154,7 +5154,7 @@ void ir_vtable_end(const char *name) {
 }
 
 // The address of a vtable, as a value. The second half of a trait object.
-// The address of a function, as a pointer value: `functionAddress("handler")` in std.raw.
+// The address of a function, as a pointer value: `functionAddress("handler")` in std.sys.raw.
 //
 // The function may not exist yet. Bodies are emitted in a second pass, and a call can
 // precede its definition because the backend synthesises the declaration from the call's
@@ -8430,7 +8430,7 @@ static void mark_library_interface_functions(LLVMModuleRef program,
 // `io_stdin_*` -- and the runtime module defines them too. Two definitions of
 // one name do not link: "symbol multiply defined", and the workload silently
 // fell back to the static profile. Every workload importing std.fs or
-// std.process did, and std.input would have made it every one reading input.
+// std.process did, and std.io.input would have made it every one reading input.
 //
 // The stub has to win. `available_externally` is the linkage that says "this
 // body is a copy of one defined elsewhere", so the linker keeps the program's
@@ -8856,7 +8856,7 @@ static int link_library_modules_lazy(LLVMContextRef ctx, LLVMModuleRef dm,
 // **It used to run the backend's own in-memory module**, which is the program
 // and nothing else. A build merges each imported `.plib`'s non-generic bitcode
 // into that module before it optimises; the JIT did not, so a program using
-// `std.map` failed with `Symbols not found: [ _mapInitialCapacity__Void, ... ]`
+// `std.core.map` failed with `Symbols not found: [ _mapInitialCapacity__Void, ... ]`
 // -- every standard-library function that is compiled once and shipped rather
 // than instantiated in the program. Reading the merged file is also what keeps
 // `--jit` off the emission path: codegen does not know the JIT exists.

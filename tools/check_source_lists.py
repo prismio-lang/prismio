@@ -152,7 +152,7 @@ def unicode_table_problems():
 
 
 def syscall_table_problems():
-    """std/syscall.psm is generated from the kernels' headers (tools/gen_syscalls.py). Checked
+    """std/sys/syscall.psm is generated from the kernels' headers (tools/gen_syscalls.py). Checked
     only where those headers are installed: a machine with no NDK or macOS SDK skips it."""
     import subprocess
     result = subprocess.run([sys.executable, str(TOOLS / "gen_syscalls.py"), "--check"],
@@ -162,7 +162,7 @@ def syscall_table_problems():
     message = (result.stderr or result.stdout).strip()
     if message.startswith("gen_syscalls: no "):
         return []
-    return ["std/syscall.psm vs tools/gen_syscalls.py\n     " + message]
+    return ["std/sys/syscall.psm vs tools/gen_syscalls.py\n     " + message]
 
 
 def main() -> int:

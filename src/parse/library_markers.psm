@@ -20,7 +20,7 @@ import common.diagnostics
 import common.source_files
 import common.diag_codes
 import std.string
-import std.option
+import std.core.option
 
 private fn langMarkable(kind: NodeKind) -> Bool {
     return kind == NodeKind.FUNCTION or kind == NodeKind.STRUCT_DECL or kind == NodeKind.ENUM_DECL

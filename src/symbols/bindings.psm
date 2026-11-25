@@ -14,9 +14,9 @@
 
 import common.diagnostics
 import std.io
-import std.option
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 import symbols.names
 
 const BINDING_MAX_SCOPES = 1024

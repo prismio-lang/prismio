@@ -1,7 +1,7 @@
 // The width is in the name, and the value must be exactly that width: a U32 handed
 // to a U8 store is refused rather than truncated.
 
-import std.raw
+import std.sys.raw
 fn main() -> Int {
     let wide: U32 = 300
     volatileStoreU8(0x1000, wide)

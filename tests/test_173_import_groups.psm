@@ -8,7 +8,7 @@
 import {io, string, vec} from std
 import {alpha, gamma as g} from visibility
 import * from visibility
-import std.option.Result
+import std.core.option.Result
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

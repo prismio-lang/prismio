@@ -6,7 +6,7 @@
 // the offsets C gives them.
 
 import std.io
-import std.raw
+import std.sys.raw
 import std.string
 
 repr(C) struct Line {

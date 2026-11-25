@@ -1,4 +1,4 @@
-// `T?` and Result<T, E> from std.option -- REQUIREMENTS 14.
+// `T?` and Result<T, E> from std.core.option -- REQUIREMENTS 14.
 //
 // `Result` is a generic enum with payloads, so it exercises both features at once:
 // the instantiation has to happen before the desugaring, and the shadow the
@@ -6,7 +6,7 @@
 // optional half is `unwrapOr` for a number and for a String, and `??`.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
 
 

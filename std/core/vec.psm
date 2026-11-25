@@ -18,15 +18,15 @@
 // at length: a short name here is claimed for every program that imports this
 // file.
 module prelude freestanding(runtime)
-import std.ord
-import std.copy
-import std.eq
-import std.option
+import std.core.ord
+import std.core.copy
+import std.core.eq
+import std.core.option
 
 // The lowering target for a list literal. `[a, b, c]` written where a `Vec<T>`
 // is expected becomes `vecOf(a, b, c)` -- the same rewrite `s[i]` gets for
 // `charAt`, and it carries the same obligation: a program that writes a list
-// literal needs `import std.vec`, and sema says so when it does not.
+// literal needs `import std.core.vec`, and sema says so when it does not.
 //
 // **One overload per arity, because there are no varargs**, exactly as
 // `String.concat` has 2..6 and for the same reason. Twelve is the cap; past it
@@ -41,7 +41,7 @@ import std.option
 //
 // **`T: Copy` and `copyOf`, for the reason `HashMap` needs them**: a parameter is a
 // borrow, so `list_push(xs, a)` on a parameter is *"cannot move out of borrowed
-// value `a`"*. std/copy.psm's header has the whole argument, including why
+// value `a`"*. std/core/copy.psm's header has the whole argument, including why
 // `sink` does not fix it. The cost is that a list literal is available for the
 // element types that implement `Copy`, which is every scalar, `String`, and any
 // struct that writes the impl.

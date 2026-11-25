@@ -16,7 +16,7 @@
 // `v[i] = v[j]` on a Vec of owning elements is not here: it is admitted, and the
 // element becomes counted (test_157).
 
-import std.vec
+import std.core.vec
 
 struct Cell {
     x: Int

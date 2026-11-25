@@ -1,5 +1,5 @@
 import common
-import std.vec
+import std.core.vec
 
 // Four benchmarks over one data structure, so a gap in `graph_churn_full` can be
 // traced to the phase that causes it instead of argued about.

@@ -98,6 +98,9 @@ tests/*
 !tests/*/
 tests/*/*
 !tests/*/*.psm
+# The package and sealing fixtures nest further (tests/sealed/pkg/_hidden/).
+!tests/sealed/**/
+!tests/sealed/**/*.psm
 # The C half of run_produce_deallocator_test's fixture: a library with its own deallocator.
 !tests/produce_deallocators/*.c
 

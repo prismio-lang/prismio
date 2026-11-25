@@ -724,7 +724,7 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     // asks. `__builtin_string_len` was here alone and the others are the same
     // statement.
     //
-    // Their absence was not a missed optimisation, it was `std.map` losing its
+    // Their absence was not a missed optimisation, it was `std.core.map` losing its
     // guard entirely: `hash` for String reaches `__builtin_string_byte_at` and
     // `eq` for String reaches `__builtin_string_eq`, verdicts are marked by
     // source name so one unsafe overload poisons the name, and `mapProbe` calls

@@ -3,7 +3,7 @@
 // ../rust/hardware.rs, written with the compiler's own builtins.
 
 import std.mem
-import std.raw
+import std.sys.raw
 let WORD: Usize = 0x44100000
 let LOCK: Usize= 0x44100010
 let COUNTER: Usize = 0x44100020

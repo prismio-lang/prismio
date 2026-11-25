@@ -8,8 +8,8 @@
 // nothing else that could supply the type. Two to four elements; past that, a struct with
 // names says more than a position does.
 module prelude freestanding(runtime)
-import std.copy
-import std.eq
+import std.core.copy
+import std.core.eq
 
 lang("tuple2") public struct Tuple2<A, B> { public _0: A, public _1: B }
 lang("tuple3") public struct Tuple3<A, B, C> { public _0: A, public _1: B, public _2: C }

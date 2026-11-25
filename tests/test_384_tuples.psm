@@ -1,6 +1,6 @@
 // Tuples: `(Int, String)`, `(1, "a")`, `t.0`, `let (a, b) = t`. A tuple is a generic struct with numbered
-// fields (std/tuple.psm) and the parser writes the spellings that mean it (parse/tuples.psm), so what is
-// asserted here is that it behaves as that struct does -- and that the file never imported std.tuple.
+// fields (std/core/tuple.psm) and the parser writes the spellings that mean it (parse/tuples.psm), so what is
+// asserted here is that it behaves as that struct does -- and that the file never imported std.core.tuple.
 //
 //   return and bind    `-> (Int, Int)`, `let (q, r) = f()`, `let t = f()` then `t.0`
 //   places             a tuple in a struct field, a Vec, a parameter and a `sink` parameter; `t.0 = 7`
@@ -10,7 +10,7 @@
 
 import std.io
 import std.string
-import std.vec
+import std.core.vec
 
 struct Edge { ends: (Int, Int), label: (String, Int) }
 struct Point { x: Int, y: Int }

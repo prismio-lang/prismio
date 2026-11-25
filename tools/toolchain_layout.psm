@@ -18,11 +18,11 @@
 import std.io
 import std.fs
 import std.string
-import std.vec
+import std.core.vec
 import std.process
 import std.platform
-import std.json
-import std.option
+import std.encoding.json
+import std.core.option
 
 // Compiled into every program a build links. tools/check_source_lists.py holds it to
 // prismio_toolchain_files[] in runtime/build_driver.c.

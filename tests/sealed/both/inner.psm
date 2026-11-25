@@ -1,0 +1,1 @@
+public fn bothInner() -> Int { return 2 }

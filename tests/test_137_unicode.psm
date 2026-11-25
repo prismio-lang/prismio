@@ -12,7 +12,6 @@
 import std.io
 import std.string
 import std.unicode
-import std.unicode_tables
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

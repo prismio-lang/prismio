@@ -10,8 +10,8 @@
 // Each word is followed by the position that gives it meaning, in the order the language
 // reference reads them. The two arrays are the same length and are read in step.
 
-import std.map
-import std.vec
+import std.core.map
+import std.core.vec
 
 let vocabularyContextualWords = [
     "public", "private", "internal",

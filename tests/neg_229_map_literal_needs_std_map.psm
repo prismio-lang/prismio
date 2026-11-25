@@ -1,4 +1,4 @@
-// expect-error: a map literal needs `import std.map`
+// expect-error: a map literal needs `import std.core.map`
 import std.io
 
 fn main() -> Int {

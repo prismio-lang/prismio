@@ -43,7 +43,7 @@ import lexer.token
 import ast.types
 import common.diagnostics
 import std.string
-import std.vec
+import std.core.vec
 
 // --- the types a constant can have ------------------------------------------------
 

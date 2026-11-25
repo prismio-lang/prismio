@@ -1,7 +1,7 @@
 // expect-error: an array cannot be a type argument
 // The same as neg_198 with the type argument inferred: `T` solved from an array
 // argument is the pointer into this frame, and `Ok` would carry it out.
-import std.option
+import std.core.option
 
 fn wrap<T>(x: T) -> Result<T, String> {
     return Result<T, String>.Ok(x)

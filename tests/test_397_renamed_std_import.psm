@@ -1,0 +1,17 @@
+// The module paths `std` had before 0.3 still resolve, each to where the module is now, with a
+// warning (P1135; checked by the module_artifacts run).
+import std.io
+import std.option
+import std.vec
+from std import {string, map}
+
+fn main() -> Int {
+    let mut counts: HashMap<String, Int> = {}
+    let words: Vec<String> = ["a", "b", "a"]
+    for word in words {
+        counts[word.clone()] = (counts.get(word) ?? 0) + 1
+    }
+    if ((counts.get("a") ?? 0) != 2) { return 1 }
+    println("PASS: old std paths resolve")
+    return 0
+}

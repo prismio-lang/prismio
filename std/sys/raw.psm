@@ -2,7 +2,7 @@
 // memory-mapped registers, atomics on a 32-bit word, a memory barrier, the
 // conversions between a pointer and its address, and a Float's bit pattern.
 //
-//     import std.raw
+//     import std.sys.raw
 //
 //     volatileStoreU32(0x09000000, 65)         // a byte to a UART's data register
 //     let word = 0x44100000

@@ -1,6 +1,6 @@
 // Probed by test_runner.py's range_direction; not a fixture of its own.
 import std.io
-import std.vec
+import std.core.vec
 
 fn mark(i: Int) { print(i) }
 

@@ -8,12 +8,12 @@
 // the same address, can never match a later proof.
 
 import std.io
-import std.map
-import std.option
+import std.core.map
+import std.core.option
 import std.process
-import std.raw
+import std.sys.raw
 import std.string
-import std.vec
+import std.core.vec
 import symbols.names
 
 // Functions the flat-List guard may look through.

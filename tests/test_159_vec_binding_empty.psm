@@ -4,7 +4,7 @@
 // `Vec<T>?` is not given one: its absent value is `none`.
 
 import std.io
-import std.vec
+import std.core.vec
 import std.string
 
 struct Item {

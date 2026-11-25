@@ -399,7 +399,7 @@ fn main() -> Int {
 
 ```prismio
 // p3
-import std.vec
+import std.core.vec
 import std.string
 
 fn main() -> Int {

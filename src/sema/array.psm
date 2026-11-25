@@ -20,7 +20,7 @@ import common.diagnostics
 import std.string
 
 // The methods whose array overload takes the length as its second argument, in
-// std/vec.psm: the reads, the queries that take a closure, and the in-place
+// std/core/vec.psm: the reads, the queries that take a closure, and the in-place
 // changes. The changing ones need an array the code may change (a `let mut`
 // binding or an `inout` parameter), as the call they become requires.
 private fn semaArrayTakesCount(name: String) -> Bool {
@@ -78,7 +78,7 @@ private fn semaArrayUnknownLength(expr: ASTNode, receiver: ASTNode, name: String
 
 // What to say beside an error when an array was asked for a Vec's method: what the
 // receiver is, and how to write one that grows. Shared by the resolution failure
-// (a function in std/vec.psm that takes a Vec) and by the names the compiler
+// (a function in std/core/vec.psm that takes a Vec) and by the names the compiler
 // builds for a Vec itself, which have no function to fail to resolve.
 internal fn semaArrayNoteVecMethod(receiver: ASTNode, t: TypeInfo, name: String) {
     if (t.kind != TypeKind.ARRAY or nodeExists(t.child) == false) { return }

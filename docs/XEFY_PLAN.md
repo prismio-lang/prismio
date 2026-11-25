@@ -406,7 +406,7 @@ impl Composer {
     fn remember<T, F: Fn() -> T>(self, init: F) -> T { return init() }
 }
 
-import std.raw
+import std.sys.raw
 export fn onFrame(w: Int, h: Int) { }
 fn main() -> Int {
     let a: Usize = functionAddress("onFrame")
@@ -419,7 +419,7 @@ The interim shape described in *What Xefy does until then*, which runs and is cl
 ```prismio
 import std.io
 import std.string
-import std.vec
+import std.core.vec
 
 enum Node { Text { label: String, parent: Int }, Box { parent: Int } }
 struct Scope { ints: Vec<Int>, nodes: Vec<Node>, parent: Int, clicked: Bool }
@@ -452,7 +452,7 @@ fn App(scope: Scope) {
 
 ```prismio
 // X40
-import std.vec
+import std.core.vec
 let mut ints: Vec<Int> = []
 
 // X41

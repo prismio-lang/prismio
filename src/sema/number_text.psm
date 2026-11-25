@@ -6,13 +6,13 @@
 // there is a type per width. So the call is rewritten, once, to something that already
 // exists -- the way `x as String` becomes `x.toString()` (checker.psm) -- and the
 // rewrite is decided by what the argument's type says and nothing else. (The floats
-// that are not `Float` have ordinary overloads, std/number_text.psm.)
+// that are not `Float` have ordinary overloads, std/fmt/number.psm.)
 //
 //   * An integer of up to 64 bits converts to `I64` or `U64` by the cast the program
 //     could have written, and the call that follows is the ordinary overload. Nothing
 //     needs importing.
 //   * A wider integer has no machine type to convert to, so the call becomes
-//     `intText(value, bits, signed)` (std/number_text.psm), which takes the value apart
+//     `intText(value, bits, signed)` (std/fmt/number.psm), which takes the value apart
 //     with shifts.
 //
 // The value is an argument of the rewritten call and so is evaluated once, which is

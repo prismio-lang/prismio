@@ -12,7 +12,7 @@
 // **Only for an enum the program passes as a type argument** -- `HashMap<Color, V>`,
 // `mapNew<Color, V>()`. That is where a bound is asked of an enum, and a derived
 // impl for every enum would put three unused functions into every program that
-// merely imports `std.key`: they are not pruned, and the output of programs that
+// merely imports `std.core.key`: they are not pruned, and the output of programs that
 // never use them would change.
 // Generic enums and enums with payloads are left alone: a payload enum owns
 // values, and no integer meaning applies.

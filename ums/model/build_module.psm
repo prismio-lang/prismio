@@ -51,7 +51,7 @@ private fn umsVersionPart(version: String, index: Int) -> Int {
 
 public fn umsBuildModuleSource(project: UmsProjectModel) -> String {
     let metadata = project.metadata
-    let mut source = "// build.ums, as code. Generated when `import build` is read; not a file.\nimport std.vec\n\n"
+    let mut source = "// build.ums, as code. Generated when `import build` is read; not a file.\nimport std.core.vec\n\n"
     source = source.concat("public let BUILD_NAME = ", umsQuoted(metadata.name), "\n")
     source = source.concat("public let BUILD_VERSION = ", umsQuoted(metadata.version), "\n")
     source = source.concat("public let BUILD_VERSION_MAJOR = ",

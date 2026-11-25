@@ -15,7 +15,7 @@
 
 import std.fs
 import std.string
-import std.vec
+import std.core.vec
 import common.native
 
 // The directory the library's modules are read from, `std/` of a source tree or `stdlib/` of a
@@ -54,7 +54,7 @@ public fn libraryUseDirectory(directory: String, offerImports: Bool) {
 
 // The library modules that declare a public free function `name`, in module order; empty when
 // none does or no library is known. The modules a program reaches into the machine through
-// (`std.raw` and its kind) are never offered: importing one is a decision, not a fix.
+// (`std.sys.raw` and its kind) are never offered: importing one is a decision, not a fix.
 public fn libraryModulesDeclaring(name: String) -> Vec<String> {
     let mut found: Vec<String> = []
     if (libraryOffersImports == false) { return found }
@@ -72,9 +72,9 @@ public fn libraryModulesDeclaring(name: String) -> Vec<String> {
 }
 
 // The one module of `candidates` that each of the others imports, or "". `print` is declared in
-// `std.io` and again, for more types, in `std.display` and `std.number_text`; both import `std.io`,
+// `std.io` and again, for more types, in `std.fmt.display` and `std.fmt.number`; both import `std.io`,
 // which is the one a program that prints needs. Two modules that know nothing of each other
-// (`std.math` and `std.vec` both have a `min`) have no such answer.
+// (`std.math` and `std.core.vec` both have a `min`) have no such answer.
 public fn libraryBaseModule(candidates: Vec<String>) -> String {
     if (candidates.length == 1) { return candidates[0].clone() }
     let mut base = "".clone()
@@ -101,9 +101,10 @@ private fn libraryModuleImports(module: String, imported: String) -> Bool {
     return false
 }
 
+// `std.sys` is the library's way into the machine: importing a module of it is a decision a program
+// makes, so its functions are never offered as the fix for an unknown name.
 private fn libraryIsLowLevel(module: String) -> Bool {
-    return module.equals("std.raw") or module.equals("std.asm") or module.equals("std.port")
-        or module.equals("std.syscall")
+    return module.startsWith("std.sys.")
 }
 
 private fn libraryList() {

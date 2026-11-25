@@ -9,9 +9,9 @@
 // `isa-debug-exit` device at 0xF4, whose written value becomes the emulator's exit
 // status as (value << 1) | 1.
 
-import std.raw
-import std.asm
-import std.port
+import std.sys.raw
+import std.sys.asm
+import std.sys.port
 
 let MODE = 0
 

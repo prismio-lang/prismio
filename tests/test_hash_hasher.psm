@@ -6,10 +6,10 @@
 // Strings are longer than twelve bytes: a shorter one is stored inline and never reaches the
 // ledger.
 
-import std.copy
+import std.core.copy
 import std.io
-import std.key
-import std.map
+import std.core.key
+import std.core.map
 import std.string
 
 fn fail(message: String) -> Int {

@@ -27,7 +27,7 @@ import aifcore.structure
 import aifcore.tiers
 import ir.context
 import std.string
-import std.vec
+import std.core.vec
 import symbols.names
 
 // Whether a key may hold a value that is no site: a string literal, or static storage, stored into it directly or through

@@ -6,7 +6,7 @@
 // of the same file agree.
 
 import std.string
-import std.vec
+import std.core.vec
 
 public fn isFileUri(uri: String) -> Bool {
     return uri.startsWith("file://")

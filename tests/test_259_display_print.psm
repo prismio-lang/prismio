@@ -1,13 +1,13 @@
 // `print`, `println`, `eprint` and `eprintln` accept anything with an `impl Display`
-// once std.display is imported -- a user's own type, an `Int?`, a `String?` --
+// once std.fmt.display is imported -- a user's own type, an `Int?`, a `String?` --
 // and the multi-argument form goes through the same overloads.
 
-import std.display
+import std.fmt.display
 import std.io
-import std.option
+import std.core.option
 import std.process
 import std.string
-import std.vec
+import std.core.vec
 
 struct Version {
     major: Int,

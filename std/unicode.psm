@@ -18,14 +18,17 @@
 // occupies two and a combining mark none.
 //
 // **Which Unicode.** 18.0.0, and the same version everywhere: every property here
-// comes from std/unicode_tables.psm, generated from the Unicode Character
+// comes from std/_unicode/properties.psm, generated from the Unicode Character
 // Database by tools/generate_unicode_tables.py, which pins the version and the
 // SHA-256 of each source file. Grapheme clusters are UAX #29's extended grapheme
 // clusters, rules GB1 to GB999 without exception, and normalization is UAX #15;
 // tools/unicode_conformance.py checks both against the UCD's own test files.
 module freestanding(runtime)
 import std.string
-import std.unicode_tables
+import std._unicode.properties
+
+// The Unicode version of every property this module reads.
+public fn unicodeVersion() -> String { return unicodeTableVersion() }
 
 // How many terminal columns one scalar occupies: 0, 1 or 2.
 //

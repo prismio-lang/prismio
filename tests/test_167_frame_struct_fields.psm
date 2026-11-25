@@ -16,7 +16,7 @@
 // known leak it carries explained there.
 import std.io
 import std.string
-import std.vec
+import std.core.vec
 
 struct Bag {
     items: Vec<String>,

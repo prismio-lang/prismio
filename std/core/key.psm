@@ -1,13 +1,13 @@
 // `Key` -- what a hash table needs of a type.
 //
 // Hashing and equality stay together because they form one semantic contract:
-// equal keys must hash equal. Copying is separate. `std.map` asks for
+// equal keys must hash equal. Copying is separate. `std.core.map` asks for
 // `K: Key + Copy`, so a type implements storage policy independently from key
 // identity and an impl is responsible only for the methods written inside it.
 //
 // **`eq` rather than `==`.** `String ==` compares pointers and sema rejects it,
 // so a map keyed on String cannot be written in terms of the operator at all.
-// That is the concrete reason `std/map.psm` was an association list that refused
+// That is the concrete reason `std/core/map.psm` was an association list that refused
 // String keys: without a bound, a generic `K` admitted only the operations that
 // typecheck for every type, which was the operator, which was wrong for the one
 // key type everybody wants.
@@ -52,7 +52,7 @@ lang("key") trait Key {
 // **The fold has one pathological family and the table handles it rather than
 // this function.** `i * 65537` puts the same bits in both halves, so folding
 // them cancels: every key lands in bucket 0, and the table degrades to
-// 7,078 probes per lookup. `mapRehash` in std/map.psm measures its own probe
+// 7,078 probes per lookup. `mapRehash` in std/core/map.psm measures its own probe
 // displacement and switches that map to `keyStrengthen` when it is bad, which
 // is Java's tree-bin escape hatch aimed at the hash instead of the chain. That
 // is also a defence this file could not offer before: a *user's* weak

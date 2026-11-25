@@ -6,7 +6,7 @@
 // that has to be checked. A field is the other half. `c.items[0] = x` displaces an element,
 // and `let n = c.items[0]` somewhere up the stack may still be reading it; until now every
 // such store parked the element until the Vec died (a `HashMap`'s two columns were exempt
-// on a promise std/map.psm kept, which the checker trusted by name).
+// on a promise std/core/map.psm kept, which the checker trusted by name).
 //
 // A field is a **closed column** when this holds for every function of the module, and the
 // holding is proved here, not promised:
@@ -42,7 +42,7 @@ import common.source_files
 import std.io
 import std.process
 import std.string
-import std.vec
+import std.core.vec
 import symbols.declarations
 import aifcore.call_results
 import common.lang_items

@@ -2,15 +2,15 @@
 //
 // `found = 5` was wrapped into a present `Int?` and `found = n` was not: the check accepted it
 // and the store wrote the bare value, so the optional read back as 0 or as `none`. The loop
-// that remembers the last match is the usual shape, and std.json's `member` was the first
+// that remembers the last match is the usual shape, and std.encoding.json's `member` was the first
 // thing to meet it.
 //
 // Every place a value can be stored: a local, a field, an element, and the result of a call;
 // and `none` and an optional on the right, which are not wrapped again.
 
 import std.io
-import std.option
-import std.vec
+import std.core.option
+import std.core.vec
 
 struct Slot { value: Int?, wide: I64? }
 

@@ -93,7 +93,7 @@ struct Parser {
     internal spillHead: Ptr, // ASTNode, or null
     internal spillTail: Ptr, // ASTNode, or null
     internal destructureSeq: Int,
-    // The `import std.tuple` a tuple spelling needs, built at the first one and added to
+    // The `import std.core.tuple` a tuple spelling needs, built at the first one and added to
     // the module's declarations when the file has been read (parse/tuples.psm).
     internal tupleImport: Ptr, // ASTNode, or null
     // `if` and `match` as expressions (parse/value_exprs.psm): the statements one needs

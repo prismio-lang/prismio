@@ -8,7 +8,7 @@
 // `inline`, and none of them is a marker because none is directly before `fn`.
 
 import std.io
-import std.vec
+import std.core.vec
 
 inline fn square(x: Int) -> Int { return x * x }
 

@@ -5,7 +5,7 @@
 // byte of alignment, and a `Ptr<U64>` made from it would promise eight nothing checked.
 // `castAligned` checks the address; `castUnchecked` is the caller's word; a cast to a looser
 // pointee, or from the opaque `Ptr`, is as the caller says.
-import std.raw
+import std.sys.raw
 
 repr(C) struct Header { magic: U32 }
 packed struct Wire { tag: U8, magic: U32 }

@@ -31,9 +31,9 @@ are a two-stage table of deltas, ICU's code point trie in miniature: two reads
 and no search, 101 KB of source where the four RangeTables were 222 KB. Still
 array literals, still readable: a block of 32 scalars' deltas per row.
 
-  std/unicode_tables.psm            std.unicode: display width, grapheme
+  std/_unicode/properties.psm            std.unicode: display width, grapheme
                                     clusters (UAX #29), normalization (UAX #15)
-  std/unicode_case.psm              std.string: toUpper, toLower, capitalize,
+  std/_unicode/case.psm              std.string: toUpper, toLower, capitalize,
                                     equalsIgnoreCase (Unicode 3.13 default case
                                     conversion and full case folding)
   src/lexer/identifier_tables.psm   the lexer: identifiers (UAX #31) and their
@@ -84,8 +84,8 @@ UCD_FILES = {
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_UCD_DIR = os.path.join(REPO, "build", "unicode", UNICODE_VERSION)
-STD_OUT = "std/unicode_tables.psm"
-CASE_OUT = "std/unicode_case.psm"
+STD_OUT = "std/_unicode/properties.psm"
+CASE_OUT = "std/_unicode/case.psm"
 LEXER_OUT = "src/lexer/identifier_tables.psm"
 
 MAX_SCALAR = 0x10FFFF
@@ -101,7 +101,7 @@ HANGUL_T_COUNT = 28
 # Grapheme_Cluster_Break, Extended_Pictographic and Indic_Conjunct_Break packed
 # into one value per range: GCB + 16 * ExtPict + 32 * InCB. One lookup answers
 # all three questions UAX #29 asks of a scalar. The numbering is emitted as
-# functions in std/unicode_tables.psm, so std/unicode.psm cannot disagree.
+# functions in std/_unicode/properties.psm, so std/unicode.psm cannot disagree.
 GCB_VALUES = ["Other", "CR", "LF", "Control", "Extend", "ZWJ",
               "Regional_Indicator", "Prepend", "SpacingMark",
               "L", "V", "T", "LV", "LVT"]
@@ -624,7 +624,7 @@ def std_tables(src, generator_hash, ucd_dir):
         "module freestanding(runtime)",
         "import std.string",
         "",
-        f"public fn unicodeVersion() -> String {{ return \"{UNICODE_VERSION}\" }}",
+        f"public fn unicodeTableVersion() -> String {{ return \"{UNICODE_VERSION}\" }}",
         "",
     ]
     emit_search(out, "unicodeRangeRow")
@@ -720,7 +720,7 @@ def case_tables(src, generator_hash, ucd_dir):
 
     columns = len(CASE_COLUMNS)
     out += [
-        "// A separate module from std/unicode_tables.psm because std.string imports it:",
+        "// A separate module from std/_unicode/properties.psm because std.string imports it:",
         "// every program that uses a String would otherwise carry the grapheme and",
         "// normalization tables too. It imports nothing.",
         "//",

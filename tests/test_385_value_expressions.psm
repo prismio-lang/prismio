@@ -13,8 +13,8 @@
 
 import std.io
 import std.string
-import std.option
-import std.copy
+import std.core.option
+import std.core.copy
 
 struct P { x: Int, y: Int }
 enum Color { Red, Green, Blue }

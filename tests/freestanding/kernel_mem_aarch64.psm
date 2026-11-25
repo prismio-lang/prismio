@@ -8,7 +8,7 @@
 // returns how many failed.
 
 import std.mem
-import std.raw
+import std.sys.raw
 import std.string
 
 extern let seed: Int

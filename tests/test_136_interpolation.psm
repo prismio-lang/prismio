@@ -8,8 +8,8 @@
 
 import std.io
 import std.string
-import std.display
-import std.option
+import std.fmt.display
+import std.core.option
 
 struct Point { x: Int, y: Int }
 

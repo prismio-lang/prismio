@@ -373,7 +373,7 @@ def main() -> int:
                 die("the packaged toolchain failed its separation checks:\n"
                     + (separated.stdout + separated.stderr))
             runtime = len(list((staged / "lib" / "runtime").glob("*.bc")))
-            stdlib = len(list((staged / "stdlib").glob("*.plib")))
+            stdlib = len(list((staged / "stdlib").rglob("*.plib")))
             return (f"{runtime} runtime bitcode \u00b7 {stdlib} stdlib modules \u00b7 separation ok",
                     [], None)
         stages.run(f"Package {stem}", "toolchain layout", package)

@@ -8,7 +8,7 @@
 
 import std.io
 import std.math
-import std.option
+import std.core.option
 
 // The freestanding benchmark's shape. `best[c]` leaves `c` in [0, 1500], so
 // `c - 1` and the subscript `c - w` cannot wrap, and the loop is versioned on

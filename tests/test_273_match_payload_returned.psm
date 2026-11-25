@@ -18,7 +18,7 @@
 // binding the hoist makes (irHoistBorrowedTemporaries), the other is written out.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
 
 fn fail(message: String) -> Int {

@@ -1,4 +1,4 @@
-// Float text in Prismio (std/float_text.psm): what `toString`, `toString(places)`
+// Float text in Prismio (std/_fmt/float.psm): what `toString`, `toString(places)`
 // and `parseFloat` give, against what the C library gave when the table below was
 // written. Each row is a bit pattern or a text and the answer `snprintf` and
 // `strtod` produced for it, so a change to the digit search, the rounding or the
@@ -21,7 +21,7 @@
 
 import std.io
 import std.string
-import std.raw
+import std.sys.raw
 fn floatOf(bits: U64) -> Float {
     return Float.fromBits(bits)
 }

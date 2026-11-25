@@ -1,0 +1,3 @@
+import sealed.pkg._hidden.secret
+
+public fn reveal() -> Int { return secretValue() + 1 }

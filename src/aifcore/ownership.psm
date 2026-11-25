@@ -20,7 +20,7 @@ from aifcore import {
 }
 
 import ir.context
-import std.raw
+import std.sys.raw
 import std.string
 import symbols.names
 

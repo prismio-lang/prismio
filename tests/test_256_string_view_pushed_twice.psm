@@ -12,9 +12,9 @@
 // `swapRemove` and pushed into another (test_255's neighbours in the probe).
 
 import std.io
-import std.vec
+import std.core.vec
 import std.string
-import std.option
+import std.core.option
 
 fn word(i: Int) -> String {
     return "word-".concat(i.toString(), "-long-enough-to-live-on-the-heap")

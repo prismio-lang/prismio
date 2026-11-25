@@ -1,7 +1,7 @@
 // `HashMap<K, V>` as a hash table, and the key types the association list could not
 // take.
 //
-// The old `std/map.psm` header said String keys "do not instantiate, and that is
+// The old `std/core/map.psm` header said String keys "do not instantiate, and that is
 // the language being consistent rather than this module being weak" -- a generic
 // `K` admitted only the operations that typecheck for every type, which was `==`,
 // and `String ==` compares pointers and is rejected. `K: Key` replaces the
@@ -13,10 +13,10 @@
 // table without its callers changing" has to mean.
 
 import std.io
-import std.map
-import std.key
-import std.copy
-import std.option
+import std.core.map
+import std.core.key
+import std.core.copy
+import std.core.option
 import std.string
 
 struct Point {
@@ -95,7 +95,7 @@ fn main() -> Int {
 
     // A user struct as a key.
     // The value stays scalar: `V` has no bound, so an owned value is a compile
-    // error rather than a leak. See std/map.psm's header for the measurement
+    // error rather than a leak. See std/core/map.psm's header for the measurement
     // behind that.
     let places = mapNew<Point, Int>()
     places.set(Point { x: 1, y: 2 }, 12)

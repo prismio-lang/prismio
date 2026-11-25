@@ -85,9 +85,9 @@
 //
 // See developers.prismio.org/runtime/supported-surface for which C symbols remain and why.
 module freestanding(runtime)
-import std.float_text
-import std.option
-import std.unicode_case
+import std._fmt.float
+import std.core.option
+import std._unicode.case
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -103,7 +103,7 @@ import std.unicode_case
 // because the loop form leaks -- which capped these functions at 150 000
 // characters. The write builtin does not check its upper bound; every use below
 // is immediately after a `str_with_capacity` whose length bounds the loop.
-internal extern fn str_with_capacity(length: Int) -> String produce(rt_free)
+public extern fn str_with_capacity(length: Int) -> String produce(rt_free)
 
 // Optional search accelerators, not part of the irreducible String core.
 // `str_find_byte` delegates a one-byte scan to libc. `str_find_byte_pair` is a
@@ -166,7 +166,7 @@ internal fn strSubstring(s: String, start: Int, length: Int) -> String {
     return __builtin_string_view(s, first, count)
 }
 
-internal fn strFromChar(c: Char) -> String {
+public fn strFromChar(c: Char) -> String {
     // Prismio Strings cannot contain NUL, so a NUL Char maps to empty text.
     if (c == '\0') { return str_with_capacity(0) }
     let out = str_with_capacity(1)
@@ -192,7 +192,7 @@ internal fn strEmpty() -> String {
 // `HashMap<String, V>` stores its keys through this (`copyOf`), and a heap copy of a
 // short key made every successful probe a `memcmp` against the inline key it was
 // looked up with -- 47,992 of them in `word_frequency`.
-internal fn strClone(s: String) -> String {
+public fn strClone(s: String) -> String {
     let n = __builtin_string_len(s)
     if (n <= 12) { return __builtin_string_inline(s, 0, n) }
     let out = str_with_capacity(n)
@@ -857,7 +857,7 @@ internal fn strPadEnd(s: String, width: Int, pad: Char) -> String {
 // **Unicode's full case mapping, locale-independent** (The Unicode Standard,
 // 3.13): `ß` uppercases to `SS`, `ﬁ` to `FI`, `İ` lowercases to `i` and a
 // combining dot, and a Greek capital sigma lowercases to `ς` at the end of a word
-// and `σ` elsewhere. The tables are std/unicode_case.psm, generated from the
+// and `σ` elsewhere. The tables are std/_unicode/case.psm, generated from the
 // pinned UCD. Turkish and Lithuanian rules are not applied: they depend on the
 // text's language, which a String does not carry.
 //
@@ -1484,7 +1484,7 @@ private fn strTwoDigitTable() -> String {
     return "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
 }
 
-internal fn strFromUnsigned(value: U64) -> String {
+public fn strFromUnsigned(value: U64) -> String {
     let digits = strDigitCount(value)
     let out = str_with_capacity(digits)
     let table = strTwoDigitTable()
@@ -1509,7 +1509,7 @@ internal fn strFromUnsigned(value: U64) -> String {
 // Decimal text for an Int. Every 32-bit result is at most eleven bytes including
 // the sign, so the compiler formats it directly into String's twelve-byte inline
 // payload. U64 keeps the allocating builder above because it may need 20 bytes.
-internal fn strFromInt(value: Int) -> String {
+public fn strFromInt(value: Int) -> String {
     return __builtin_string_from_int(value)
 }
 
@@ -1923,7 +1923,7 @@ internal fn strAnyChars<F>(s: String, keep: F) -> Bool {
 // ---------------------------------------------------------------------------
 
 // `none`, as an owned String: Display's text for an absent `T?`.
-internal fn strFromNone() -> String {
+public fn strFromNone() -> String {
     let text = str_with_capacity(4)
     __builtin_string_put_byte(text, 0, 'n')
     __builtin_string_put_byte(text, 1, 'o')
@@ -1932,7 +1932,7 @@ internal fn strFromNone() -> String {
     return text
 }
 
-internal fn strFromBool(value: Bool) -> String {
+public fn strFromBool(value: Bool) -> String {
     if (value) {
         let yes = str_with_capacity(4)
         __builtin_string_put_byte(yes, 0, 't')
@@ -1962,7 +1962,7 @@ internal fn strParseBool(s: String) -> Bool? {
 // **Reads back what `strFromFloat` writes, and more: whatever `strtod` reads.**
 // The result is the double nearest the text, ties to even, for every input --
 // `"1e+21"`, which is what `strFromFloat` produces for a large value, a
-// hexadecimal `"0x1p-3"`, `"inf"` and `"nan"`. The work is std/float_text.psm.
+// hexadecimal `"0x1p-3"`, `"inf"` and `"nan"`. The work is std/_fmt/float.psm.
 //
 // Stricter than C: the whole string must be a number, so `"1.5kg"` and `" 1.5"`
 // are `none` rather than 1.5.
@@ -2093,12 +2093,12 @@ impl StringBuilder {
 // built into a message. Fifteen is DBL_DIG, so every decimal literal prints as
 // written and `0.1 + 0.2` is `0.3`; a value that needs more digits to
 // round-trip, like `1.0 / 3.0`, prints fifteen. The formatting is
-// std/float_text.psm; this copies its bytes into a String of the right length.
+// std/_fmt/float.psm; this copies its bytes into a String of the right length.
 //
 // **`print(f)` writes exactly this text**, because std.io prints the String this
 // returns. A value that reaches the console and the same value converted to a
 // String must not disagree.
-internal fn strFromFloat(value: Float) -> String {
+public fn strFromFloat(value: Float) -> String {
     let mut buffer: Array<U8, 32>
     let n = floatFormat(value, buffer)
     return strFromFloatBytes(buffer, n)
@@ -2106,8 +2106,8 @@ internal fn strFromFloat(value: Float) -> String {
 
 // `digits` significant digits, for a float narrower than `Float` that has already been
 // widened: the digits it needs are fewer than a double's, and which number is
-// std/number_text.psm's question.
-internal fn strFromFloatDigits(value: Float, digits: Int) -> String {
+// std/fmt/number.psm's question.
+public fn strFromFloatDigits(value: Float, digits: Int) -> String {
     let mut buffer: Array<U8, 32>
     let n = floatFormatDigits(value, digits, buffer)
     return strFromFloatBytes(buffer, n)
@@ -2117,7 +2117,7 @@ internal fn strFromFloatDigits(value: Float, digits: Int) -> String {
 // percentages, a table of timings: `strFromFloatFixed(1.0 / 3.0, 2)` is `0.33`,
 // and `strFromFloatFixed(2.0, 2)` keeps its zeros as `2.00`.
 // `decimals` is clamped to 0..30.
-internal fn strFromFloatFixed(value: Float, decimals: Int) -> String {
+public fn strFromFloatFixed(value: Float, decimals: Int) -> String {
     let mut buffer: Array<U8, 400>
     let n = floatFormatFixed(value, decimals, buffer)
     return strFromFloatBytes(buffer, n)
@@ -2427,7 +2427,7 @@ internal fn strFromI64Radix(value: I64, radix: Int) -> String {
 // Decimal text for an I64. It went through `strFromInt(self as Int)` and so was
 // cut to 32 bits: `I64.MAX.toString()` was "-1" and 4294967296 was "0", while
 // `println` of the same value -- which formats its own way -- was right.
-internal fn strFromI64(value: I64) -> String {
+public fn strFromI64(value: I64) -> String {
     if (value >= 0) { return strFromUnsigned(value as U64) }
     return strNegated(strFromUnsigned((0 as U64) - (value as U64)))
 }
@@ -2963,7 +2963,7 @@ impl String {
     // Whether every byte satisfies `keep`, a closure that takes a `Char`.
     //
     // `allChars` and `anyChars`, not `all` and `any`. The short names are
-    // std/vec.psm's, over `Vec<T>`, and both sides are generic in the closure:
+    // std/core/vec.psm's, over `Vec<T>`, and both sides are generic in the closure:
     // an overload set holding `all<T, F>(Vec<T>, F)` and `all<F>(String, F)`
     // could not be resolved, and test_89_closures stopped compiling the moment
     // this file claimed the name. A method is a free function, so a method name

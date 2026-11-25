@@ -15,9 +15,9 @@
 
 import std.io
 import std.string
-import std.vec
-import std.copy
-import std.option
+import std.core.vec
+import std.core.copy
+import std.core.option
 
 struct Job {
     name: String,

@@ -12,10 +12,10 @@ import aif.model
 import aifcore.bits
 import aifcore.constants
 import aifcore.structure
-import std.map
-import std.raw
+import std.core.map
+import std.sys.raw
 import std.string
-import std.vec
+import std.core.vec
 import symbols.names
 
 internal let mut siteCount = 0

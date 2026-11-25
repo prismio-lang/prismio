@@ -64,11 +64,11 @@ stdlib /home/you/.prismio/stdlib
 ## A first look
 
 ```rust
-import std.display
+import std.fmt.display
 import std.io
-import std.map
+import std.core.map
 import std.string
-import std.vec
+import std.core.vec
 
 enum Shape {
     Circle(Float)

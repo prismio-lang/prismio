@@ -29,9 +29,9 @@ import aifcore.keys
 import aifcore.sites
 import aifcore.solver
 import aifcore.structure
-import std.option
+import std.core.option
 import std.process
-import std.vec
+import std.core.vec
 
 internal let mut edgeCount = 0
 internal let mut edgeCaller: Vec<Int>

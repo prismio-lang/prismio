@@ -9,7 +9,7 @@
 import ir.context
 import std.string
 import std.fs
-import std.vec
+import std.core.vec
 import ast.module_header
 import common.diagnostics
 import common.source_files
@@ -26,6 +26,11 @@ public fn emitPlib(source: String, module: String, targets: Vec<String>,
     setLibraryEmissionModule(module)
     setEntryModuleName(module)
     compiler_plib_begin()
+    // The sections' temporaries are written beside the output, so its directory comes first.
+    if (compiler_prepare_output_path(output) != 0) {
+        diag_error_code(DIAG_DRIVER_PLIB_NOT_WRITTEN, "cannot create the directory of ".concat(diagQuote(output)))
+        return 1
+    }
 
     // The host first: compiling it is also what reads the header that decides the other sections.
     if (emitPlibSection(source, "", output) != 0) { return 1 }
@@ -45,7 +50,7 @@ public fn emitPlib(source: String, module: String, targets: Vec<String>,
     if (words.equals("") == false) { meta = "module ".concat(words, "\n") }
     meta = meta.concat(libraryLangMeta(readFile(source)))
     if (compiler_plib_write(output, module, meta, source) != 0) {
-        diag_error_code(DIAG_DRIVER_PLIB_NOT_WRITTEN, "cannot write ".concat(diagQuote(output)))
+        diag_error_code(DIAG_DRIVER_PLIB_NOT_WRITTEN_FILE, "cannot write ".concat(diagQuote(output)))
         return 1
     }
     return 0

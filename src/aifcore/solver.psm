@@ -26,8 +26,8 @@ import aifcore.keys
 import aifcore.nominals
 import aifcore.sites
 import aifcore.structure
-import std.option
-import std.vec
+import std.core.option
+import std.core.vec
 
 // Key id -> set of sites. Handles into the bitset arena.
 internal let mut pt: Vec<Int>

@@ -11,7 +11,7 @@
 // its stride, and a hardcoded one wrote four bytes into an `[I64]`.
 
 import std.io
-import std.vec
+import std.core.vec
 import std.string
 
 struct Pt {

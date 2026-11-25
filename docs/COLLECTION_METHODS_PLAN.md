@@ -145,8 +145,8 @@ checks against the project host):
 
 ```prismio
 import std.io
-import std.vec
-import std.option
+import std.core.vec
+import std.core.option
 import std.string
 fn main() -> Int {
     let mut v: Vec<Int> = [3, 1, 2]

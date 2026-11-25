@@ -13,9 +13,9 @@ import positions
 import projects
 import runner
 import std.fs
-import std.json
+import std.encoding.json
 import std.string
-import std.vec
+import std.core.vec
 
 // Must be the same word as `ixPlaceholder` in src/index/complete.psm.
 let COMPLETION_PLACEHOLDER = "ixcursor__"
@@ -224,8 +224,16 @@ fn completionNames(labels: Vec<String>, kind: Int) -> String {
 // the document (or in `dir` under it), without the extension. With `directories`, its subdirectories as well.
 fn completionDirectoryModules(compiler: String, docPath: String, directory: String, directories: Bool) -> Vec<String> {
     let mut found: Vec<String> = []
-    if (directory.equals("std")) {
-        for module in completionLibraryModules(compiler) { found.push(module.slice(4, module.length).clone()) }
+    if (directory.equals("std") or directory.startsWith("std.") or directory.startsWith("std/")) {
+        // The library's modules directly under this directory, and its folders when asked for.
+        let prefix = directory.replaceAll("/", ".").concat(".")
+        for module in completionLibraryModules(compiler) {
+            if (module.startsWith(prefix) == false) { continue }
+            let rest = module.slice(prefix.length, module.length)
+            let dot = rest.indexOf(".")
+            if (dot < 0) { completionAddName(found, rest.clone()) }
+            else if (directories) { completionAddName(found, rest.slice(0, dot).clone()) }
+        }
         return found
     }
     let mut root = directoryOf(docPath).clone()
@@ -242,6 +250,13 @@ fn completionDirectoryModules(compiler: String, docPath: String, directory: Stri
     return found
 }
 
+fn completionAddName(inout names: Vec<String>, name: String) {
+    for earlier in names {
+        if (earlier.equals(name)) { return }
+    }
+    names.push(name.clone())
+}
+
 // The word at `from` in `text`, up to a space, `{`, `}` or the end.
 fn completionWordAt(text: String, from: Int) -> String {
     let mut i = from
@@ -254,7 +269,7 @@ fn completionWordAt(text: String, from: Int) -> String {
 }
 
 // The library module an `import std.string.<caret>` line asks the members of, or "".
-fn completionImportedModule(text: String, offset: Int) -> String {
+fn completionImportedModule(compiler: String, text: String, offset: Int) -> String {
     let mut lineStart = offset
     while (lineStart > 0 and text.byteAt(lineStart - 1) != 10) { lineStart = lineStart - 1 }
     let before = text.slice(lineStart, offset)
@@ -267,7 +282,12 @@ fn completionImportedModule(text: String, offset: Int) -> String {
     let dot = path.lastIndexOf(".")
     if (dot <= 0) { return "".clone() }
     let parent = path.slice(0, dot).clone()
-    if (parent.startsWith("std.") and parent.length > 4) { return parent }
+    // A folder of the library (`std.core.`) lists its modules; a module lists its declarations.
+    if (parent.startsWith("std.") and parent.length > 4) {
+        for module in completionLibraryModules(compiler) {
+            if (module.equals(parent)) { return parent }
+        }
+    }
     return "".clone()
 }
 
@@ -328,8 +348,11 @@ fn completionImportItems(compiler: String, docPath: String, text: String, offset
         return completionNames(names, 9)
     }
     let parent = path.slice(0, lastDot).clone()
-    if (parent.equals("std")) { return completionNames(completionDirectoryModules(compiler, docPath, "std", false), 9) }
-    if (parent.startsWith("std.")) { return completionNone() }
+    if (parent.equals("std") or parent.startsWith("std.")) {
+        let children = completionDirectoryModules(compiler, docPath, parent, true)
+        if (children.length == 0) { return completionNone() }
+        return completionNames(children, 9)
+    }
     return completionNames(completionDirectoryModules(compiler, docPath, parent.replaceAll(".", "/"), true), 9)
 }
 
@@ -337,11 +360,11 @@ fn completionNone() -> String {
     return "{\"isIncomplete\":false,\"items\":[]}".clone()
 }
 
-// Modules that are the library's way into the machine (`import std.raw` is the marker that a file means to). Their names are
+// Modules that are the library's way into the machine (`std.sys`; importing one is the marker that a file means to). Their names are
 // offered, with the import they need, only to a document that already imports them: otherwise `s.` on a String lists
 // `asmOps` and `offsetOf` because they happen to take a String first.
 fn completionIsLowLevelModule(module: String) -> Bool {
-    return module.equals("std.raw") or module.equals("std.asm") or module.equals("std.port") or module.equals("std.syscall")
+    return module.startsWith("std.sys.")
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -607,7 +630,7 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
     // and names it (`string.|`), the question it already answers.
     let mut text = documentText.clone()
     let mut offset = documentOffset
-    let asked = completionImportedModule(documentText, documentOffset)
+    let asked = completionImportedModule(compiler, documentText, documentOffset)
     if (asked.equals("") == false) {
         let name = asked.slice(asked.lastIndexOf(".") + 1, asked.length)
         text = "import ".concat(asked, "\n\nfn main() -> Int {\n    ", name, ".")

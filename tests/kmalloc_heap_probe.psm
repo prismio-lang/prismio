@@ -3,10 +3,10 @@
 // `kfree`, and a `Vec`, a `String` and a `HashMap` living on it. Built for AArch64 Linux and read as IR
 // by run_kmalloc_heap_test: it names kernel symbols, so it is not run.
 
-import std.map
-import std.raw
+import std.core.map
+import std.sys.raw
 import std.string
-import std.vec
+import std.core.vec
 
 // GFP_KERNEL on a recent kernel; a module passes whatever its context needs.
 let GFP_KERNEL: U32 = 0xcc0

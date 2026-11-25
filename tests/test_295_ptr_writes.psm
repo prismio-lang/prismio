@@ -8,7 +8,7 @@
 //   +0  header: Header ----------->      +0  magic:  U32
 //   +12 tag: U8                          +4  length: U32
 //   +16 next: Ptr<Packet>?               +8  flags:  U16
-import std.raw
+import std.sys.raw
 
 repr(C) struct Header {
     magic: U32,

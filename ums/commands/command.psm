@@ -2,7 +2,7 @@ import std.string
 
 // Appended, never inserted: the tag is the variant's position, so reordering
 // these changes the value every compiled comparison expects -- the rule
-// std/option.psm states for `Option`.
+// std/core/option.psm states for `Option`.
 public enum UmsCommandStepKind {
     UNKNOWN,
     BUILD,

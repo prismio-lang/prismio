@@ -7,7 +7,7 @@
 // cannot be handled differently in two features.
 
 import std.string
-import std.vec
+import std.core.vec
 
 public struct Position {
     public line: Int,

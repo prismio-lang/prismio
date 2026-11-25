@@ -1,9 +1,9 @@
-// `Default` (std.default): a type's own starting value, for generic code to ask
+// `Default` (std.core.default): a type's own starting value, for generic code to ask
 // for with `T.default()`. The `default` keyword is still the compiler's zero.
 // neg_188 is a type that does not implement it.
 import std.io
 import std.string
-import std.default
+import std.core.default
 
 struct Config {
     retries: Int,

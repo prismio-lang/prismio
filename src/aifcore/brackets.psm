@@ -31,8 +31,8 @@ import aifcore.solver
 import aifcore.structure
 import aifcore.tiers
 import std.io
-import std.option
-import std.vec
+import std.core.option
+import std.core.vec
 import symbols.names
 
 // Which *objects* hold each site: the owner set of every field store and of every `retain_in` call. `containerOf`

@@ -15,10 +15,10 @@
 // that no overload accepts the arguments, or that the function was unknown; it now
 // says the receiver is an array and what to write for a list that grows. Three
 // routes reach it: a name the compiler builds for a Vec (`push`, `insert`), a
-// property of one (`isEmpty`, `capacity`), and a function in std/vec.psm that takes
+// property of one (`isEmpty`, `capacity`), and a function in std/core/vec.psm that takes
 // a Vec (`removeAt`).
 
-import std.vec
+import std.core.vec
 
 fn grow() {
     let mut x = [1, 2, 3]

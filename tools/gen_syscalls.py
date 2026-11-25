@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes std/syscall.psm: the system-call numbers and constants of Linux and macOS.
+"""Writes std/sys/syscall.psm: the system-call numbers and constants of Linux and macOS.
 
 The numbers are not typed here. They are read from the headers each kernel ships:
 
@@ -9,7 +9,7 @@ The numbers are not typed here. They are read from the headers each kernel ships
 
 and the constants (open flags, protection bits, errno, ...) from the same trees. A call that
 a header does not number on an OS is simply not generated for it. `--check` regenerates in
-memory and fails when std/syscall.psm differs, which is what keeps a hand edit from drifting
+memory and fails when std/sys/syscall.psm differs, which is what keeps a hand edit from drifting
 from the headers.
 
     python3 tools/gen_syscalls.py [--check] [--sysroot DIR] [--sdk DIR]
@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-OUT = REPO / "std" / "syscall.psm"
+OUT = REPO / "std" / "sys" / "syscall.psm"
 
 NDK_GLOB = Path.home() / "Library/Android/sdk/ndk"
 
@@ -398,7 +398,7 @@ HEADER = '''//
 // System calls, with no C library under them: the raw instruction, and the calls of Linux and
 // macOS by name.
 //
-//     import std.syscall
+//     import std.sys.syscall
 //
 //     linux.syscall.write(1, buffer, count)
 //     macos.syscall.write(1, buffer, count)
@@ -428,7 +428,7 @@ HEADER = '''//
 //
 // **Nothing here checks anything.** An address is a number, a length is whatever is passed, and
 // a bad one is as undefined as it is in C. A path is a pointer to a NUL-terminated byte string
-// -- a `Buffer` or an `alloc` block -- not a `String`. **An address is a `Usize`**, as in std.raw
+// -- a `Buffer` or an `alloc` block -- not a `String`. **An address is a `Usize`**, as in std.sys.raw
 // and std.mem, so what `alloc` answers goes in as it is.
 
 '''
@@ -513,7 +513,7 @@ impl MacosSyscalls {'''
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("--check", action="store_true", help="fail if std/syscall.psm differs")
+    parser.add_argument("--check", action="store_true", help="fail if std/sys/syscall.psm differs")
     parser.add_argument("--sysroot", type=Path, help="an NDK's sysroot/usr/include (Linux uapi headers)")
     parser.add_argument("--sdk", type=Path, help="a macOS SDK")
     args = parser.parse_args()
@@ -524,7 +524,7 @@ def main():
             recorded = OUT.read_text().splitlines()[1:2]
             here = "// Read from {}.".format(sources_label(sysroot, sdk))
             if recorded and recorded[0].startswith("// Read from ") and recorded[0] != here:
-                raise Failure("no headers to compare: std/syscall.psm was {}, this machine has {}".format(
+                raise Failure("no headers to compare: std/sys/syscall.psm was {}, this machine has {}".format(
                     recorded[0][len("// "):].rstrip(".").replace("Read from", "read from"),
                     here[len("// Read from "):].rstrip(".")))
     except Failure as error:
@@ -532,7 +532,7 @@ def main():
         return 1
     if args.check:
         if not OUT.exists() or OUT.read_text() != text:
-            print("std/syscall.psm is out of date: run tools/gen_syscalls.py", file=sys.stderr)
+            print("std/sys/syscall.psm is out of date: run tools/gen_syscalls.py", file=sys.stderr)
             return 1
         return 0
     OUT.write_text(text)

@@ -25,10 +25,10 @@ import aifcore.bits
 import aifcore.constants
 import aifcore.nominals
 import aifcore.structure
-import std.map
-import std.option
+import std.core.map
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 import symbols.names
 
 // A loop, and the fields of one type it touches: LAYOUT 2.1's "co-accessed" half, the structural fact the

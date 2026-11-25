@@ -9,7 +9,7 @@ import common.diagnostics
 import common.source_files
 import common.terminal
 import std.string
-import std.option
+import std.core.option
 import aif.model
 import aifcore.arenas
 import aifcore.brackets

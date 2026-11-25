@@ -1,4 +1,4 @@
-// std.json: the document tape, the strictness of the parser, and the writer.
+// std.encoding.json: the document tape, the strictness of the parser, and the writer.
 //
 // 1. Reading: nested members and elements, dotted paths, every kind, number forms, escapes
 //    including a `\u` surrogate pair that decodes to one four-byte character, and the raw text
@@ -9,10 +9,10 @@
 //    produces the parser reads back to the same values.
 
 import std.io
-import std.json
-import std.option
+import std.encoding.json
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -145,6 +145,6 @@ fn main() -> Int {
     if (back.raw(back.member(back.root, "id").unwrapOr(0 - 1)) != "\"x-1\"") { bad = bad + fail("id round trip") }
 
     if (bad > 0) { return 1 }
-    println("PASS: std.json reads, refuses and writes")
+    println("PASS: std.encoding.json reads, refuses and writes")
     return 0
 }

@@ -10,7 +10,7 @@
 // a row for a member the compiler does not lower fails.
 
 import std.string
-import std.vec
+import std.core.vec
 
 // The signature of a lowered member of the type `head` (`Vec`, `Ptr`, `Int` for `Int?`), or "".
 public fn ixLoweredSignature(head: String, name: String) -> String {

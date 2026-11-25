@@ -3,8 +3,8 @@
 // Prismio hands these across the C boundary every time it calls or is called by a kernel
 // function that returns a pointer.
 //
-//     import std.errno
-//     import std.raw
+//     import std.sys.errno
+//     import std.sys.raw
 //
 //     let object = pointerAt(allocate())          // a C function returning `T *` or `ERR_PTR(-ENOMEM)`
 //     if (isErrPointer(addressOf(object))) {
@@ -18,7 +18,7 @@
 // function returns `-ENOMEM` directly. `isErrno` is the integer test and `isErrPointer` the
 // pointer one; `errPointer` and `errnoOf` are `ERR_PTR` and `PTR_ERR`.
 //
-// An address is a `Usize`, as in std.raw, so nothing here needs a pointer type, the runtime
+// An address is a `Usize`, as in std.sys.raw, so nothing here needs a pointer type, the runtime
 // or an allocator: it is pure arithmetic and links nothing under `--freestanding`. The codes
 // themselves (`ENOMEM` is 12, `EINVAL` 22, `EIO` 5) belong to the kernel's headers and are
 // written there, as `-12`, by the code that means them.

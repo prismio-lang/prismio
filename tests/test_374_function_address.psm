@@ -1,4 +1,4 @@
-// functionAddress("name") from std.raw: a function's address, for the places C wants one.
+// functionAddress("name") from std.sys.raw: a function's address, for the places C wants one.
 //
 // A kernel operations table and a registered callback hold function addresses. The call takes
 // the name as one string literal, so it is checked at compile time, and the address is a link-time
@@ -7,7 +7,7 @@
 // two names are two addresses.
 
 import std.io
-import std.raw
+import std.sys.raw
 import std.string
 
 export fn on_open(x: Int) -> Int { return x + 1 }

@@ -14,9 +14,9 @@
 
 import uri
 import std.fs
-import std.option
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 public struct Documents {
     public uris: Vec<String>,

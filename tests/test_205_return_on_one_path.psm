@@ -24,7 +24,7 @@
 
 import std.io
 import std.string
-import std.vec
+import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

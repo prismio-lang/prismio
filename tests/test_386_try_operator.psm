@@ -10,7 +10,7 @@
 
 import std.io
 import std.string
-import std.option
+import std.core.option
 
 fn parse(s: String) -> Result<Int, String> {
     if s.length == 0 { return Result.Err("empty") }

@@ -1,8 +1,8 @@
-// expect-error: `??` needs `import std.option`
+// expect-error: `??` needs `import std.core.option`
 // expect-error: aborting due to 1 previous error
-// `??` is std.option's, and the file that writes it imports std.option. A file that reaches the
+// `??` is std.core.option's, and the file that writes it imports std.core.option. A file that reaches the
 // module only through another import (std.process imports it) used to pass this check and fail
-// later as "module `std.option` declares no `optionCoalesce$Int`".
+// later as "module `std.core.option` declares no `optionCoalesce$Int`".
 import std.process
 
 fn main() -> Int {

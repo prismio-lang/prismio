@@ -1,11 +1,11 @@
 // `Vec<T>.filled(n, value)`: `n` copies of `value`, as `std::vector<T>(n, value)`
 // and `vec![value; n]`. A scalar `T` is one runtime allocation and fill -- the
 // widths below are the four typed stores and the memset it chooses between. A
-// `String` or a struct goes through std.vec's copy loop, one copy per element,
+// `String` or a struct goes through std.core.vec's copy loop, one copy per element,
 // and each copy is its own: changing one element changes no other.
 
 import std.io
-import std.vec
+import std.core.vec
 
 struct Point {
     x: Int,

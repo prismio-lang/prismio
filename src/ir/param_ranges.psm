@@ -15,7 +15,7 @@
 //
 // **Every call must be seen, or nothing is claimed.** A function gets no range when
 // it is exported, a method (reachable through its receiver from any file, the way
-// std/map.psm calls a program's `eq`), generic, `async`, or `main`; when its name is
+// std/core/map.psm calls a program's `eq`), generic, `async`, or `main`; when its name is
 // used as anything but a plain call's callee -- a function value, a spawn, whose
 // thunk calls it from the runtime -- anywhere in the module; or when the walk
 // recorded fewer calls than the module holds, which is any call inside a closure,

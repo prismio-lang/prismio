@@ -17,7 +17,7 @@
 
 import std.io
 import std.process
-import std.vec
+import std.core.vec
 import std.string
 
 struct Pt {

@@ -9,7 +9,7 @@
 // freed memory, which --verify reports as a violation.
 
 import std.io
-import std.vec
+import std.core.vec
 import std.string
 
 fn word(i: Int) -> String {

@@ -3,7 +3,7 @@
 
 import std.io
 import std.string
-import std.display
+import std.fmt.display
 
 struct Version { major: Int, minor: Int }
 impl Display for Version {

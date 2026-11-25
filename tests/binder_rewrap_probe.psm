@@ -6,7 +6,7 @@
 // Run by `ownership_probes`.
 
 import std.io
-import std.option
+import std.core.option
 import std.string
 
 fn parse(text: String) -> Result<Int, String> {

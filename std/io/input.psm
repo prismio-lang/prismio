@@ -1,6 +1,6 @@
 // This process's standard input: lines, tokens, bytes, or all of it at once.
 //
-//     import std.input
+//     import std.io.input
 //
 //     for line in inputLines() {
 //         println(line.length)
@@ -15,7 +15,7 @@
 //
 // **Its own module rather than part of std.io**, because std.io is imported by
 // every program that prints, and a program carries what its imports declare:
-// the reads below (into its link), and std.option's allocation sites (into its
+// the reads below (into its link), and std.core.option's allocation sites (into its
 // ownership analysis). A program that reads its input asks for that; one that
 // only prints should not pay for it.
 //
@@ -58,10 +58,10 @@
 // on the screen before the read that follows it blocks.
 
 import std.io
-import std.iter
-import std.option
+import std.core.iter
+import std.core.option
 import std.string
-import std.vec
+import std.core.vec
 
 // Every line, token and rest-of-input String is allocated by the runtime for the
 // caller, "" at the end of input rather than a literal.
@@ -216,7 +216,7 @@ public fn readText(count: Int) -> String {
 // sender has been quiet for that long. Zero asks without waiting.
 //
 // For waiting on this and something else at once -- a child's output, say -- use
-// `waitReadable` in std.poll with descriptor 0.
+// `waitReadable` in std.io.poll with descriptor 0.
 public fn waitForInput(milliseconds: Int) -> Bool {
     return io_stdin_ready(milliseconds) == 1
 }

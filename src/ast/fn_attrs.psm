@@ -1,6 +1,6 @@
 import ast.nodes
 import std.string
-import std.option
+import std.core.option
 
 // Function attributes the AST has no field for: everything a function can say
 // before its `fn` (src/parse/modifiers.psm).

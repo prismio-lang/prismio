@@ -14,7 +14,7 @@ import aifcore.constants
 import aifcore.constraints
 import aifcore.solver
 import aifcore.sites
-import std.vec
+import std.core.vec
 
 private let mut thetaMode = 0
 

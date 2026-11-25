@@ -40,9 +40,9 @@
 // what lets LLVM keep the list's length and data pointer in registers across a
 // store (src/common/mem_builtins.psm). Big-endian is `__builtin_swap_bytes`, one
 // `rev`; a Float is its bits through `__builtin_float_bits`.
-
 module freestanding(runtime)
-from std import {eq, string}
+from std.core import {eq}
+from std import {string}
 
 private extern fn mem_alloc(size: Usize) -> Usize
 private extern fn mem_alloc_zeroed(size: Usize) -> Usize

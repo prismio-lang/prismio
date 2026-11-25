@@ -7,7 +7,7 @@ import ir.bridge
 import common.text
 import common.target
 import std.string
-import std.option
+import std.core.option
 import aifcore.ownership
 import common.lang_items
 

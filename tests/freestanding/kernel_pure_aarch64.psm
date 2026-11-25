@@ -8,8 +8,8 @@
 // QEMU's cleared memory. The test patches nothing; it builds three kernels from
 // three values of the constant below.
 
-import std.raw
-import std.asm
+import std.sys.raw
+import std.sys.asm
 
 let MODE = 0
 

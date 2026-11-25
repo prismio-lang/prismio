@@ -8,10 +8,10 @@
 // reads the ledger and the peak (max_peak_bytes) the memory; the answers are checked here.
 // test_389 is the other half: the uses that must keep parking.
 
-import std.copy
+import std.core.copy
 import std.io
 import std.string
-import std.vec
+import std.core.vec
 
 fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
 

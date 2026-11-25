@@ -81,7 +81,7 @@ def summarize_lint(output: str, out: Path) -> tuple:
 
 def summarize_package(output: str, out: Path) -> tuple:
     runtime = len(list((out / "lib" / "runtime").glob("*.bc")))
-    stdlib = len(list((out / "stdlib").glob("*.plib")))
+    stdlib = len(list((out / "stdlib").rglob("*.plib")))
     return f"{runtime} runtime bitcode \u00b7 {stdlib} stdlib modules \u2192 {shown(out)}", []
 
 

@@ -162,7 +162,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="truncation-work-"))
 
-    standalone = sorted(list((ROOT / "tests").glob("*.psm")) + list((ROOT / "std").glob("*.psm")))
+    standalone = sorted(list((ROOT / "tests").glob("*.psm")) + list((ROOT / "std").rglob("*.psm")))
     modules = sorted(p for p in (ROOT / "src").rglob("*.psm") if p.name != "main.psm")
     if opts.limit:
         standalone, modules = standalone[:opts.limit], modules[:opts.limit]

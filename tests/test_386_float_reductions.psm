@@ -19,7 +19,7 @@
 import std.io
 import std.math
 import std.string
-import std.vec
+import std.core.vec
 
 struct Account { total: Float }
 

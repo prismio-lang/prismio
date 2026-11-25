@@ -18,7 +18,7 @@ import common.diagnostics
 import ast.dump
 import aif.*
 import std.string
-import std.option
+import std.core.option
 import driver.imports
 import std.fs
 import common.native

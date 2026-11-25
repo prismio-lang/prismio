@@ -40,7 +40,8 @@ import symbols.declarations
 
 from common import {diagnostics, source_files}
 from ast import {nodes, fn_attrs, types}
-from std import {option, process, string}
+from std.core import {option}
+from std import {process, string}
 import common.library_emission
 import common.native
 import common.source_files

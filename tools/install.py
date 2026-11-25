@@ -174,15 +174,21 @@ def main() -> int:
 
     # Each importable standard module ships as one PLIB containing its frontend
     # interface/generic templates and its LLVM bitcode implementation.
-    modules = sorted((dist / "stdlib").glob("*.plib"))
+    modules = sorted((dist / "stdlib").rglob("*.plib"))
     if not modules:
         print(f"{RED}incomplete package: no standard-library PLIB modules{RESET}",
               file=sys.stderr)
         return 1
-    for stale_source in stdlib_dir.glob("*.psm"):
-        stale_source.unlink()
+    # Sources and modules this package does not carry are stale: a module that moved would otherwise
+    # still resolve under its old path.
+    shipped = {module.relative_to(dist / "stdlib") for module in modules}
+    for stale in (*stdlib_dir.rglob("*.psm"), *stdlib_dir.rglob("*.plib")):
+        if stale.relative_to(stdlib_dir) not in shipped:
+            stale.unlink()
     for module in modules:
-        install_file(module, stdlib_dir / module.name)
+        destination = stdlib_dir / module.relative_to(dist / "stdlib")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        install_file(module, destination)
     print(f"  stdlib/        {len(modules):>10} modules")
 
     # Verified from a directory with no repository nearby, so nothing resolves by
