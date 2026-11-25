@@ -19,10 +19,6 @@ prismio_llvm.h (what the compiler initialises) and `TARGET_COMPONENTS` in
 tools/setup_llvm.py (what it links). One without the other fails the link or
 ships dead weight.
 
-The standard-library modules a freestanding program may import are written twice:
-`freestandingSafeModule` in src/driver/imports.psm (what the compiler admits) and
-the `module freestanding` headers in std/ (what gets a bare-metal section).
-
 One value rides along because it is written down three times the same way: the macOS
 a program is built for, `PRISMIO_MACOS_FLOOR` in llvm-api-backend.c and
 `MACOS_FLOOR` in tools/package.py and tools/toolchain_layout.psm, which build for it.
@@ -139,20 +135,6 @@ def llvm_targets():
             sorted(re.findall(r'"(\w+)"', py.group(1))))
 
 
-def freestanding_std():
-    """(the modules the compiler lets a freestanding program import, the modules whose header
-    says freestanding), without the `std.` prefix."""
-    c = re.search(r"private fn freestandingSafeModule\(name: String\) -> Bool \{(.*?)\n\}",
-                  read(REPO / "src" / "driver" / "imports.psm"), re.S)
-    if not c:
-        raise Failure("could not find freestandingSafeModule")
-    declared = []
-    for path in (REPO / "std").rglob("*.psm"):
-        if re.search(r"^module (prelude )?freestanding", read(path), re.M):
-            declared.append(path.stem)
-    return sorted(re.findall(r'"std\.(\w+)"', c.group(1))), sorted(declared)
-
-
 def unicode_table_problems():
     """The Unicode tables are generated from the pinned UCD (tools/generate_unicode_tables.py).
     Checked where that cache already is; this never downloads it."""
@@ -212,8 +194,6 @@ def main() -> int:
                 [c_floor, c_floor])
         initialised, linked = llvm_targets()
         compare("tools/setup_llvm.py TARGET_COMPONENTS vs PRISMIO_LLVM_TARGET_LIST", linked, initialised)
-        allowed, packaged = freestanding_std()
-        compare("std/ `module freestanding` headers vs freestandingSafeModule", packaged, allowed)
         missing = [name for name in runtime if name not in compiler]
         if missing:
             problems.append("runtime sources the compiler does not compile: " + " ".join(missing))

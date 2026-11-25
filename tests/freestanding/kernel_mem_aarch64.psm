@@ -76,6 +76,10 @@ fn main() -> Int {
     let word = "free".concat("standing")
     bad = bad + check(word.length == 12 and word.startsWith("free"))
 
+    // A tuple brings its module in by itself, which the freestanding runtime serves too.
+    let pair = (total, word.length)
+    bad = bad + check(pair.0 == 328350 and pair.1 == 12)
+
     let block = alloc(64)
     block.storeU64(42)
     let grown = realloc(block, 4096)

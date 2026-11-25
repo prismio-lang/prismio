@@ -31,6 +31,7 @@ import common.native
 import common.diag_codes
 import common.lang_items
 import ast.lang_marks
+import ast.module_header
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -376,6 +377,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
 
     let key = importMemoKey(importPath)
     if (visited.contains(key)) {
+        checkRecordedTier(site, moduleName, key)
         return visited
     }
 
@@ -435,7 +437,10 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // covers named and package imports both.
     diag_set_file_module(file, moduleName)
     if (resolvedFromLibrary(moduleName, importPath)) { markFileFromLibraryRoot(file) }
-    return mergeModuleImports(merged, parseSource(content, file), baseDir, seen)
+    let parsed = parseSource(content, file)
+    importTierRecord(key, file)
+    if (refuseImportTier(site, moduleName, diag_file_header(file), fileFromLibraryRoot(file))) { return seen }
+    return mergeModuleImports(merged, parsed, baseDir, seen)
 }
 
 // `import build`: the values in build.ums, as a module that is never a file.
@@ -586,60 +591,61 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
     ir_import_alias_record(stmt.file, stmt.s2, stmt.s1)
 }
 
-// The `std` modules that need neither: pure Prismio over compiler builtins, with no
-// call into the C runtime and no `import std.string`, which is the module nearly
-// everything else reaches, and the modules over `Vec` and `String`, which call into
-// lang_runtime.c: a freestanding build merges runtime/freestanding/runtime.c, that
-// file compiled with no C library over the program's own allocator
-// (docs/FREESTANDING_MEMORY.md). What stays out needs an operating system -- a
-// console, files, processes, clocks -- or, for std.display, the Float printing a
-// freestanding runtime does not have. The freestanding test imports each name here.
-//
-// `std.math` is absent on purpose: its square root and rounding are instructions on
-// some targets and calls into a C math library on others, and a kernel that cannot
-// tell which has found the failure at link time on the wrong machine.
-private fn freestandingSafeModule(name: String) -> Bool {
-    return name.equals("std.option") or name.equals("std.platform") or name.equals("std.iter")
-        or name.equals("std.mem") or name.equals("std.string") or name.equals("std.unicode_case")
-        or name.equals("std.unicode") or name.equals("std.unicode_tables")
-        or name.equals("std.eq") or name.equals("std.ord") or name.equals("std.copy")
-        or name.equals("std.key") or name.equals("std.default")
-        or name.equals("std.vec") or name.equals("std.map") or name.equals("std.float_text")
-        or name.equals("std.number_text")
-        or name.equals("std.port") or name.equals("std.asm") or name.equals("std.raw")
-        or name.equals("std.syscall") or name.equals("std.errno")
+// What each module read says in its header, and whether it is the library's, by memo key, so that a
+// module imported again is checked without being read again.
+let mut importTierKeys: Vec<String>
+let mut importTierHeaders: Vec<Int>
+let mut importTierLibrary: Vec<Bool>
+
+private fn importTiersReset() {
+    importTierKeys = []
+    importTierHeaders = []
+    importTierLibrary = []
 }
 
-// The ones that are pure Prismio link nothing; the rest call into lang_runtime.c.
-private fn freestandingNeedsRuntime(name: String) -> Bool {
-    return name.equals("std.option") == false and name.equals("std.platform") == false
-        and name.equals("std.iter") == false and name.equals("std.float_text") == false
-        and name.equals("std.port") == false and name.equals("std.asm") == false
-        and name.equals("std.raw") == false and name.equals("std.syscall") == false
-        and name.equals("std.errno") == false
+private fn importTierRecord(key: String, file: Int) {
+    importTierKeys.push(key.clone())
+    importTierHeaders.push(diag_file_header(file))
+    importTierLibrary.push(fileFromLibraryRoot(file))
 }
 
-// A `std` module is compiled against the C library and an operating system, and a
-// `--freestanding` program has neither. Refused at the import, by name, rather
-// than left to fail later: inside a checkout `std` is compiled from source, so the
-// failure was a page of undefined `list_*` symbols from the linker, and from an
-// installed toolchain it was a report of a corrupted installation. Both were the
-// same mistake and neither said so.
-//
-// Answers whether it refused. The import is then skipped, not merged, so the rest of
-// the program is still read and its own errors still reported.
-private fn refuseHostedImport(stmt: ASTNode) -> Bool {
-    if (compiler_is_freestanding() != 1) { return false }
-    if (stmt.s1.startsWith("std.") == false) { return false }
-    if (freestandingSafeModule(stmt.s1)) {
-        if (freestandingNeedsRuntime(stmt.s1)) { compiler_use_freestanding_runtime() }
-        return false
+private fn checkRecordedTier(site: ASTNode, moduleName: String, key: String) {
+    for i in 0..<importTierKeys.length {
+        if (importTierKeys[i].equals(key)) {
+            let ignored = refuseImportTier(site, moduleName, importTierHeaders[i], importTierLibrary[i])
+            return
+        }
     }
-    diag_error_at_code(DIAG_DRIVER_FREESTANDING_IMPORT_REFUSED, stmt.file, stmt.line, stmt.col, stmt.len,
-        diagQuote(stmt.s1).concat(" cannot be imported by a `--freestanding` program"))
-    diag_note("std.io, std.display, std.input, std.fs, std.process, std.time, std.term and std.math need an operating system or a C library")
-    diag_note_dropped_everything()
-    return true
+}
+
+// A module's header says what it needs (ast/module_header.psm), and the claim is checked at every
+// import: a module may import only modules that need no more than it does. A `--freestanding`
+// program has no C library and no operating system, so a library module that needs one is refused
+// at the import -- left to fail later it was a page of undefined symbols from the linker -- and one
+// that needs the runtime's allocator brings the freestanding runtime into the link.
+//
+// Answers whether it refused. The module is then not merged, so the rest of the program is still
+// read and its own errors still reported.
+private fn refuseImportTier(site: ASTNode, moduleName: String, flags: Int, fromLibrary: Bool) -> Bool {
+    let tier = headerTier(flags)
+    let importerTier = headerTier(diag_file_header(site.file))
+    if (importerTier < 2 and tier > importerTier) {
+        diag_error_at_code(DIAG_DRIVER_MODULE_TIER, site.file, site.line, site.col, site.len,
+            "this module is `".concat(headerTierWords(importerTier), "`, so it cannot import ",
+                diagQuote(moduleName), ", which is ", headerTierWords(tier)))
+        diag_note_dropped_everything()
+        return true
+    }
+    if (compiler_is_freestanding() != 1 or fromLibrary == false) { return false }
+    if (tier == 2) {
+        diag_error_at_code(DIAG_DRIVER_FREESTANDING_IMPORT_REFUSED, site.file, site.line, site.col, site.len,
+            diagQuote(moduleName).concat(" cannot be imported by a `--freestanding` program"))
+        diag_note("a library module without a `module freestanding` header needs an operating system or a C library")
+        diag_note_dropped_everything()
+        return true
+    }
+    if (tier == 1) { compiler_use_freestanding_runtime() }
+    return false
 }
 
 // An entry of `import {a, b} from dir` names a file, never a declaration
@@ -647,7 +653,7 @@ private fn refuseHostedImport(stmt: ASTNode) -> Bool {
 // can see the difference: `import {Option} from std.option` would otherwise
 // reach mergeNamedModule's selective-import fallback and quietly select a name.
 // An entry that names nothing at all falls through to P1001's "no such file".
-// Answers whether it refused, like refuseHostedImport.
+// Answers whether it refused, like refuseImportTier.
 private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
     if (stmt.i2 != 1) { return false }
     if (fileExists(resolveImportPath(baseDir, stmt.s1))) { return false }
@@ -667,7 +673,7 @@ private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
 // `app.net.*`). The rule reads off the path, as Go's `internal/` does, so the import site shows
 // which side of the boundary it is on.
 //
-// Answers whether it refused, like refuseHostedImport.
+// Answers whether it refused, like refuseImportTier.
 private fn refuseSealedModule(site: ASTNode, moduleName: String) -> Bool {
     let importer = importerModule(site.file)
     let segments = moduleName.split(".")
@@ -730,7 +736,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
         } else if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
             if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
-            } else if (refuseHostedImport(stmt) == false and refuseGroupDeclaration(stmt, baseDir) == false) {
+            } else if (refuseGroupDeclaration(stmt, baseDir) == false) {
                 ir_import_record(stmt.file, stmt.s1)
                 recordImportAlias(stmt, baseDir)
                 seen = mergeNamedModule(merged, stmt, stmt.s1, baseDir, seen)
@@ -931,11 +937,12 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     ir_reset_extern_decls()
     mergeTailPtr = ptr_null()
     setEntryTree(entryPath)
-    // Read only if a name turns out to be unknown (sema/symbols.psm). A `--freestanding` program is
-    // offered nothing: most of the library is refused to it at the import.
-    let mut library = "".clone()
-    if (compiler_is_freestanding() != 1) { library = standardPath("", true) }
-    libraryUseDirectory(library)
+    importTiersReset()
+    importTierRecord(importMemoKey(entryPath), module.file)
+    // Read for lang items the syntax needs, and for names that turn out to be unknown
+    // (sema/symbols.psm). A `--freestanding` program is offered no imports: most of the library is
+    // refused to it at the import.
+    libraryUseDirectory(standardPath("", true), compiler_is_freestanding() != 1)
     // No prelude. `std.io` is an ordinary import, so a program that names no I/O
     // carries none -- which is what lets a target with no stdout link at all.
     mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))

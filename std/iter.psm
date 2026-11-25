@@ -11,7 +11,7 @@
 //
 // `for x in it` desugars to exactly this protocol, so a type implementing
 // `Iterator` is usable with the loop syntax and needs nothing else.
-module freestanding
+module prelude freestanding
 lang("iterator") trait Iterator {
     type Item
     lang("iterator.has_next") fn hasNext(self) -> Bool

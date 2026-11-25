@@ -13028,7 +13028,7 @@ def run_module_artifact_test():
         option = next((dist / "stdlib").rglob("option.plib"), None)
         if option is not None:
             meta = plib_meta(option)
-            if "module freestanding" not in meta or not any(
+            if "module prelude freestanding" not in meta or not any(
                     line.startswith("lang option_coalesce ") for line in meta):
                 problems.append(f"option.plib's metadata lacks its header or lang items: {meta}")
         for plib in (dist / "stdlib").rglob("*.plib"):

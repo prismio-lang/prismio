@@ -1,0 +1,7 @@
+// expect-error: so it cannot import `std.io`, which is hosted
+// A module that says it links nothing cannot import one that needs an operating system.
+module freestanding
+
+import std.io
+
+fn main() -> Int { return 0 }

@@ -29,6 +29,20 @@ public fn headerWords(flags: Int) -> String {
     return words.substring(1, words.length - 1)
 }
 
+// What a module needs, as a level: a module may import only modules of its own level or below.
+// 0 links nothing, 1 needs the runtime's allocator, 2 needs a C library and an operating system.
+public fn headerTier(flags: Int) -> Int {
+    if (headerIsFreestanding(flags) == false) { return 2 }
+    if (headerNeedsRuntime(flags)) { return 1 }
+    return 0
+}
+
+public fn headerTierWords(tier: Int) -> String {
+    if (tier == 0) { return "module freestanding".clone() }
+    if (tier == 1) { return "module freestanding(runtime)".clone() }
+    return "hosted (no `module freestanding` header)".clone()
+}
+
 public fn headerIsPrelude(flags: Int) -> Bool { return (flags & headerBitPrelude()) != 0 }
 public fn headerIsFreestanding(flags: Int) -> Bool { return (flags & headerBitFreestanding()) != 0 }
 public fn headerNeedsRuntime(flags: Int) -> Bool { return (flags & headerBitRuntime()) != 0 }

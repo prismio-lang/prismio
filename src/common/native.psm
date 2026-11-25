@@ -56,8 +56,8 @@ public extern fn compiler_set_debug_info(on: Int)
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
 public extern fn compiler_set_verify_mode(on: Int)
-// `--freestanding`: no C library under the program, and only the `std` modules
-// freestandingSafeModule names over it.
+// `--freestanding`: no C library under the program, and only the library modules whose header says
+// `module freestanding` over it.
 public extern fn compiler_is_freestanding() -> Int
 public extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(rt_free)
 // `run --jit`: merges the imported standard-library bitcode into `irFile`, as a

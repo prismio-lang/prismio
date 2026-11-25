@@ -16,7 +16,7 @@
 // unequally -- that is what the probe's `eq` is for. A `hash` that returns a
 // constant is correct and slow, which is the right failure mode for a trait a
 // user implements by hand.
-module freestanding(runtime)
+module prelude freestanding(runtime)
 import std.string
 
 lang("key") trait Key {

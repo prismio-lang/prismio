@@ -7,7 +7,7 @@
 // A program that writes a tuple gets this import without asking for it: it has named
 // nothing else that could supply the type. Two to four elements; past that, a struct with
 // names says more than a position does.
-
+module prelude freestanding(runtime)
 import std.copy
 import std.eq
 

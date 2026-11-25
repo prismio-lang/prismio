@@ -19,8 +19,9 @@ import std.vec
 import common.native
 
 // The directory the library's modules are read from, `std/` of a source tree or `stdlib/` of a
-// toolchain; "" when there is none to offer (a `--freestanding` program, or no library found).
+// toolchain; "" when none was found. Whether its functions are offered as imports for unknown names.
 let mut libraryDirectory = ""
+let mut libraryOffersImports = true
 // The modules and their files, listed on the first question: module `m` is `libraryModules[m]` at
 // `libraryPaths[m]`.
 let mut libraryModules: Vec<String>
@@ -43,8 +44,9 @@ let mut libraryFunctionsRead = false
 
 // Where the library is, for the compile about to run. Everything is read again for each directory,
 // so that a process that compiles twice never answers from the first one's library.
-public fn libraryUseDirectory(directory: String) {
+public fn libraryUseDirectory(directory: String, offerImports: Bool) {
     libraryDirectory = directory.clone()
+    libraryOffersImports = offerImports
     libraryListed = false
     libraryItemsRead = false
     libraryFunctionsRead = false
@@ -54,8 +56,9 @@ public fn libraryUseDirectory(directory: String) {
 // none does or no library is known. The modules a program reaches into the machine through
 // (`std.raw` and its kind) are never offered: importing one is a decision, not a fix.
 public fn libraryModulesDeclaring(name: String) -> Vec<String> {
-    libraryReadFunctions()
     let mut found: Vec<String> = []
+    if (libraryOffersImports == false) { return found }
+    libraryReadFunctions()
     for i in 0..<libraryNames.length {
         if (libraryNames[i].equals(name) == false) { continue }
         let owner = libraryOwners[i]

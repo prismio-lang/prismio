@@ -87,19 +87,29 @@ fn completionImportLine(text: String, module: String) -> Int {
     return 0
 }
 
-// The library's modules, `std.<name>` for each `<name>.plib` beside the compiler (bin/, lib/ and stdlib/ are one
-// layout), so that a completion can see every library name and say which import each one needs.
+// The library's modules, named by where each `.plib` sits under the `stdlib/` beside the compiler
+// (bin/, lib/ and stdlib/ are one layout), so that a completion can see every library name and say which
+// import each one needs. A module under a `_` segment is sealed to the library and not offered.
 fn completionLibraryModules(compiler: String) -> Vec<String> {
     let mut modules: Vec<String> = []
     let mut real = compiler.clone()
     let resolved = realPath(compiler)
     if (resolved != none) { real = expect(resolved).clone() }
     let stdlib = joinPath(directoryOf(directoryOf(real)), "stdlib")
-    if (directoryExists(stdlib) == false) { return modules }
-    for name in listDirectory(stdlib) {
-        if (name.endsWith(".plib")) { modules.push("std.".concat(name.slice(0, name.length - 5))) }
-    }
+    if (directoryExists(stdlib)) { completionModulesUnder(stdlib, "std", modules) }
     return modules
+}
+
+fn completionModulesUnder(directory: String, prefix: String, inout modules: Vec<String>) {
+    for name in listDirectory(directory) {
+        if (name.startsWith("_") or name.startsWith(".")) { continue }
+        let path = joinPath(directory, name)
+        if (directoryExists(path)) {
+            completionModulesUnder(path, prefix.concat(".", name), modules)
+        } else if (name.endsWith(".plib")) {
+            modules.push(prefix.concat(".", name.slice(0, name.length - 5)))
+        }
+    }
 }
 
 // Whether the caret is inside a string literal or a `//` comment of its line.

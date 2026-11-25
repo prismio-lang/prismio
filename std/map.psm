@@ -103,7 +103,7 @@
 // id-keyed table fast: 7.25 ms against 3.64 ms on `key_value_update`'s update
 // phase. `keyMixInt` folds the high half into the low half and stops, and
 // `mapRehash` below is what makes that safe.
-module freestanding(runtime)
+module prelude freestanding(runtime)
 import std.key
 import std.copy
 import std.default

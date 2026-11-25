@@ -18,7 +18,7 @@
 // A `copyOf` that returns `self` is correct only for a type that owns nothing:
 // returning a parameter from a function is a borrow escaping, and for an owned
 // type it is an alias two scopes both believe they own.
-module freestanding(runtime)
+module prelude freestanding(runtime)
 import std.string
 
 lang("copy") trait Copy {
