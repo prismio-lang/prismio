@@ -206,7 +206,7 @@ that keeps replacing holds everything it ever stored.
 
 `PRISMIO_COLUMN_TRACE=1 prismio build x.psm` prints each column's verdict and the first use that kept it
 open. What keeps one open: a `public` or `internal` field; the column passed to a function, bound, sliced
-or returned (so `pop`, `removeAt`, `sorted`, `retain` and the other `std.vec` functions over a field keep
+or returned (so `pop`, `removeAt`, `sorted`, `retain` and the other `std.core.vec` functions over a field keep
 it parked: they are Prismio functions taking the Vec); a bound view still read after a store; a view
 passed to a function that stores into the column; a Vec that did not come from a literal, `list_new` or
 an owning call (a column built from a parameter). Field stores *through* an element (`c.items[0].name =
@@ -653,7 +653,7 @@ rather than the static estimate (`PRISMIO_UNROLL_BUDGET`).
 
 ### A freestanding program has no `min` or `max`
 
-`std.math` is outside the freestanding allowlist (FREESTANDING_PLAN step 5), because some of its
+`std.math` is hosted (it has no `module freestanding` header), because some of its
 functions are instructions on one target and C library calls on another; integer `min` and `max` are
 neither, but come with it. A freestanding program writes its own, as the benchmark suite does. The
 interval walk recognises a hand-written `min`/`max` by its body (`nowrapSelection`), so nothing is
@@ -663,7 +663,7 @@ lost to the analysis; the gap is the library surface.
 
 ## Language surface
 
-**The compiler still spells some of the library's vocabulary** (found 2026-11-22, after the lang items of `docs/STD_LAYOUT_PLAN.md` step 2). The items the language needs (`Result`, `??`, tuples, `Eq`/`Ord`/`Iterator`/`Copy`/`Key`, `HashMap`/`HashSet`, `vecOf`, the print family, the asm/raw/port wrappers) are found by marker. Four tables of names are not: the method names of arrays and `Vec` that `src/sema/array.psm` and `src/sema/vec.psm` lower to library functions (`sort`, `contains`, `fold`, ...); the `__builtin_*` to wrapper hint text in `semaBuiltinSpelling` (`src/sema/vec.psm`), which names `std.math`, `std.mem`, `std.asm` and `std.port`; the `String` method names the compiler writes for `+`, `==` and `as String` (`concat`, `compare`, `equals`, `toString`, `slice`, `charAt`, `parseFloat`, `parseBool`); and the freestanding module lists in `src/driver/imports.psm` and `src/symbols/library.psm` and the `std.` prefix of `lsp/completion.psm`, which steps 5 and 6 replace. Reproducer: `grep -rnE 'std\.[a-z_]+"' src lsp`. Moving or renaming one of these library functions breaks the compiler, which a lang item would not.
+**The compiler still spells some of the library's vocabulary** (found 2026-11-22, after the lang items of `docs/STD_LAYOUT_PLAN.md` step 2). The items the language needs (`Result`, `??`, tuples, `Eq`/`Ord`/`Iterator`/`Copy`/`Key`, `HashMap`/`HashSet`, `vecOf`, the print family, the asm/raw/port wrappers) are found by marker. Three tables of names are not: the method names of arrays and `Vec` that `src/sema/array.psm` and `src/sema/vec.psm` lower to library functions (`sort`, `contains`, `fold`, ...); the `__builtin_*` to wrapper hint text in `semaBuiltinSpelling` (`src/sema/vec.psm`), which names `std.math`, `std.mem`, `std.sys.asm`, `std.sys.port`, `std.sys.syscall` and `std.platform`; and the `String` method names the compiler writes for `+`, `==` and `as String` (`concat`, `compare`, `equals`, `toString`, `slice`, `charAt`, `parseFloat`, `parseBool`). Reproducer: `grep -rnE 'std\.[a-z_.]+"' src lsp`. Moving or renaming one of these library functions breaks the compiler, which a lang item would not.
 
 
 **A payload matched out of a `Result` and assigned to a variable declared above the `match` is never released.**
@@ -741,7 +741,7 @@ be stored through an index, so that sharing is not observable). Both need an ele
 A `[T]` parameter is a view by design.
 
 **`pop` and `removeAt` copy the element out, so they need `T: Copy`** (`pop` answers a `T?`;
-`../std/vec.psm`). A moving version needs the caller to become the element's owner with the
+`../std/core/vec.psm`). A moving version needs the caller to become the element's owner with the
 disposition the Vec would have used, and AIF has no rule for ownership leaving a container:
 modelled as a view the element leaks, as a fresh value a counted element is freed twice. They
 are library functions, so a Vec they are called on is also "lent" and its later removals park
@@ -758,7 +758,7 @@ build that declares a dependency says so (`P1081`).
 **`wrapping_*` / `checked_*` / `saturating_*` intent forms do not exist** (`a.wrapping_add(1)` is
 *unknown function*, 2026-10-09). `--overflow-checks` is the debug-mode check and the debug
 profile turns it on. Until the intent forms exist, the check never applies inside the standard
-library (`diag_file_module(...).startsWith("std.")` in `../src/ir/expr.psm`), which relies on
+library (`fileFromLibraryRoot` in `../src/ir/expr.psm`), which relies on
 wrapping (`keyMixWide` multiplies a U64 on purpose), and a user program that wraps on purpose
 has no way to say so.
 
@@ -798,9 +798,9 @@ is *"function `f` must return Int on every path, but control can reach its closi
 would not work across a `.plib`, where the body is not parsed; a `Never` return type is the
 planned fix.
 
-**A list literal needs `import std.vec`.** `p.arguments = ["a"]` in a file that imports only
-`std.process` fails with "`vecOf$String` is declared in `std.vec`, which this file does not
-import" (2026-10-09).
+**A list literal needs `import std.core.vec`** unless the build has `--prelude`. `p.arguments = ["a"]`
+in a file that imports only `std.process` fails with "`vecOf$String` is declared in `std.core.vec`,
+which this file does not import" (2026-10-09, path updated 2026-11-25).
 
 **`std.process` starts a program with an argument vector, and that is all.** It has no
 `runCommand` (replaced by the vector), and `kill` and `wait` exist. Still open:
@@ -865,7 +865,7 @@ equality-constraint machinery already exists.
 **There is no `Drop`-shaped trait.** It interacts with AIF's release placement and needs its own
 design pass.
 
-**`Eq` covers the builtins only.** `../std/eq.psm` has no instance for `Map` or `Vec` (checked
+**`Eq` covers the builtins only.** `../std/core/eq.psm` has no instance for `Map` or `Vec` (checked
 2026-10-09).
 
 **An `impl Trait` return type must be apparent in the `return`**: a struct literal, or a call to a
@@ -879,18 +879,18 @@ distinct through checking rather than rewriting it.
 
 **`Int<N>` of an unnamed width and `F16`, `F32`, `BF16`, `F128` implement no standard trait**
 (2026-10-21). `Eq`, `Ord`, `Copy`, `Default`, `Display` and `Key` are written per type in their own
-modules (`../std/eq.psm` and the rest), and the orphan rule lets only the module that declares a
+modules (`../std/core/eq.psm` and the rest), and the orphan rule lets only the module that declares a
 trait or a type implement one for the other, so a program cannot write `impl Key for Int<24>`
 (`this module declares neither`). The operators all work, so the cost is the trait-bounded APIs: a
 `Map<Int<24>, V>`, `Vec<F32>.sort()`, `Vec<F32>.filled(n, x)` and `contains`. Two pieces. For the
 four floats it is a list: add the impls to the trait modules, which `src/` imports through
-`std.vec`, so **the bootstrap seed has to be cut and committed first** or the old seed reads `F32`
+`std.core.vec`, so **the bootstrap seed has to be cut and committed first** or the old seed reads `F32`
 as a struct and `prismio bootstrap` fails. For an unnamed integer width there is no list to write;
 it needs either impls synthesised on first use of a width (sema builds declarations for the
 traits the program imports, as it builds `dyn$Show` structs) or a blanket `impl<T: Integer>`, which
 the language does not have.
 
-**`print` of `F16`, `F32`, `BF16` and `F128` needs `import std.number_text`** for the same seed
+**`print` of `F16`, `F32`, `BF16` and `F128` needs `import std.fmt.number`** for the same seed
 reason: their overloads belong beside `Float`'s in `../std/io.psm` and `../std/string.psm`, which
 `src/` imports. Printing an `Int<N>` wider than 64 bits needs the same import and always will (a
 call into a module is allowed only from a file that imports it); up to 64 bits it does not.
@@ -913,8 +913,8 @@ arithmetic is `__addtf3`, `__multf3`, `__extendhfsf2` and their kind. They resol
 (measured, aarch64) and are in libgcc on Linux; a Windows program using one is expected not to
 link, because `link.exe` is given no builtins library. Not run on Linux or Windows.
 
-**`F128` prints as the double nearest it** (`../std/number_text.psm`): the decimal machinery in
-`../std/float_text.psm` works on a double's 53 bits.
+**`F128` prints as the double nearest it** (`../std/fmt/number.psm`): the decimal machinery in
+`../std/_fmt/float.psm` works on a double's 53 bits.
 
 ---
 
@@ -1026,12 +1026,6 @@ undelivered message back and counted endpoints are `CHANNELS_PLAN.md` Phases 0 a
 `bootstrap/seed.ll` and passes; the seed was refreshed on 2026-10-29. A feature `src/` starts to need still goes in two
 steps: teach the frontend, cut a seed (`prismio seed`), have the maintainer commit it, then use it in `src/`.
 
-**`prismio verify` packages `dist/` without a freestanding failure core**, so a freestanding
-program that references `prismio_panic` or `prismio_step_check` cannot link in the
-`freestanding_bench` test (constant folding hides it for constant ranges). Package with
-`--freestanding-target aarch64-unknown-none-elf` in `verify`, or keep benchmark code free of
-failure paths.
-
 **Windows still links `LLVM-C.dll` and runs the whole-module library merge.** Static LLVM there
 is feasible (the archive has native `LLVM*.lib` and `llvm-config.exe`) but built `/MT`, so the
 Windows compiler would change C runtime too; not started (`docs/LLVM_BRIDGE_PLAN.md`, step 2).
@@ -1074,20 +1068,24 @@ program. A `String?` returned by `stripPrefix` and read in a program that also r
 null for it answered correctly out of tree; that is one probe, not an argument.
 
 **A bare `tools/bootstrap.py` generation in `../build` is not a complete compiler.** A compiler is a
-layout (`bin/`, `lib/runtime/*.bc`, `stdlib/*.plib`), not a file, and a generation builds the
-compiler and nothing else. `prismio build` leaves the full toolchain beside the project host;
+layout (`bin/`, `lib/runtime/*.bc`, `stdlib/**/*.plib`), not a file, and a generation builds the
+compiler and a copy of `std/` as source, with no runtime bitcode. `prismio build` leaves the full toolchain beside the project host;
 point `tests/test_runner.py --compiler` at that, or at a packaged `dist`, or package the generation
 first.
 
-**Almost nothing in `../tests` reads a `.plib`.** `std.*` resolves by walking up from the *entry
-file* ([search order](https://developers.prismio.org/runtime/supported-surface#standard-module-search-order)),
-so every fixture under `../tests` compiles `../std` from source and a defect on the installed path
-is invisible to the suite (`sort()` failed to link from every installed stdlib that way, with the
-suite green). `run_module_artifact_test` builds `sort`, `std.platform` and a `std.process` struct
-against the packaged toolchain and `run_ums_test` builds a program outside the checkout; everything
-else a user reaches only through a `.plib` is untested. **The same holds for A/B work**: from inside
-the checkout the compiler reads `std/` from source, so a std change is visible to the *old*
-compiler too; build probes out of tree.
+**The standard library's layout has two parts left** (`docs/STD_LAYOUT_PLAN.md` steps 6 and 7).
+`std.io` is one file, so input is `std.io.input`: as a folder, every printing program also compiled
+input and poll. `std.unicode` is a public module whose methods are declared on `String` there: moved
+into `std.string`, every String program read the width and grapheme tables (`check` 11.1 to 14.6 ms,
+hello world 5.9 to 14.4 ms). The lazy prelude is behind `--prelude` and no project build can ask for
+it; a name an imported module already declares keeps meaning that one.
+
+**A change that needs new `std/` and new `src/` together cannot be built by an older compiler**,
+which reads its own `stdlib/`. Take it with `prismio bootstrap --promote`.
+
+**`tools/gen_syscalls.py --check` compares nothing on a newer SDK than the table was generated
+from** (SDK 27.2 against the recorded 27.0, 2026-11-25). The Windows path of PLIB bitcode writing and
+of `tools/toolchain_layout.psm` has not been run on Windows.
 
 **Nothing packages a cross target by default.** `tools/package.py --target <triple> --sysroot
 <triple>=<path>` does and needs that target's C headers; `../tools/release.py` builds one archive

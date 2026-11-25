@@ -1,8 +1,21 @@
 # The standard library's layout: folders, sealed modules, tiers, and generated code
 
-> **Implementation status, 2026-11-22: steps 0, 1, 2 and 3 of section 6 are built and committed** (the alias table and the
-> lazy prelude lookup moved from step 1 to steps 6 and 7, because neither needs the seed; `lang(...)` also marks `impl`
-> members; a trait takes no visibility marker, so the examples read `lang("eq") trait Eq`). Steps 4-8 are not started.
+> **Implemented 2026-11-25: all of section 6's steps are built and gated**, with these differences from the text below.
+> What is left is in `docs/KNOWN_ISSUES.md`.
+>
+> - Step 1: the alias table and the prelude lookup moved to steps 6 and 7 (neither needed the seed); `lang(...)` also
+>   marks `impl` members; a trait takes no visibility marker, so the examples read `lang("eq") trait Eq`.
+> - Step 4 (D9): the `after` step runs the `toolchain-layout` target (the tool must link before runtime bitcode exists),
+>   so `after` may run a target with no after steps of its own. A change needing new `std/` and `src/` together is taken
+>   with `prismio bootstrap --promote`; an older installed compiler cannot first-build the checkout.
+> - Step 5 (D4): `std.number_text` (now `std.fmt.number`) is hosted: it imports `std.io`.
+> - Step 6 (D5): `std.io` stays one file and input is `std.io.input` (as a folder every printing program also compiled
+>   input and poll). D6 is not done: `std.unicode` stays a public module with its `String` methods (in `std.string`, every
+>   String program read the Unicode tables); `unicodeVersion()` is in `std.unicode`. Helpers `std.string` shares with
+>   other folders became `public`, since `internal` spans one folder.
+> - Step 7 (D3): the prelude is behind `--prelude`, off by default. It reads the names a file looks up before sema rather
+>   than asking at each unknown name; a name an imported module already declares keeps meaning that one.
+> - Step 8: `unicode.md` stays its own page (D6); the others moved as the table in section 4 says.
 >
 > **Original status: design only. Nothing below was built.** Written from a survey of
 > `std/`, `src/driver/imports.psm`, `src/symbols/{declarations,library}.psm`,
