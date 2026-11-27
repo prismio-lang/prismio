@@ -1,6 +1,7 @@
 # PIR: Prismio's middle IR, a layered hybrid
 
-**Status:** design, revised 2026-11-27. Nothing is built. The first version of this plan
+**Status:** design, revised 2026-11-27; stages P0 and P0b are built (§20), and what they
+decided is recorded in §20.1. The first version of this plan
 (2026-11-22) proposed a pure affine RVSDG. This revision keeps its goals, its measured motivation
 and its migration discipline, and changes the structure: PIR is now **several representations
 layered on one node set**, each taken from the IR family that is best at one of Prismio's problems.
@@ -163,11 +164,15 @@ by the verifier (§16.3).
 | Region | Source | Ports in | Ports out | Exit ports it offers |
 |---|---|---|---|---|
 | `fn` | a `fn`, a method, a lifted closure body, a lifted `spawn {}` | parameters, the allocation context (§10.3) | — | `return(values)` |
-| `branch` | `if`/`else`, `match`, `and`/`or`, `??`, `expect`, `if let`, `while let`'s test | the predicate or scrutinee; the owned values the arms consume | the merge values | `merge(values)` (one per arm path) |
+| `branch` | `if`/`else`, `match`, `and`/`or`, `??`, `if let`, `while let`'s test | the predicate or scrutinee; the owned values the arms consume | the merge values | `merge(values)` (one per arm path) |
 | `loop` | `while`, `for`, `loop`, `repeat`, `while let` | the loop-carried values | the values carried out | `next(carried)`, `break(values)`, plus a label |
 | `arena` | `region name {}` and every automatically placed arena | the region token | values that may leave (never arena-stored ones) | `out(values)` |
 | `taskscope` | `scope {}` | — | — | `out(values)` |
 | `block` | a lexical block, **debug information only** | — | — | — |
+
+`expect` is **not** a branch: it is one checked node on the spine (`may_trap`) with its failure
+edge implicit, like `check_index` (§9.2). A branch would have to port the operand in and hand it
+back (decided at P0b).
 
 A `group` (one per strongly connected component of the call graph) holds mutually recursive
 lambdas so signatures (§10) reach a fixed point over it. A `global` holds a module-level `let` or an
@@ -287,6 +292,11 @@ A place is identified by an abstract object (§8) and a path, so `a.items` and `
 different places when the heap model can tell `a` and `b` apart, and one place when it cannot. The
 coarser answer is always sound.
 
+**Until the heap model and signatures exist** (decided at P0b), a place is keyed by its static
+type (`Bag.items`, `elems<T>` for Vec, array and slice alike, `hdr<T>`, a global, `world`), and
+**every call clobbers every place**: it writes `world`, and each place gives its own version up to
+it. Signatures refine this at P6.
+
 ### 6.2 · State versions
 
 Every place has a chain of versions, `s0 → s1 → s2 …`, one per write. A write consumes one version
@@ -371,8 +381,14 @@ as "PIR decides where, AIF decides how", kept.
   which elaboration ends where §6.3 allows (§7.4).
 - **A8 · Calls.** A borrow parameter takes a view, a `sink` parameter consumes, an `inout`
   parameter takes the caller's place and gives it back written (Hylo's `inout`: as a value, an
-  in/out pair; at PIR-L, an address). The result is fresh `own`, a `view` of the bases the signature
-  names, or `copy`.
+  in/out pair; at PIR-L, an address). A local passed `inout` therefore **comes back as an extra
+  result of the call**, and the local names that result from then on; a field, element or global
+  passed `inout` is written through, and the call's clobber is the write. The result is fresh
+  `own`, a `view` of the bases the signature names, or `copy`. Until signatures exist (decided at
+  P0b), "may be a view" is a **least fixed point over the call graph**: a function is
+  view-returning if it returns a view or an `own ?w` value, or is not covered; a call to one is a
+  view with base `unknown{borrowed arguments}`, any other Prismio call is `own`, and a builtin or
+  extern is `own` only when its contract says it produces.
 - **A9 · Copies are owned allocations.** `clone` is a node and produces a fresh `own` value. So is
   every copying conversion: a literal converted to `String?`, a String view copied on keep. That is
   `RESEARCH_ROUND4.md` §2's fix, as structure.
@@ -446,6 +462,9 @@ Two nodes use witnesses:
   `flag` witness (one register, one branch at each drop). Both are legal; the cost model picks per
   binding. Storage agreement lands first on the AST and is the default; the witness is the option
   PIR adds.
+
+A merge of an owned and a borrowed value is `own ?w` (decided at P0b): the verifier treats it as
+owned on both sides, and elaboration chooses its witness.
 
 A witness is never an excuse to skip a proof: elaboration tries `static` first, and the manifest
 counts witnesses per function as a cost, as it counts tiers.
@@ -802,6 +821,9 @@ by widening).
 
 ## 17 · The pass pipeline
 
+Until P7 takes AIF's constraints from PIR, the pipeline runs sema → AIF → PIR (decided at P0b):
+PIR reads the analysis's answers and writes nothing back.
+
 ```
 build (per fn)  → verify
 signatures      → fixed point over call-graph SCCs
@@ -877,6 +899,18 @@ built on the AST first (item 2); its probes and fixtures become P2's acceptance 
 The order puts the interpreter (P1) before any decision is taken from PIR, and AIF and the facts
 (P7, P8) before emission (P9), because the leak and range wins come from the analyses and the plan
 table, and emission's wins (lifetime markers, alias scopes, result slots) are measured separately.
+
+### 20.1 · Decisions taken at P0 and P0b
+
+| Decision | Where |
+|---|---|
+| "May be a view" is a least fixed point over the call graph (`pir/summaries.psm`) | §7.2 (A8) |
+| A merge of an owned and a borrowed value is `own ?w` | §7.5 |
+| `expect` is one checked spine node, not a branch | §4.1 |
+| A `may_trap` node is never speculated | §5 |
+| A local passed `inout` comes back as an extra call result | §7.2 (A8) |
+| Places are keyed by static type and every call clobbers every place; coarse, refined by signatures at P6 | §6.1 |
+| PIR is built **after** AIF, so its passes can read the analysis | §17 |
 
 ## 21 · Alternatives considered and rejected
 
