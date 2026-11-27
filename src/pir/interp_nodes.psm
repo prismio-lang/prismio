@@ -1,0 +1,554 @@
+// What each computing node does to the interpreter's registers and objects (pir.interp):
+// operators and conversions, optionals, reads and writes of fields, elements and globals
+// with the pins and versions the hazard report needs, and the nodes that make objects.
+
+import std.collections.vec
+import std.string
+import ast.nodes
+import common.source_files
+import pir.types
+import pir.graph
+import pir.builder
+import pir.interp_types
+import pir.interp_heap
+import pir.interp_ops
+import pir.interp_code
+import pir.interp_builtins
+import pir.interp
+
+// ---------------------------------------------------------------------------
+// Values in storage
+// ---------------------------------------------------------------------------
+
+// `value` as it is held by a slot of `type`: an array whose elements own nothing is held
+// by value, so storing one copies it.
+internal fn pirStored(program: PirProgram, shapes: PirShapes, heap: PirHeap, type: Int, value: I64, site: Int) -> I64 {
+    if (type < 0 or value == (0 as I64) or pirArrayCopies(program.types, type) == false) { return value }
+    return pirArrayCopy(program, shapes, heap, value, site)
+}
+
+private fn pirArrayCopy(program: PirProgram, shapes: PirShapes, heap: PirHeap, source: I64, site: Int) -> I64 {
+    let from = source as Int
+    let type = heap.objects[from].type
+    let copy = pirObjectNew(heap, PirObjectKind.ARRAY, type, site)
+    let mut element = -1
+    if (type >= 0) { element = program.types.child[type] }
+    for i in 0..<heap.objects[from].slots.length {
+        let mut held = heap.objects[from].slots[i]
+        if (element >= 0 and program.types.kind[element] == PirTypeKind.ARRAY and held != (0 as I64)) {
+            held = pirArrayCopy(program, shapes, heap, held, site)
+        }
+        heap.objects[copy as Int].slots.push(held)
+    }
+    return copy
+}
+
+// What zero-filled storage of `type` holds.
+internal fn pirZero(program: PirProgram, shapes: PirShapes, heap: PirHeap, m: PirMachine, type: Int, site: Int, depth: Int) -> I64 {
+    if (type < 0) { return 0 as I64 }
+    pirShapesClassify(shapes, program.types)
+    if (shapes.class[type] == PirClass.OPT_NARROW) { return pirAbsent() }
+    if (shapes.class[type] != PirClass.REF) { return 0 as I64 }
+    if (depth > 8) { return 0 as I64 }
+    let kind = program.types.kind[type]
+    if (kind == PirTypeKind.STRING) { return pirObjectNew(heap, PirObjectKind.STRING, -1, site) }
+    if (kind == PirTypeKind.VEC) { return pirObjectNew(heap, PirObjectKind.VEC, type, site) }
+    if (kind == PirTypeKind.STRUCT) {
+        let fields = pirStructFields(program, shapes, type)
+        let made = pirObjectNew(heap, PirObjectKind.STRUCT, type, site)
+        for i in 0..<fields {
+            let held = pirZero(program, shapes, heap, m, shapes.fieldTypes[shapes.fieldStart[type] + i], site, depth + 1)
+            heap.objects[made as Int].slots.push(held)
+        }
+        return made
+    }
+    if (kind == PirTypeKind.ARRAY) {
+        let length = program.types.count[type]
+        if (length > 10000000) {
+            pirStop(m, "array of ".concat(length.toString(), " elements"))
+            return 0 as I64
+        }
+        let made = pirObjectNew(heap, PirObjectKind.ARRAY, type, site)
+        for i in 0..<length {
+            let held = pirZero(program, shapes, heap, m, program.types.child[type], site, depth + 1)
+            heap.objects[made as Int].slots.push(held)
+        }
+        return made
+    }
+    return 0 as I64
+}
+
+// Room for one more element, growing as `list_push` does.
+internal fn pirGrow(heap: PirHeap, list: Int) {
+    let length = heap.objects[list].slots.length
+    if (length < heap.objects[list].capacity) { return }
+    if (heap.objects[list].capacity == 0) {
+        heap.objects[list].capacity = 4
+    } else {
+        heap.objects[list].capacity = heap.objects[list].capacity * 2
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Computing nodes
+// ---------------------------------------------------------------------------
+
+private fn pirSet(m: PirMachine, f: PirFunc, base: Int, node: Int, value: I64, pin: Int) {
+    if (f.resCount[node] == 0) { return }
+    let result = pirResultAt(f, node, 0)
+    m.regs[base + result] = value
+    m.pins[base + result] = pin
+}
+
+// Whether `value` of this class holds nothing.
+private fn pirIsAbsent(shapes: PirShapes, type: Int, value: I64) -> Bool {
+    if (shapes.class[type] == PirClass.OPT_NARROW) { return value == pirAbsent() }
+    return value == (0 as I64)
+}
+
+private fn pirPresentValue(shapes: PirShapes, heap: PirHeap, type: Int, value: I64) -> I64 {
+    if (shapes.class[type] == PirClass.OPT_BOXED and value != (0 as I64)) { return heap.objects[value as Int].slots[0] }
+    return value
+}
+
+internal fn pirWrapValue(shapes: PirShapes, heap: PirHeap, type: Int, value: I64, site: Int) -> I64 {
+    if (shapes.class[type] != PirClass.OPT_BOXED) { return value }
+    let box = pirObjectNew(heap, PirObjectKind.BOX, -1, site)
+    heap.objects[box as Int].slots.push(value)
+    return box
+}
+
+private fn pirIsScalarOptional(class: PirClass) -> Bool {
+    return class == PirClass.OPT_NARROW or class == PirClass.OPT_BOXED
+}
+
+// `x as T?`: the converted value, present only where the conversion keeps what it means
+// (src/ir/expr.psm `generateCheckedCast`).
+private fn pirCheckedCast(program: PirProgram, shapes: PirShapes, heap: PirHeap, f: PirFunc, node: Int, from: Int, to: Int, word: I64, site: Int) -> I64 {
+    let inner = program.types.child[to]
+    let mut source = from
+    let mut value = word
+    let mut present = true
+    if (pirIsScalarOptional(shapes.class[from])) {
+        present = pirIsAbsent(shapes, from, word) == false
+        value = pirPresentValue(shapes, heap, from, word)
+        source = program.types.child[from]
+    }
+    let mut converted = value
+    if (shapes.class[inner] == PirClass.ENUM and shapes.class[source] == PirClass.INT) {
+        let name = program.types.name[inner].clone()
+        converted = pirCastScalar(shapes, source, inner, value)
+        if (shapes.enumReprBits.contains(name.clone())) {
+            let key = name.concat("#", converted.toString())
+            present = present and pirFits(shapes, source, inner, value) and shapes.enumMembers.contains(key)
+        } else {
+            // One unsigned compare against the variant count.
+            let count = shapes.enumCounts.getOr(name, 0)
+            present = present and ((value & pirMask(shapes.bits[source])) as U64) < (count as U64)
+        }
+    } else {
+        present = present and pirFits(shapes, source, inner, value)
+        converted = pirCastScalar(shapes, source, inner, value)
+    }
+    if (present == false) {
+        if (shapes.class[to] == PirClass.OPT_NARROW) { return pirAbsent() }
+        return 0 as I64
+    }
+    return pirWrapValue(shapes, heap, to, converted, site)
+}
+
+private fn pirBinaryNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int, op: Int, site: Int) {
+    let leftValue = pirOperandAt(f, node, 0)
+    let rightValue = pirOperandAt(f, node, 1)
+    let a = m.regs[base + leftValue]
+    let b = m.regs[base + rightValue]
+    let left = f.valType[leftValue]
+    let right = f.valType[rightValue]
+    let leftClass = shapes.class[left]
+    let rightClass = shapes.class[right]
+
+    // A scalar `T?` against another, or against `none`.
+    if (pirIsScalarOptional(leftClass) or pirIsScalarOptional(rightClass)) {
+        let mut present = true
+        let mut other = true
+        if (leftClass == PirClass.NONE) {
+            present = false
+        } else if (pirIsScalarOptional(leftClass)) {
+            present = pirIsAbsent(shapes, left, a) == false
+        }
+        if (rightClass == PirClass.NONE) {
+            other = false
+        } else if (pirIsScalarOptional(rightClass)) {
+            other = pirIsAbsent(shapes, right, b) == false
+        }
+        let mut equal = present == other
+        if (present and other) {
+            let x = pirPresentValue(shapes, heap, left, a)
+            let y = pirPresentValue(shapes, heap, right, b)
+            let mut kind = left
+            if (pirIsScalarOptional(leftClass)) { kind = program.types.child[left] }
+            if (shapes.class[kind] == PirClass.FLOAT) {
+                equal = pirFloatOf(x) == pirFloatOf(y)
+            } else {
+                equal = x == y
+            }
+        }
+        if (op == PIR_NE) { equal = equal == false }
+        pirSet(m, f, base, node, pirBool(equal), 0)
+        return
+    }
+
+    if (leftClass == PirClass.REF or leftClass == PirClass.OPT_REF or leftClass == PirClass.NONE
+            or rightClass == PirClass.REF or rightClass == PirClass.OPT_REF) {
+        if (op != PIR_EQ and op != PIR_NE) {
+            pirStop(m, "operator ".concat(f.nodeName[node], " on ", pirTypeText(program.types, left)))
+            return
+        }
+        pirPinCheck(heap, m.pins[base + leftValue], site)
+        pirPinCheck(heap, m.pins[base + rightValue], site)
+        let mut equal = a == b
+        if (a != (0 as I64) and b != (0 as I64) and heap.objects[a as Int].kind == PirObjectKind.STRING) {
+            equal = pirStringEquals(heap, a, b)
+        }
+        if (op == PIR_NE) { equal = equal == false }
+        pirSet(m, f, base, node, pirBool(equal), 0)
+        return
+    }
+
+    if (leftClass == PirClass.FLOAT) {
+        pirSet(m, f, base, node, pirFloatBinary(op, a, b), 0)
+        return
+    }
+    if (leftClass == PirClass.UNSUPPORTED or op < 0) {
+        pirStop(m, "operator ".concat(f.nodeName[node], " on ", pirTypeText(program.types, left)))
+        return
+    }
+    let mut bits = shapes.bits[left]
+    let mut signed = shapes.signed[left]
+    let mut x = a
+    let mut y = b
+    // A shift amount keeps its own type; everything else is the left operand's.
+    if (leftClass == PirClass.CHAR and op >= PIR_LT) {
+        x = pirNormalize(a, 8, true)
+        y = pirNormalize(b, 8, true)
+        signed = true
+    }
+    if ((f.nodeFlags[node] & PIR_MAY_TRAP) != 0 and (op == PIR_ADD or op == PIR_SUB or op == PIR_MUL)) {
+        if (pirOverflows(op, x, y, bits, signed)) {
+            let at = ptr_to_node(f.nodeAst[node])
+            pirFail(m, 1, "runtime error: integer overflow in `".concat(f.nodeName[node], "` at ",
+                diag_file_path(at.file), ":", at.line.toString(),
+                "\nnote: Int is signed 32-bit and wraps in release builds; ",
+                "this check is on because the program was built with --overflow-checks"))
+            return
+        }
+    }
+    pirSet(m, f, base, node, pirIntBinary(op, x, y, bits, signed), 0)
+}
+
+private fn pirUnaryNode(program: PirProgram, shapes: PirShapes, m: PirMachine, f: PirFunc, base: Int, node: Int, op: Int) {
+    let operand = pirOperandAt(f, node, 0)
+    let value = m.regs[base + operand]
+    let type = f.valType[operand]
+    if (op == 1) {
+        pirSet(m, f, base, node, pirBool(value == (0 as I64)), 0)
+    } else if (op == 0 and shapes.class[type] == PirClass.FLOAT) {
+        pirSet(m, f, base, node, value ^ pirAbsent(), 0)
+    } else if (op == 0) {
+        pirSet(m, f, base, node, pirNormalize((0 as I64) - value, shapes.bits[type], shapes.signed[type]), 0)
+    } else if (op == 2) {
+        pirSet(m, f, base, node, pirNormalize(value ^ (-1 as I64), shapes.bits[type], shapes.signed[type]), 0)
+    } else {
+        pirStop(m, "operator ".concat(f.nodeName[node], " on ", pirTypeText(program.types, type)))
+    }
+}
+
+// The pin of a result read out of `object`'s `slot`: a view where it is one, and a fixed
+// array, which is held in place.
+private fn pirReadPin(shapes: PirShapes, program: PirProgram, heap: PirHeap, code: PirCode, step: Int, f: PirFunc, result: Int, object: Int, slot: Int, parent: Int, site: Int) -> Int {
+    let type = f.valType[result]
+    if (f.valMode[result] != PirMode.VIEW and program.types.kind[type] != PirTypeKind.ARRAY) { return 0 }
+    let pin = pirPinNew(heap, object, slot, site, parent, code.lastPin[step])
+    code.lastPin[step] = pin
+    return pin
+}
+
+// The container behind `handle` and the position `index` names in it, or false after
+// reporting the failure.
+private fn pirElement(heap: PirHeap, m: PirMachine, handle: I64, index: I64, inout out: Vec<Int>) -> Bool {
+    if (handle == (0 as I64)) {
+        pirStop(m, "null container")
+        return false
+    }
+    let mut container = handle as Int
+    let mut at = index as Int
+    if (heap.objects[container].kind == PirObjectKind.SLICE) {
+        let start = heap.objects[container].slots[1] as Int
+        let length = heap.objects[container].slots[2] as Int
+        container = heap.objects[container].slots[0] as Int
+        let under = heap.objects[container].slots.length
+        if (at < 0 or at >= length or start + at >= under) {
+            pirFail(m, 1, "runtime error: slice index ".concat(at.toString(), " is outside view [", start.toString(),
+                "..<", (start + length).toString(), "] of collection length ", under.toString()))
+            return false
+        }
+        at = start + at
+    } else if (at < 0 or at >= heap.objects[container].slots.length) {
+        let mut kind = "a Vec"
+        if (heap.objects[container].kind == PirObjectKind.ARRAY) { kind = "an array" }
+        pirIndexFail(m, kind, at, heap.objects[container].slots.length)
+        return false
+    }
+    out.push(container)
+    out.push(at)
+    return true
+}
+
+private fn pirCheckOperand(heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int, index: Int, site: Int) {
+    pirPinCheck(heap, m.pins[base + pirOperandAt(f, node, index)], site)
+}
+
+private fn pirOperandWord(m: PirMachine, f: PirFunc, base: Int, node: Int, index: Int) -> I64 {
+    return m.regs[base + pirOperandAt(f, node, index)]
+}
+
+internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, m: PirMachine, f: PirFunc, code: PirCode, step: Int, base: Int, site: Int) {
+    let node = code.node[step]
+    let detail = code.x[step]
+    match (f.op[node]) {
+        PirOp.BINARY => { pirBinaryNode(program, shapes, heap, m, f, base, node, detail, site) }
+        PirOp.UNARY => { pirUnaryNode(program, shapes, m, f, base, node, detail) }
+        PirOp.RANGE => {
+            let a = pirOperandWord(m, f, base, node, 0)
+            let b = pirOperandWord(m, f, base, node, 1)
+            let mut c = 0 as I64
+            let mut d = 0 as I64
+            if (f.opCount[node] > 2) { c = pirOperandWord(m, f, base, node, 2) }
+            if (f.opCount[node] > 3) { d = pirOperandWord(m, f, base, node, 3) }
+            pirSet(m, f, base, node, pirRangeValue(detail, a, b, c, d), 0)
+        }
+        PirOp.CAST => {
+            let operand = pirOperandAt(f, node, 0)
+            let to = f.valType[pirResultAt(f, node, 0)]
+            let from = f.valType[operand]
+            if (shapes.class[from] == PirClass.UNSUPPORTED or shapes.class[to] == PirClass.UNSUPPORTED) {
+                pirStop(m, "cast of ".concat(pirTypeText(program.types, from), " to ", pirTypeText(program.types, to)))
+                return
+            }
+            if (pirIsScalarOptional(shapes.class[to])) {
+                pirSet(m, f, base, node, pirCheckedCast(program, shapes, heap, f, node, from, to, m.regs[base + operand], site), 0)
+                return
+            }
+            let value = pirCastScalar(shapes, from, to, m.regs[base + operand])
+            pirSet(m, f, base, node, value, m.pins[base + operand])
+        }
+        PirOp.WRAP => {
+            let operand = pirOperandAt(f, node, 0)
+            let to = f.valType[pirResultAt(f, node, 0)]
+            let value = pirWrapValue(shapes, heap, to, m.regs[base + operand], site)
+            pirSet(m, f, base, node, value, m.pins[base + operand])
+        }
+        PirOp.IS_SOME => {
+            let operand = pirOperandAt(f, node, 0)
+            let present = pirIsAbsent(shapes, f.valType[operand], m.regs[base + operand]) == false
+            pirSet(m, f, base, node, pirBool(present), 0)
+        }
+        PirOp.UNWRAP => {
+            let operand = pirOperandAt(f, node, 0)
+            let type = f.valType[operand]
+            let value = m.regs[base + operand]
+            if (f.opCount[node] > 1 and pirIsAbsent(shapes, type, value)) {
+                pirSet(m, f, base, node, pirOperandWord(m, f, base, node, 1), 0)
+            } else {
+                pirSet(m, f, base, node, pirPresentValue(shapes, heap, type, value), m.pins[base + operand])
+            }
+        }
+        PirOp.EXPECT => {
+            let operand = pirOperandAt(f, node, 0)
+            let type = f.valType[operand]
+            let value = m.regs[base + operand]
+            if (pirIsAbsent(shapes, type, value)) {
+                if (pirIsScalarOptional(shapes.class[type])) {
+                    pirPanic(m, f, node, "panic", "expect() called on a `none` value")
+                } else {
+                    pirFail(m, 1, "runtime error: expect() called on a `none` value")
+                }
+            } else {
+                pirSet(m, f, base, node, pirPresentValue(shapes, heap, type, value), m.pins[base + operand])
+            }
+        }
+        PirOp.FIELD => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            let object = pirOperandWord(m, f, base, node, 0) as Int
+            if (object == 0 or detail >= heap.objects[object].slots.length) {
+                pirBroken(m, f, node, "field read of no object")
+                return
+            }
+            let value = heap.objects[object].slots[detail]
+            let result = pirResultAt(f, node, 0)
+            let parent = m.pins[base + pirOperandAt(f, node, 0)]
+            let pin = pirReadPin(shapes, program, heap, code, step, f, result, object, detail, parent, site)
+            pirSet(m, f, base, node, value, pin)
+        }
+        PirOp.ELEM => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            let mut found: Vec<Int> = []
+            if (pirElement(heap, m, pirOperandWord(m, f, base, node, 0), pirOperandWord(m, f, base, node, 1), found) == false) {
+                return
+            }
+            let value = heap.objects[found[0]].slots[found[1]]
+            let result = pirResultAt(f, node, 0)
+            let parent = m.pins[base + pirOperandAt(f, node, 0)]
+            let pin = pirReadPin(shapes, program, heap, code, step, f, result, found[0], -1, parent, site)
+            pirSet(m, f, base, node, value, pin)
+        }
+        PirOp.LENGTH => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            let container = pirOperandWord(m, f, base, node, 0) as Int
+            if (container == 0) {
+                pirStop(m, "null container")
+                return
+            }
+            let mut length = heap.objects[container].slots.length as I64
+            if (heap.objects[container].kind == PirObjectKind.SLICE) { length = heap.objects[container].slots[2] }
+            pirSet(m, f, base, node, length, 0)
+        }
+        PirOp.FIELD_SET => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            pirCheckOperand(heap, m, f, base, node, 1, site)
+            let object = pirOperandWord(m, f, base, node, 0) as Int
+            if (object == 0 or detail >= heap.objects[object].slots.length) {
+                pirBroken(m, f, node, "field write of no object")
+                return
+            }
+            let type = f.valType[pirOperandAt(f, node, 1)]
+            let stored = pirStored(program, shapes, heap, type, pirOperandWord(m, f, base, node, 1), site)
+            let displaced = heap.objects[object].slots[detail]
+            heap.objects[object].slots[detail] = stored
+            pirBumpField(heap, object, detail)
+            pirSet(m, f, base, node, displaced, 0)
+        }
+        PirOp.ELEM_SET => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            pirCheckOperand(heap, m, f, base, node, 2, site)
+            let mut found: Vec<Int> = []
+            if (pirElement(heap, m, pirOperandWord(m, f, base, node, 0), pirOperandWord(m, f, base, node, 1), found) == false) {
+                return
+            }
+            let type = f.valType[pirOperandAt(f, node, 2)]
+            let stored = pirStored(program, shapes, heap, type, pirOperandWord(m, f, base, node, 2), site)
+            let displaced = heap.objects[found[0]].slots[found[1]]
+            heap.objects[found[0]].slots[found[1]] = stored
+            pirBumpContents(heap, found[0])
+            pirSet(m, f, base, node, displaced, 0)
+        }
+        PirOp.PUSH => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            pirCheckOperand(heap, m, f, base, node, 1, site)
+            let list = pirOperandWord(m, f, base, node, 0) as Int
+            if (list == 0 or heap.objects[list].kind != PirObjectKind.VEC) {
+                pirStop(m, "push into something that is not a Vec")
+                return
+            }
+            let type = f.valType[pirOperandAt(f, node, 1)]
+            let stored = pirStored(program, shapes, heap, type, pirOperandWord(m, f, base, node, 1), site)
+            pirGrow(heap, list)
+            heap.objects[list].slots.push(stored)
+            pirBumpContents(heap, list)
+        }
+        PirOp.GLOBAL => {
+            let result = pirResultAt(f, node, 0)
+            let pin = pirReadPin(shapes, program, heap, code, step, f, result, -1, detail, 0, site)
+            pirSet(m, f, base, node, heap.globals[detail], pin)
+        }
+        PirOp.GLOBAL_SET => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            let type = f.valType[pirOperandAt(f, node, 0)]
+            let stored = pirStored(program, shapes, heap, type, pirOperandWord(m, f, base, node, 0), site)
+            let displaced = heap.globals[detail]
+            heap.globals[detail] = stored
+            heap.globalVersions[detail] = heap.globalVersions[detail] + 1
+            pirSet(m, f, base, node, displaced, 0)
+        }
+        PirOp.STRUCT => {
+            let type = f.valType[pirResultAt(f, node, 0)]
+            let fields = pirStructFields(program, shapes, type)
+            let made = pirObjectNew(heap, PirObjectKind.STRUCT, type, site)
+            for i in 0..<fields { heap.objects[made as Int].slots.push(0 as I64) }
+            let mut filled: Vec<Bool> = Vec<Bool>.filled(fields, false)
+            for i in 0..<f.opCount[node] {
+                pirCheckOperand(heap, m, f, base, node, i, site)
+                let position = code.pool[detail + i]
+                let held = shapes.fieldTypes[shapes.fieldStart[type] + position]
+                heap.objects[made as Int].slots[position] = pirStored(program, shapes, heap, held, pirOperandWord(m, f, base, node, i), site)
+                filled[position] = true
+            }
+            for i in 0..<fields {
+                if (filled[i]) { continue }
+                let zero = pirZero(program, shapes, heap, m, shapes.fieldTypes[shapes.fieldStart[type] + i], site, 0)
+                heap.objects[made as Int].slots[i] = zero
+            }
+            pirSet(m, f, base, node, made, 0)
+        }
+        PirOp.ARRAY => {
+            let type = f.valType[pirResultAt(f, node, 0)]
+            let mut kind = PirObjectKind.ARRAY
+            if (program.types.kind[type] == PirTypeKind.VEC) { kind = PirObjectKind.VEC }
+            let made = pirObjectNew(heap, kind, type, site)
+            for i in 0..<f.opCount[node] {
+                pirCheckOperand(heap, m, f, base, node, i, site)
+                let element = f.valType[pirOperandAt(f, node, i)]
+                let held = pirStored(program, shapes, heap, element, pirOperandWord(m, f, base, node, i), site)
+                heap.objects[made as Int].slots.push(held)
+            }
+            heap.objects[made as Int].capacity = f.opCount[node]
+            pirSet(m, f, base, node, made, 0)
+        }
+        PirOp.ARRAY_ZERO => {
+            let type = f.valType[pirResultAt(f, node, 0)]
+            pirSet(m, f, base, node, pirZero(program, shapes, heap, m, type, site, 0), 0)
+        }
+        PirOp.COPY => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            let source = pirOperandWord(m, f, base, node, 0)
+            if (source == (0 as I64)) {
+                pirStop(m, "copy of no array")
+                return
+            }
+            pirSet(m, f, base, node, pirArrayCopy(program, shapes, heap, source, site), 0)
+        }
+        PirOp.SLICE => { pirSliceNode(program, heap, m, f, base, node, site) }
+        _ => { pirBroken(m, f, node, "node with no meaning here") }
+    }
+}
+
+private fn pirSliceNode(program: PirProgram, heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int, site: Int) {
+    pirCheckOperand(heap, m, f, base, node, 0, site)
+    let source = pirOperandWord(m, f, base, node, 0)
+    if (source == (0 as I64)) {
+        pirStop(m, "slice of no container")
+        return
+    }
+    let mut under = source
+    let mut origin = 0 as I64
+    let mut available = heap.objects[source as Int].slots.length as I64
+    if (heap.objects[source as Int].kind == PirObjectKind.SLICE) {
+        under = heap.objects[source as Int].slots[0]
+        origin = heap.objects[source as Int].slots[1]
+        available = heap.objects[source as Int].slots[2]
+    }
+    let start = pirOperandWord(m, f, base, node, 1)
+    let end = pirOperandWord(m, f, base, node, 2)
+    if (start < (0 as I64) or end < start or end > available) {
+        let mut close = "..<".concat(end.toString())
+        if (f.nodeName[node].equals("inclusive")) { close = "..".concat((end - (1 as I64)).toString()) }
+        pirFail(m, 1, "runtime error: slice range [".concat(start.toString(), close,
+            "] is outside collection length ", available.toString()))
+        return
+    }
+    let made = pirObjectNew(heap, PirObjectKind.SLICE, f.valType[pirResultAt(f, node, 0)], site)
+    heap.objects[made as Int].slots.push(under)
+    heap.objects[made as Int].slots.push(origin + start)
+    heap.objects[made as Int].slots.push(end - start)
+    pirSet(m, f, base, node, made, 0)
+}

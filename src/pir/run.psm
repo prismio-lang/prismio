@@ -1,6 +1,6 @@
-// What `--emit-pir` and `--pir-coverage` ask for: build PIR for a checked module, verify
-// it, and report. Nothing here runs without one of the two flags, and nothing it does
-// reaches the AST, the analysis or the emitted program.
+// What `--emit-pir`, `--pir-coverage` and `--pir-run` ask for: build PIR for a checked
+// module, verify it, and report on it or interpret it. Nothing here runs without one of
+// those flags, and nothing it does reaches the AST, the analysis or the emitted program.
 
 import std.collections.vec
 import std.collections.map
@@ -16,12 +16,25 @@ import pir.summaries
 import pir.leaks
 import pir.verify
 import pir.dump
+import pir.interp
 
 // `emit` is "" for no dump, "-" for standard output, and otherwise the file to write.
 // False when the dump could not be written or the verifier found something, with the
 // diagnostics already raised.
 public fn pirRun(module: ASTNode, sourcePath: String, emit: String, coverage: Bool, overflowChecks: Bool) -> Bool {
     let program = pirBuildProgram(module, overflowChecks)
+    return pirReportProgram(program, sourcePath, emit, coverage)
+}
+
+// `--pir-run`: what `pirRun` does and then, if the verifier accepted it, the program run by
+// the interpreter. Answers the status to exit with.
+public fn pirRunInterpreted(module: ASTNode, sourcePath: String, emit: String, coverage: Bool, overflowChecks: Bool, argv0: String) -> Int {
+    let program = pirBuildProgram(module, overflowChecks)
+    if (pirReportProgram(program, sourcePath, emit, coverage) == false) { return 1 }
+    return pirInterpret(program, module, argv0)
+}
+
+private fn pirReportProgram(program: PirProgram, sourcePath: String, emit: String, coverage: Bool) -> Bool {
     let report = pirVerifyProgram(program)
 
     let mut written = true

@@ -300,6 +300,35 @@ internal fn pirIf(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode) {
     pirBranchClose(program, f, s, b, pirNoValues(), stmt)
 }
 
+// `assert(c, message)`: the message is built, and the failing call made, only in the arm
+// where `c` is false, which never comes back.
+internal fn pirAssert(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) {
+    let conditionPtr = node.child2
+    let condition = pirOperandExpr(program, f, s, ptr_to_node(conditionPtr))
+    if (pirOk(s) == false) { return }
+    let message = ptr_to_node(conditionPtr).next
+    let heads: Vec<Ptr> = [message]
+    let b = pirBranchOpen(program, f, s, condition, heads, false, pirNoValues(), node)
+
+    pirArmBegin(program, f, s, b, "true")
+    pirArmEnd(program, f, s, b, pirNoValues())
+
+    pirArmBegin(program, f, s, b, "false")
+    let mut text = -1
+    if (nodeExists(message)) { text = pirOperandExpr(program, f, s, ptr_to_node(message)) }
+    if (pirOk(s)) {
+        let call = pirNodeNew(f, PirOp.CALL, "__builtin_assert", node)
+        pirOperand(f, call, condition, PirUse.BORROW)
+        if (text >= 0) { pirOperand(f, call, text, PirUse.BORROW) }
+        pirAppend(f, s.reg, call)
+        pirStateClobber(f, s.state, call)
+        pirExitPlain(f, s, PirPort.FAIL, node)
+    }
+    pirArmEnd(program, f, s, b, pirNoValues())
+
+    pirBranchClose(program, f, s, b, pirNoValues(), node)
+}
+
 // `a and b`, `a or b`: the right side is built, run and ended in one arm (A3).
 internal fn pirShortCircuit(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
     let both = node.s1.equals("and")
@@ -480,6 +509,9 @@ internal fn pirMatch(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode
             }
         }
         let ports = pirArmBegin(program, f, s, b, label)
+        if (payload and arm.s1.equals("_") == false and nodeExists(arm.child3)) {
+            f.regValue[s.reg] = ptr_to_node(arm.child3).s1.clone()
+        }
         let mark = s.names.length
         if (payload and arm.s1.equals("_") == false) {
             let mut object = scrutinee

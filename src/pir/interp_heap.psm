@@ -1,0 +1,196 @@
+// The interpreter's memory (docs/PIR_PLAN.md §14): objects, not bytes. A handle is an
+// object's index; 0 is no object. Contents carry a version that every write advances, and
+// a view remembers the version it was pinned to, which is what the hazard report reads.
+//
+// An object records where it was made and a state. Nothing ends an object yet -- PIR has
+// no drops until P2 -- so every one stays `LIVE`. P2 sets the state at a drop, delegate or
+// leak node, reports an access to an object that is no longer `LIVE`, and lists those
+// still `LIVE` when the run ends as the leak list, grouped by `site`.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import std.io
+import std.mem
+
+public enum PirObjectKind { STRUCT, VEC, ARRAY, STRING, BOX, SLICE }
+
+public enum PirObjectState { LIVE, DROPPED, DELEGATED, LEAKED }
+
+public struct PirObject {
+    public kind: PirObjectKind,
+    // The PIR type id, or -1 for a string and a box.
+    public type: Int,
+    public state: PirObjectState,
+    // The allocation site: a node numbered across the program (`PirMachine.siteBase`),
+    // -1 for what the interpreter made itself.
+    public site: Int,
+    // Fields of a struct, elements of a Vec or array, the value of a box, or a slice's
+    // base handle, start and length.
+    public slots: Vec<I64>,
+    public bytes: Vec<U8>,
+    // A container's version, and a struct field's: written is what advances them.
+    public version: Int,
+    public fieldVersions: Vec<Int>,
+    public capacity: Int
+}
+
+// A pin is what a view was read from: an object's contents (`slot` -1), one of its fields,
+// or a global (`object` -1, `slot` the global), at one version. `parent` is the pin of the
+// view it was read through, which stales it too. Pin 0 is no pin.
+public struct PirPins {
+    public object: Vec<Int>,
+    public slot: Vec<Int>,
+    public version: Vec<Int>,
+    public site: Vec<Int>,
+    public parent: Vec<Int>
+}
+
+public struct PirHeap {
+    public objects: Vec<PirObject>,
+    public globals: Vec<I64>,
+    public globalVersions: Vec<Int>,
+    public pins: PirPins,
+    // Hazards by (pinning site, reading site), in the order first met.
+    internal hazardIds: HashMap<I64, Int>,
+    public hazardPin: Vec<Int>,
+    public hazardRead: Vec<Int>,
+    public hazardCount: Vec<I64>
+}
+
+public fn pirHeapNew() -> PirHeap {
+    let heap = PirHeap {
+        objects: [],
+        globals: [],
+        globalVersions: [],
+        pins: PirPins { object: [0], slot: [0], version: [0], site: [0], parent: [0] },
+        hazardIds: HashMap<I64, Int>(),
+        hazardPin: [], hazardRead: [], hazardCount: []
+    }
+    // Handle 0.
+    pirObjectNew(heap, PirObjectKind.BOX, -1, -1)
+    return heap
+}
+
+public fn pirObjectNew(heap: PirHeap, kind: PirObjectKind, type: Int, site: Int) -> I64 {
+    let handle = heap.objects.length
+    let slots: Vec<I64> = []
+    let bytes: Vec<U8> = []
+    let fieldVersions: Vec<Int> = []
+    heap.objects.push(PirObject {
+        kind: kind,
+        type: type,
+        state: PirObjectState.LIVE,
+        site: site,
+        slots: slots,
+        bytes: bytes,
+        version: 0,
+        fieldVersions: fieldVersions,
+        capacity: 0
+    })
+    return handle as I64
+}
+
+public fn pirStringNew(heap: PirHeap, text: String, site: Int) -> I64 {
+    let handle = pirObjectNew(heap, PirObjectKind.STRING, -1, site)
+    for i in 0..<text.length { heap.objects[handle as Int].bytes.push(text.byteAt(i) as U8) }
+    return handle
+}
+
+// A native String with the object's bytes, for the runtime's own operations.
+public fn pirStringText(heap: PirHeap, handle: I64) -> String {
+    let at = handle as Int
+    let length = heap.objects[at].bytes.length
+    let mut out = Buffer(length)
+    for i in 0..<length { out[i] = heap.objects[at].bytes[i] }
+    return out.toString()
+}
+
+public fn pirStringLength(heap: PirHeap, handle: I64) -> Int {
+    return heap.objects[handle as Int].bytes.length
+}
+
+// The byte at `index`, 0 past the end as the terminator the runtime keeps there reads.
+public fn pirStringByte(heap: PirHeap, handle: I64, index: Int) -> Int {
+    let at = handle as Int
+    if (index < 0 or index >= heap.objects[at].bytes.length) { return 0 }
+    return heap.objects[at].bytes[index] as Int
+}
+
+// A new string of `count` bytes of `source` from `from`, clipped to what it has.
+public fn pirStringRange(heap: PirHeap, source: I64, from: Int, count: Int, site: Int) -> I64 {
+    let out = pirObjectNew(heap, PirObjectKind.STRING, -1, site)
+    pirStringAppend(heap, out, source, from, count)
+    return out
+}
+
+public fn pirStringAppend(heap: PirHeap, target: I64, source: I64, from: Int, count: Int) {
+    for i in 0..<count {
+        let byte = pirStringByte(heap, source, from + i) as U8
+        heap.objects[target as Int].bytes.push(byte)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pins and hazards
+// ---------------------------------------------------------------------------
+
+public fn pirPinVersion(heap: PirHeap, object: Int, slot: Int) -> Int {
+    if (object < 0) { return heap.globalVersions[slot] }
+    if (slot < 0) { return heap.objects[object].version }
+    if (slot < heap.objects[object].fieldVersions.length) { return heap.objects[object].fieldVersions[slot] }
+    return 0
+}
+
+public fn pirBumpField(heap: PirHeap, object: Int, slot: Int) {
+    while (heap.objects[object].fieldVersions.length <= slot) { heap.objects[object].fieldVersions.push(0) }
+    heap.objects[object].fieldVersions[slot] = heap.objects[object].fieldVersions[slot] + 1
+}
+
+public fn pirBumpContents(heap: PirHeap, object: Int) {
+    heap.objects[object].version = heap.objects[object].version + 1
+}
+
+// A pin on the current version. `last` is the pin this site made before, reused when
+// nothing about it differs, so a loop over a container makes one.
+public fn pirPinNew(heap: PirHeap, object: Int, slot: Int, site: Int, parent: Int, last: Int) -> Int {
+    let version = pirPinVersion(heap, object, slot)
+    if (last != 0 and heap.pins.object[last] == object and heap.pins.slot[last] == slot
+            and heap.pins.version[last] == version and heap.pins.parent[last] == parent) {
+        return last
+    }
+    let id = heap.pins.object.length
+    heap.pins.object.push(object)
+    heap.pins.slot.push(slot)
+    heap.pins.version.push(version)
+    heap.pins.site.push(site)
+    heap.pins.parent.push(parent)
+    return id
+}
+
+// A read through a view pinned by `pin`, at node `site`. Legal in the language, and what a
+// representation holding an interior address would get wrong, so it is recorded.
+public fn pirPinCheck(heap: PirHeap, pin: Int, site: Int) {
+    let mut at = pin
+    while (at != 0) {
+        if (pirPinVersion(heap, heap.pins.object[at], heap.pins.slot[at]) > heap.pins.version[at]) {
+            pirHazard(heap, at, site)
+            return
+        }
+        at = heap.pins.parent[at]
+    }
+}
+
+private fn pirHazard(heap: PirHeap, pin: Int, site: Int) {
+    let from = heap.pins.site[pin]
+    let key = ((from as I64) << (32 as I64)) | (site as I64)
+    let found = heap.hazardIds.getOr(key, -1)
+    if (found >= 0) {
+        heap.hazardCount[found] = heap.hazardCount[found] + 1
+        return
+    }
+    heap.hazardIds.insert(key, heap.hazardPin.length)
+    heap.hazardPin.push(from)
+    heap.hazardRead.push(site)
+    heap.hazardCount.push(1 as I64)
+}

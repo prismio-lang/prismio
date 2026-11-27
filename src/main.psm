@@ -107,11 +107,13 @@ let USAGE_DEVELOPER =
       prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate
       prismio build <source.psm> --verify | --debug
 
-      prismio build <source.psm> [--emit-pir[=<file>]] [--pir-coverage]
+      prismio build <source.psm> [--emit-pir[=<file>]] [--pir-coverage] [--pir-run]
 
           --emit-pir writes the PIR dump (docs/PIR_PLAN.md) to standard output or
           the file, and --pir-coverage reports how many functions PIR can build.
           Both verify what was built, and neither changes the program's code.
+          --pir-run interprets `main` over PIR instead of building the program,
+          exits with its status, and reports views read after a write.
 
           --debug is the zero-analysis level and says nothing about debug info;
           --verify builds with the allocation ledger.
@@ -776,6 +778,9 @@ fn main() -> Int {
             argIndex = argIndex + 1
         } else if (arg.equals("--pir-coverage")) {
             options.pirCoverage = true
+            argIndex = argIndex + 1
+        } else if (arg.equals("--pir-run")) {
+            options.pirRun = true
             argIndex = argIndex + 1
         } else if (arg.equals("--overflow-checks")) {
             // RFC 0560's model: check in debug, wrap in release. `Int` is signed

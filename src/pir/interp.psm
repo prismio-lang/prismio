@@ -1,0 +1,398 @@
+// The PIR interpreter (docs/PIR_PLAN.md §14): runs `main` over PIR-H instead of emitting
+// code, with the language's semantics. A struct or `Vec` value is a handle to an object, so
+// two holders of one see each other's writes; a view reads through the version it was
+// pinned to, and a read after a write is reported on standard error as a hazard.
+//
+// The run ends as the compiled program's would: the same output, and the same message and
+// exit status for a failure. A program that reaches something the interpreter does not
+// model ends with `pir ineligible:` and status 125, and an inconsistency of its own with
+// `pir internal error:` and status 126.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import std.io
+import ast.nodes
+import ast.types
+import common.source_files
+import pir.types
+import pir.graph
+import pir.builder
+import pir.interp_types
+import pir.interp_heap
+import pir.interp_ops
+import pir.interp_code
+import pir.interp_builtins
+import pir.interp_nodes
+
+private fn pirDepthLimit() -> Int { return 100000 }
+
+private fn pirObjectLimit() -> Int { return 8000000 }
+
+public struct PirMachine {
+    // Compiled functions, and for each PIR function which of them, or -1.
+    internal codes: Vec<PirCode>,
+    internal codeOf: Vec<Int>,
+    // The first allocation-site number of each PIR function's nodes.
+    internal siteBase: Vec<Int>,
+    // Every live frame's registers and the pin of each.
+    internal regs: Vec<I64>,
+    internal pins: Vec<Int>,
+    // The callers: where each resumes, and the call node that waits for the result.
+    internal frameFunc: Vec<Int>,
+    internal frameStep: Vec<Int>,
+    internal frameBase: Vec<Int>,
+    internal frameCall: Vec<Int>,
+    internal scratch: Vec<I64>,
+    internal scratchPins: Vec<Int>,
+    internal halted: Bool,
+    internal status: Int,
+    internal argv0: String
+}
+
+internal fn pirHalt(m: PirMachine, status: Int) {
+    if (m.halted) { return }
+    m.halted = true
+    m.status = status
+}
+
+// A failure the compiled program would report the same way.
+internal fn pirFail(m: PirMachine, status: Int, message: String) {
+    if (m.halted) { return }
+    eprintln(message)
+    pirHalt(m, status)
+}
+
+internal fn pirExitProgram(m: PirMachine, status: Int) {
+    pirHalt(m, status & 255)
+}
+
+// Something the interpreter does not model.
+internal fn pirStop(m: PirMachine, what: String) {
+    pirFail(m, 125, "pir ineligible: ".concat(what))
+}
+
+internal fn pirBroken(m: PirMachine, f: PirFunc, node: Int, what: String) {
+    pirFail(m, 126, "pir internal error: ".concat(what, " in ", f.name, " at line ", f.nodeLine[node].toString()))
+}
+
+internal fn pirIndexFail(m: PirMachine, kind: String, index: Int, length: Int) {
+    pirFail(m, 1, "runtime error: index ".concat(index.toString(), " is out of range for ", kind, " of length ",
+        length.toString()))
+}
+
+// The extra results of a call are the `inout` arguments handed back, and those are the
+// same objects: an `inout` parameter is a handle and cannot be rebound.
+internal fn pirHandBack(m: PirMachine, f: PirFunc, base: Int, node: Int) {
+    for i in 0..<f.resCount[node] {
+        let result = pirResultAt(f, node, i)
+        if (f.valFrom[result] < 0) { continue }
+        let argument = pirOperandAt(f, node, f.valFrom[result])
+        m.regs[base + result] = m.regs[base + argument]
+        m.pins[base + result] = m.pins[base + argument]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The run
+// ---------------------------------------------------------------------------
+
+private fn pirCodeFor(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, m: PirMachine, index: Int) -> Int {
+    if (m.codeOf[index] < 0) {
+        m.codes.push(pirCompileFunction(program, shapes, heap, tables, index))
+        m.codeOf[index] = m.codes.length - 1
+    }
+    return m.codeOf[index]
+}
+
+// A frame for function `index`, holding its constants; answers where it starts.
+private fn pirPushFrame(m: PirMachine, at: Int) -> Int {
+    let base = m.regs.length
+    for i in 0..<m.codes[at].frame.length {
+        m.regs.push(m.codes[at].frame[i])
+        m.pins.push(0)
+    }
+    return base
+}
+
+private fn pirExecute(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, m: PirMachine, entry: Int) {
+    let mut func = entry
+    let mut at = pirCodeFor(program, shapes, heap, tables, m, func)
+    let mut base = pirPushFrame(m, at)
+    let mut step = 0
+    while (m.halted == false) {
+        let kind = m.codes[at].step[step]
+        let node = m.codes[at].node[step]
+        let x = m.codes[at].x[step]
+        match (kind) {
+            PirStep.NODE => {
+                pirRunNode(program, shapes, heap, tables, m, program.funcs[func], m.codes[at], step, base, m.siteBase[func] + node)
+                step = step + 1
+            }
+            PirStep.MOVES => {
+                let count = m.codes[at].y[step]
+                m.scratch.truncate(0)
+                m.scratchPins.truncate(0)
+                for i in 0..<count {
+                    let source = base + m.codes[at].pool[x + 2 * i + 1]
+                    m.scratch.push(m.regs[source])
+                    m.scratchPins.push(m.pins[source])
+                }
+                for i in 0..<count {
+                    let target = base + m.codes[at].pool[x + 2 * i]
+                    m.regs[target] = m.scratch[i]
+                    m.pins[target] = m.scratchPins[i]
+                }
+                step = step + 1
+            }
+            PirStep.JUMP => { step = x }
+            PirStep.CASE => {
+                if (m.regs[base + node] == tables.literals[m.codes[at].y[step]]) {
+                    step = step + 1
+                } else {
+                    step = x
+                }
+            }
+            PirStep.CALL => {
+                if (m.frameFunc.length >= pirDepthLimit()) {
+                    pirStop(m, "call depth over ".concat(pirDepthLimit().toString()))
+                    break
+                }
+                if (heap.objects.length >= pirObjectLimit()) {
+                    pirStop(m, "more than ".concat(pirObjectLimit().toString(), " objects"))
+                    break
+                }
+                let callee = pirCodeFor(program, shapes, heap, tables, m, x)
+                let inner = pirPushFrame(m, callee)
+                let count = program.funcs[func].opCount[node]
+                for i in 0..<count {
+                    let argument = base + pirOperandAt(program.funcs[func], node, i)
+                    let port = inner + pirPortAt(program.funcs[x], 0, i)
+                    m.regs[port] = m.regs[argument]
+                    m.pins[port] = m.pins[argument]
+                }
+                m.frameFunc.push(func)
+                m.frameStep.push(step + 1)
+                m.frameBase.push(base)
+                m.frameCall.push(node)
+                func = x
+                at = callee
+                base = inner
+                step = 0
+            }
+            PirStep.RETURN => {
+                let mut value = 0 as I64
+                let mut pin = 0
+                let mut answered = false
+                if (program.funcs[func].hasResult and program.funcs[func].opCount[node] == program.funcs[func].returnTypes.length
+                        and program.funcs[func].opCount[node] > 0) {
+                    let result = pirOperandAt(program.funcs[func], node, 0)
+                    // A fixed array leaves by value.
+                    value = pirStored(program, shapes, heap, program.funcs[func].returnTypes[0], m.regs[base + result],
+                        m.siteBase[func] + node)
+                    pin = m.pins[base + result]
+                    answered = true
+                }
+                m.regs.truncate(base)
+                m.pins.truncate(base)
+                if (m.frameFunc.length == 0) {
+                    pirExitProgram(m, value as Int)
+                    break
+                }
+                let last = m.frameFunc.length - 1
+                func = m.frameFunc[last]
+                step = m.frameStep[last]
+                base = m.frameBase[last]
+                let call = m.frameCall[last]
+                at = m.codeOf[func]
+                m.frameFunc.truncate(last)
+                m.frameStep.truncate(last)
+                m.frameBase.truncate(last)
+                m.frameCall.truncate(last)
+                if (program.funcs[func].resCount[call] > 0) {
+                    let first = pirResultAt(program.funcs[func], call, 0)
+                    if (answered and program.funcs[func].valFrom[first] < 0) {
+                        m.regs[base + first] = value
+                        m.pins[base + first] = pin
+                    }
+                    pirHandBack(m, program.funcs[func], base, call)
+                }
+            }
+            PirStep.BUILTIN => {
+                pirRunBuiltin(program, shapes, heap, m, program.funcs[func], base, node, m.siteBase[func] + node, x)
+                step = step + 1
+            }
+            PirStep.INELIGIBLE => { pirStop(m, tables.reasons[x]) }
+            PirStep.UNREACHED => { pirBroken(m, program.funcs[func], node, "control reached an impossible point") }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Globals
+// ---------------------------------------------------------------------------
+
+// The value a module-level constant of `type` starts with.
+private fn pirConstantValue(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, m: PirMachine, type: Int, node: ASTNode) -> I64 {
+    pirShapesClassify(shapes, program.types)
+    if (node.kind == NodeKind.NONE_LITERAL_EXPR) { return pirScalarLiteral(shapes, type, "none") }
+    if (node.kind == NodeKind.LITERAL_EXPR) {
+        if (program.types.kind[type] == PirTypeKind.STRING) { return pirLiteralString(tables, heap, node.s1) }
+        if (shapes.class[type] == PirClass.OPT_REF) { return pirLiteralString(tables, heap, node.s1) }
+        let mut text = node.s1.clone()
+        if (shapes.class[type] == PirClass.CHAR) { text = "'".concat(node.s1, "'") }
+        if (shapes.class[type] == PirClass.OPT_BOXED) {
+            return pirWrapValue(shapes, heap, type, pirScalarLiteral(shapes, program.types.child[type], text), -1)
+        }
+        return pirScalarLiteral(shapes, type, text)
+    }
+    if (node.kind == NodeKind.UNARY_EXPR and node.s1.equals("-")) {
+        let inner = pirConstantValue(program, shapes, heap, tables, m, type, ptr_to_node(node.child1))
+        if (shapes.class[type] == PirClass.FLOAT) { return inner ^ pirAbsent() }
+        return pirNormalize((0 as I64) - inner, shapes.bits[type], shapes.signed[type])
+    }
+    if (node.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        let element = program.types.child[type]
+        let mut kind = PirObjectKind.ARRAY
+        if (program.types.kind[type] == PirTypeKind.VEC) { kind = PirObjectKind.VEC }
+        let made = pirObjectNew(heap, kind, type, -1)
+        let mut p = node.child1
+        while (nodeExists(p)) {
+            let item = ptr_to_node(p)
+            let held = pirConstantValue(program, shapes, heap, tables, m, element, item)
+            heap.objects[made as Int].slots.push(held)
+            p = item.next
+        }
+        return made
+    }
+    if (node.kind == NodeKind.STRUCT_LITERAL_EXPR and program.types.kind[type] == PirTypeKind.STRUCT) {
+        let made = pirZero(program, shapes, heap, m, type, -1, 0)
+        let mut p = node.child1
+        while (nodeExists(p)) {
+            let given = ptr_to_node(p)
+            let position = pirFieldIndex(program, shapes, type, given.s1)
+            if (position >= 0 and nodeExists(given.child1)) {
+                let held = shapes.fieldTypes[shapes.fieldStart[type] + position]
+                let value = pirConstantValue(program, shapes, heap, tables, m, held, ptr_to_node(given.child1))
+                heap.objects[made as Int].slots[position] = value
+            }
+            p = given.next
+        }
+        return made
+    }
+    pirStop(m, "global initializer of ".concat(pirTypeText(program.types, type)))
+    return 0 as I64
+}
+
+private fn pirDeclareGlobal(heap: PirHeap, tables: PirTables, name: String, value: I64) {
+    tables.globalByName.set(name.clone(), heap.globals.length)
+    heap.globals.push(value)
+    heap.globalVersions.push(0)
+}
+
+private fn pirLoadGlobals(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, m: PirMachine, module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.VARIABLE_DECL) {
+            let type = pirTypeIntern(program.types, nodeGetType(stmt))
+            pirShapesClassify(shapes, program.types)
+            let mut value = 0 as I64
+            if (pirTypeIsValid(program.types, type)) {
+                if (nodeExists(stmt.child2)) {
+                    value = pirConstantValue(program, shapes, heap, tables, m, type, ptr_to_node(stmt.child2))
+                } else {
+                    value = pirZero(program, shapes, heap, m, type, -1, 0)
+                }
+            }
+            pirDeclareGlobal(heap, tables, stmt.s1, value)
+        } else if (stmt.kind == NodeKind.EXTERN_VARIABLE) {
+            // The argument vector is the one foreign global modelled: this program has
+            // its own path as its only argument.
+            if (stmt.s1.equals("prismio_argc")) { pirDeclareGlobal(heap, tables, stmt.s1, 1 as I64) }
+            if (stmt.s1.equals("prismio_argv")) { pirDeclareGlobal(heap, tables, stmt.s1, 1 as I64) }
+        }
+        p = stmt.next
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The hazard report
+// ---------------------------------------------------------------------------
+
+// The function a program-wide node number belongs to.
+private fn pirSiteFunc(m: PirMachine, site: Int) -> Int {
+    let mut low = 0
+    let mut high = m.siteBase.length - 1
+    while (low < high) {
+        let middle = (low + high + 1) / 2
+        if (m.siteBase[middle] <= site) {
+            low = middle
+        } else {
+            high = middle - 1
+        }
+    }
+    return low
+}
+
+private fn pirSiteText(program: PirProgram, m: PirMachine, site: Int) -> String {
+    let func = pirSiteFunc(m, site)
+    let node = site - m.siteBase[func]
+    let at = ptr_to_node(program.funcs[func].nodeAst[node])
+    return diag_file_path(at.file).concat(":", at.line.toString(), ":", at.col.toString())
+}
+
+private fn pirSitePlace(program: PirProgram, m: PirMachine, site: Int) -> String {
+    let func = pirSiteFunc(m, site)
+    let node = site - m.siteBase[func]
+    if (program.funcs[func].accCount[node] == 0) { return "?".clone() }
+    return program.funcs[func].placeName[program.funcs[func].accPlace[program.funcs[func].accStart[node]]].clone()
+}
+
+private fn pirReportHazards(program: PirProgram, heap: PirHeap, m: PirMachine) {
+    for i in 0..<heap.hazardPin.length {
+        eprintln("pir hazard: view of ".concat(pirSitePlace(program, m, heap.hazardPin[i]),
+            " pinned at ", pirSiteText(program, m, heap.hazardPin[i]),
+            " read after a write at ", pirSiteText(program, m, heap.hazardRead[i]),
+            " (", heap.hazardCount[i].toString(), " times)"))
+    }
+}
+
+// Runs `main`, answering the status the process should exit with.
+public fn pirInterpret(program: PirProgram, module: ASTNode, argv0: String) -> Int {
+    let shapes = pirShapesNew(module)
+    pirShapesClassify(shapes, program.types)
+    let heap = pirHeapNew()
+    let tables = PirTables {
+        funcByName: HashMap<String, Int>(),
+        globalByName: HashMap<String, Int>(),
+        literals: [],
+        reasons: [],
+        strings: HashMap<String, I64>()
+    }
+    let m = PirMachine {
+        codes: [], codeOf: [], siteBase: [], regs: [], pins: [],
+        frameFunc: [], frameStep: [], frameBase: [], frameCall: [],
+        scratch: [], scratchPins: [],
+        halted: false, status: 0, argv0: argv0.clone()
+    }
+    let mut sites = 0
+    for i in 0..<program.funcs.length {
+        tables.funcByName.set(program.funcs[i].name.clone(), i)
+        m.codeOf.push(-1)
+        m.siteBase.push(sites)
+        sites = sites + program.funcs[i].op.length
+    }
+    pirLoadGlobals(program, shapes, heap, tables, m, module)
+
+    let entry = tables.funcByName.getOr("main", -1)
+    if (entry < 0) {
+        pirStop(m, "no main")
+    } else if (program.funcs[entry].refusal.equals("") == false) {
+        pirStop(m, "refused ".concat(program.funcs[entry].refusal, " in main"))
+    } else if (m.halted == false) {
+        pirExecute(program, shapes, heap, tables, m, entry)
+    }
+    pirReportHazards(program, heap, m)
+    return m.status
+}

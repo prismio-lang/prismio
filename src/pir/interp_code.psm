@@ -1,0 +1,399 @@
+// A function's PIR laid out for the interpreter: its regions in a row, each exit a copy of
+// its operands into the ports it names and a jump. A register is a value id.
+//
+// A pure node has no place on a spine, so it is computed where it is used; its operands
+// are SSA values, so computing it again answers the same. One that may trap is computed
+// where it was built, in the region it is anchored to (§5), or a failure the program has
+// would be skipped when nothing reads the result.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import ast.types
+import common.lang_items
+import pir.types
+import pir.graph
+import pir.builder
+import pir.interp_types
+import pir.interp_heap
+import pir.interp_ops
+import pir.interp_builtins
+
+public enum PirStep {
+    // A computing node; `x` is what the node's operation needs worked out.
+    NODE,
+    // A call of PIR function `x`, or of builtin `x`.
+    CALL,
+    BUILTIN,
+    // Something the interpreter does not model; `x` indexes `PirMachine.reasons`.
+    INELIGIBLE,
+    // `y` parallel copies, as destination and source pairs from `pool[x]`.
+    MOVES,
+    JUMP,
+    // Go to `x` unless register `node` holds literal `y`.
+    CASE,
+    RETURN,
+    UNREACHED
+}
+
+public struct PirCode {
+    public step: Vec<PirStep>,
+    public node: Vec<Int>,
+    public x: Vec<Int>,
+    public y: Vec<Int>,
+    public pool: Vec<Int>,
+    // The last pin each step made (pirPinNew).
+    public lastPin: Vec<Int>,
+    // The registers as a call starts them: constants in place, everything else zero.
+    public frame: Vec<I64>
+}
+
+// What laying a function out has still to settle.
+private struct PirLayout {
+    // Per region: the pure nodes that may trap, anchored there, and how many are placed.
+    trapStart: Vec<Int>,
+    trapCount: Vec<Int>,
+    trapPlaced: Vec<Int>,
+    traps: Vec<Int>,
+    // Per loop region, where its body starts.
+    head: Vec<Int>,
+    // Jumps waiting for the end of the branch or loop node they leave.
+    waiting: Vec<Int>,
+    waitingFor: Vec<Int>
+}
+
+// What the interpreter knows beyond one function.
+public struct PirTables {
+    public funcByName: HashMap<String, Int>,
+    public globalByName: HashMap<String, Int>,
+    public literals: Vec<I64>,
+    public reasons: Vec<String>,
+    // Immutable strings the program's literals stand for, by text.
+    public strings: HashMap<String, I64>
+}
+
+private fn pirCodeNew() -> PirCode {
+    return PirCode { step: [], node: [], x: [], y: [], pool: [], lastPin: [], frame: [] }
+}
+
+private fn pirEmit(code: PirCode, step: PirStep, node: Int, x: Int, y: Int) -> Int {
+    code.step.push(step)
+    code.node.push(node)
+    code.x.push(x)
+    code.y.push(y)
+    code.lastPin.push(0)
+    return code.step.length - 1
+}
+
+public fn pirReason(tables: PirTables, text: String) -> Int {
+    tables.reasons.push(text.clone())
+    return tables.reasons.length - 1
+}
+
+private fn pirIneligible(tables: PirTables, code: PirCode, node: Int, text: String) {
+    pirEmit(code, PirStep.INELIGIBLE, node, pirReason(tables, text), 0)
+}
+
+public fn pirLiteralString(tables: PirTables, heap: PirHeap, text: String) -> I64 {
+    let found = tables.strings.getOr(text.clone(), -1 as I64)
+    if (found >= 0) { return found }
+    let handle = pirStringNew(heap, text, -1)
+    tables.strings.insert(text.clone(), handle)
+    return handle
+}
+
+public fn pirCompileFunction(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, index: Int) -> PirCode {
+    let f = program.funcs[index]
+    let code = pirCodeNew()
+    for value in 0..<f.valDef.length { code.frame.push(0 as I64) }
+    pirShapesClassify(shapes, program.types)
+
+    let layout = PirLayout { trapStart: [], trapCount: [], trapPlaced: [], traps: [], head: [], waiting: [], waitingFor: [] }
+    for r in 0..<f.regKind.length {
+        layout.trapStart.push(0)
+        layout.trapCount.push(0)
+        layout.trapPlaced.push(0)
+        layout.head.push(-1)
+    }
+    // Constants, and the trapping pure nodes of each region, in node order.
+    for node in 0..<f.op.length {
+        if (f.op[node] == PirOp.CONST or f.op[node] == PirOp.ENUM_CONST) {
+            pirPlaceConstant(program, shapes, heap, tables, f, code, node)
+        } else if (f.nodeRegion[node] < 0 and (f.nodeFlags[node] & PIR_MAY_TRAP) != 0) {
+            let reg = f.nodeTarget[node]
+            layout.trapCount[reg] = layout.trapCount[reg] + 1
+        }
+    }
+    let mut at = 0
+    for r in 0..<f.regKind.length {
+        layout.trapStart[r] = at
+        at = at + layout.trapCount[r]
+        layout.trapCount[r] = 0
+    }
+    repeat(at) { layout.traps.push(0) }
+    for node in 0..<f.op.length {
+        if (f.nodeRegion[node] >= 0 or (f.nodeFlags[node] & PIR_MAY_TRAP) == 0) { continue }
+        let reg = f.nodeTarget[node]
+        layout.traps[layout.trapStart[reg] + layout.trapCount[reg]] = node
+        layout.trapCount[reg] = layout.trapCount[reg] + 1
+    }
+
+    pirLayRegion(program, shapes, tables, f, code, layout, 0)
+    return code
+}
+
+private fn pirPlaceConstant(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, f: PirFunc, code: PirCode, node: Int) {
+    let value = pirResultAt(f, node, 0)
+    let type = f.valType[value]
+    if (f.op[node] == PirOp.ENUM_CONST) {
+        let at = shapes.enumValues.getOr(f.nodeName[node].clone(), -1)
+        if (at >= 0) { code.frame[value] = shapes.enumWide[at] }
+        return
+    }
+    let text = f.nodeName[node].clone()
+    if (shapes.class[type] == PirClass.REF and program.types.kind[type] == PirTypeKind.STRING) {
+        let mut body = text.clone()
+        if (text.startsWith("\"")) { body = text.substring(1, text.length - 2) }
+        code.frame[value] = pirLiteralString(tables, heap, body)
+        return
+    }
+    code.frame[value] = pirScalarLiteral(shapes, type, text)
+}
+
+// The traps of `reg` built before `node`, or all that remain when `node` is -1.
+private fn pirLayTraps(f: PirFunc, code: PirCode, layout: PirLayout, reg: Int, node: Int) {
+    while (layout.trapPlaced[reg] < layout.trapCount[reg]) {
+        let trap = layout.traps[layout.trapStart[reg] + layout.trapPlaced[reg]]
+        if (node >= 0 and trap > node) { return }
+        layout.trapPlaced[reg] = layout.trapPlaced[reg] + 1
+        for i in 0..<f.opCount[trap] { pirLayPure(f, code, pirOperandAt(f, trap, i)) }
+        pirEmit(code, PirStep.NODE, trap, pirNodeDetail(f, trap), 0)
+    }
+}
+
+// Computes `value` here if it is a pure node's.
+private fn pirLayPure(f: PirFunc, code: PirCode, value: Int) {
+    let node = f.valDef[value]
+    if (node < 0 or f.nodeRegion[node] >= 0) { return }
+    if (f.op[node] == PirOp.CONST or f.op[node] == PirOp.ENUM_CONST) { return }
+    for i in 0..<f.opCount[node] { pirLayPure(f, code, pirOperandAt(f, node, i)) }
+    pirEmit(code, PirStep.NODE, node, pirNodeDetail(f, node), 0)
+}
+
+// What an operation named by text needs, worked out once.
+private fn pirNodeDetail(f: PirFunc, node: Int) -> Int {
+    if (f.op[node] == PirOp.BINARY) { return pirBinaryCode(f.nodeName[node]) }
+    if (f.op[node] == PirOp.UNARY) { return pirUnaryCode(f.nodeName[node]) }
+    if (f.op[node] == PirOp.RANGE) { return pirRangeCode(f.nodeName[node]) }
+    return 0
+}
+
+private fn pirLayRegion(program: PirProgram, shapes: PirShapes, tables: PirTables, f: PirFunc, code: PirCode, layout: PirLayout, reg: Int) {
+    let mut node = f.regHead[reg]
+    while (node >= 0) {
+        pirLayTraps(f, code, layout, reg, node)
+        pirLayNode(program, shapes, tables, f, code, layout, node)
+        node = f.nodeNext[node]
+    }
+}
+
+// Copies of `count` operands of `node` from `from` into the registers listed.
+private fn pirLayMoves(f: PirFunc, code: PirCode, node: Int, from: Int, targets: Vec<Int>) {
+    if (targets.length == 0) { return }
+    let start = code.pool.length
+    for i in 0..<targets.length {
+        code.pool.push(targets[i])
+        code.pool.push(pirOperandAt(f, node, from + i))
+    }
+    pirEmit(code, PirStep.MOVES, node, start, targets.length)
+}
+
+private fn pirPorts(f: PirFunc, reg: Int) -> Vec<Int> {
+    let mut ports: Vec<Int> = []
+    for i in 0..<f.regPortCount[reg] { ports.push(pirPortAt(f, reg, i)) }
+    return ports
+}
+
+private fn pirResults(f: PirFunc, node: Int) -> Vec<Int> {
+    let mut results: Vec<Int> = []
+    for i in 0..<f.resCount[node] { results.push(pirResultAt(f, node, i)) }
+    return results
+}
+
+private fn pirLand(code: PirCode, layout: PirLayout, node: Int) {
+    for i in 0..<layout.waiting.length {
+        if (layout.waitingFor[i] == node) { code.x[layout.waiting[i]] = code.step.length }
+    }
+}
+
+private fn pirLayNode(program: PirProgram, shapes: PirShapes, tables: PirTables, f: PirFunc, code: PirCode, layout: PirLayout, node: Int) {
+    if (f.op[node] == PirOp.BRANCH) {
+        pirLayBranch(program, shapes, tables, f, code, layout, node)
+        return
+    }
+    for i in 0..<f.opCount[node] { pirLayPure(f, code, pirOperandAt(f, node, i)) }
+    match (f.op[node]) {
+        PirOp.LOOP => {
+            let reg = f.nodeTarget[node]
+            pirLayMoves(f, code, node, 0, pirPorts(f, reg))
+            layout.head[reg] = code.step.length
+            pirLayRegion(program, shapes, tables, f, code, layout, reg)
+            pirLand(code, layout, node)
+        }
+        PirOp.EXIT => { pirLayExit(f, code, layout, node) }
+        PirOp.CALL => { pirLayCall(program, tables, f, code, node) }
+        PirOp.CONST => { }
+        PirOp.ENUM_CONST => {
+            if (shapes.enumValues.contains(f.nodeName[node].clone()) == false) {
+                pirIneligible(tables, code, node, "enum constant ".concat(f.nodeName[node]))
+            }
+        }
+        PirOp.FIELD => { pirLayField(program, shapes, tables, f, code, node) }
+        PirOp.FIELD_SET => { pirLayField(program, shapes, tables, f, code, node) }
+        PirOp.STRUCT => { pirLayStruct(program, shapes, tables, f, code, node) }
+        PirOp.GLOBAL => { pirLayGlobal(tables, f, code, node) }
+        PirOp.GLOBAL_SET => { pirLayGlobal(tables, f, code, node) }
+        _ => { pirEmit(code, PirStep.NODE, node, pirNodeDetail(f, node), 0) }
+    }
+}
+
+private fn pirLayField(program: PirProgram, shapes: PirShapes, tables: PirTables, f: PirFunc, code: PirCode, node: Int) {
+    let type = f.valType[pirOperandAt(f, node, 0)]
+    let mut field = -1
+    if (program.types.kind[type] == PirTypeKind.STRUCT) {
+        field = pirFieldIndex(program, shapes, type, f.nodeName[node])
+    }
+    if (field < 0) {
+        pirIneligible(tables, code, node, "field ".concat(f.nodeName[node], " of ", pirTypeText(program.types, type)))
+        return
+    }
+    pirEmit(code, PirStep.NODE, node, field, 0)
+}
+
+// `Name{a,b}` lists the fields its operands fill, in operand order.
+private fn pirLayStruct(program: PirProgram, shapes: PirShapes, tables: PirTables, f: PirFunc, code: PirCode, node: Int) {
+    let type = f.valType[pirResultAt(f, node, 0)]
+    let name = f.nodeName[node].clone()
+    let open = name.indexOf("{")
+    if (program.types.kind[type] != PirTypeKind.STRUCT or open < 0 or pirStructFields(program, shapes, type) < 0) {
+        pirIneligible(tables, code, node, "struct literal of ".concat(pirTypeText(program.types, type)))
+        return
+    }
+    let start = code.pool.length
+    let list = name.substring(open + 1, name.length - open - 2)
+    if (list.length > 0) {
+        for field in list.split(',') {
+            let position = pirFieldIndex(program, shapes, type, field)
+            if (position < 0) {
+                pirIneligible(tables, code, node, "field ".concat(field, " of ", pirTypeText(program.types, type)))
+                return
+            }
+            code.pool.push(position)
+        }
+    }
+    pirEmit(code, PirStep.NODE, node, start, 0)
+}
+
+private fn pirLayGlobal(tables: PirTables, f: PirFunc, code: PirCode, node: Int) {
+    let slot = tables.globalByName.getOr(f.nodeName[node].clone(), -1)
+    if (slot < 0) {
+        pirIneligible(tables, code, node, "extern ".concat(f.nodeName[node]))
+        return
+    }
+    pirEmit(code, PirStep.NODE, node, slot, 0)
+}
+
+// Whether codegen replaces this call with something its std declaration's body does not
+// say: `cString`, `functionAddress` and `offsetOf` from std.sys.raw.
+private fn pirIsIntrinsic(f: PirFunc, node: Int) -> Bool {
+    let call = ptr_to_node(f.nodeAst[node])
+    if (call.kind != NodeKind.CALL_EXPR or nodeIsNull(call.child1)) { return false }
+    let name = ptr_to_node(call.child1).s1.clone()
+    return langNameIs(name, LangItem.C_STRING) or langNameIs(name, LangItem.FUNCTION_ADDRESS)
+        or name.startsWith(langName(LangItem.OFFSET_OF).concat("$Struct_"))
+}
+
+private fn pirLayCall(program: PirProgram, tables: PirTables, f: PirFunc, code: PirCode, node: Int) {
+    let symbol = f.nodeName[node].clone()
+    let target = tables.funcByName.getOr(symbol.clone(), -1)
+    if (target >= 0 and pirIsIntrinsic(f, node) == false) {
+        if (program.funcs[target].refusal.equals("")) {
+            pirEmit(code, PirStep.CALL, node, target, 0)
+        } else {
+            pirIneligible(tables, code, node, "refused ".concat(program.funcs[target].refusal, " in ", symbol))
+        }
+        return
+    }
+    if (pirIsIntrinsic(f, node)) {
+        pirIneligible(tables, code, node, "intrinsic ".concat(symbol))
+        return
+    }
+    let builtin = pirBuiltinId(symbol)
+    if (builtin < 0) {
+        pirIneligible(tables, code, node, "extern ".concat(symbol))
+        return
+    }
+    pirEmit(code, PirStep.BUILTIN, node, builtin, 0)
+}
+
+private fn pirLayExit(f: PirFunc, code: PirCode, layout: PirLayout, node: Int) {
+    pirLayTraps(f, code, layout, f.nodeRegion[node], node)
+    let port = f.nodePort[node]
+    let target = f.nodeTarget[node]
+    if (port == PirPort.RETURN as Int) {
+        pirEmit(code, PirStep.RETURN, node, 0, 0)
+    } else if (port == PirPort.MERGE as Int or port == PirPort.BREAK as Int) {
+        let owner = f.regNode[target]
+        pirLayMoves(f, code, node, 0, pirResults(f, owner))
+        layout.waiting.push(pirEmit(code, PirStep.JUMP, node, 0, 0))
+        layout.waitingFor.push(owner)
+    } else if (port == PirPort.NEXT as Int) {
+        pirLayMoves(f, code, node, 0, pirPorts(f, target))
+        pirEmit(code, PirStep.JUMP, node, layout.head[target], 0)
+    } else {
+        pirEmit(code, PirStep.UNREACHED, node, 0, 0)
+    }
+}
+
+private fn pirLayBranch(program: PirProgram, shapes: PirShapes, tables: PirTables, f: PirFunc, code: PirCode, layout: PirLayout, node: Int) {
+    for i in 0..<f.opCount[node] { pirLayPure(f, code, pirOperandAt(f, node, i)) }
+    let selector = pirOperandAt(f, node, 0)
+    let selectorType = f.valType[selector]
+    let branch = f.nodeTarget[node]
+    let mut open = true
+    for arm in (branch + 1)..<f.regKind.length {
+        if (f.regParent[arm] != branch) { continue }
+        let label = f.regLabel[arm].clone()
+        let mut test = -1
+        if (label.equals("_") == false) {
+            let mut value = 0 as I64
+            if (f.regValue[arm].equals("") == false) {
+                // A payload variant's tag, written as sema wrote it into the tag field.
+                value = pirScalarLiteral(shapes, selectorType, f.regValue[arm])
+            } else if (label.equals("true") or label.equals("some")) {
+                value = 1 as I64
+            } else if (label.equals("false") or label.equals("none")) {
+                value = 0 as I64
+            } else {
+                let member = shapes.enumValues.getOr(label.clone(), -1)
+                if (member >= 0) {
+                    value = shapes.enumWide[member]
+                } else {
+                    value = pirScalarLiteral(shapes, selectorType, label)
+                }
+            }
+            tables.literals.push(value)
+            test = pirEmit(code, PirStep.CASE, selector, 0, tables.literals.length - 1)
+        } else {
+            open = false
+        }
+        // The arm's ports take the branch's operands after the selector.
+        pirLayMoves(f, code, node, 1, pirPorts(f, arm))
+        pirLayRegion(program, shapes, tables, f, code, layout, arm)
+        if (test >= 0) { code.x[test] = code.step.length }
+    }
+    // Sema made the cases exhaustive where there is no `_`.
+    if (open) { pirEmit(code, PirStep.UNREACHED, node, 0, 0) }
+    pirLand(code, layout, node)
+}

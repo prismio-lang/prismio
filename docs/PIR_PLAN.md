@@ -1,6 +1,6 @@
 # PIR: Prismio's middle IR, a layered hybrid
 
-**Status:** design, revised 2026-11-27; stages P0 and P0b are built (§20), and what they
+**Status:** design, revised 2026-11-27; stages P0, P0b and P1 are built (§20), and what they
 decided is recorded in §20.1. The first version of this plan
 (2026-11-22) proposed a pure affine RVSDG. This revision keeps its goals, its measured motivation
 and its migration discipline, and changes the structure: PIR is now **several representations
@@ -708,6 +708,21 @@ An abstract machine for both levels, in `src/pir/interp.psm`:
 - **builtins**: the string and container builtins are modelled in the interpreter; std's Prismio
   code (maps, sets, most of `std.string`) runs as PIR; an extern with no model makes the program
   ineligible, and the harness skips it.
+
+**As built (P1).** `prismio build x.psm --pir-run` interprets `main` over PIR-H
+(`src/pir/interp*.psm`). A value is one word: a number, float bits, or a handle to an object; a
+`Vec` or struct slot holds handles, so identity is the language's. Each object has a content
+version and per-field versions; a view carries a pin (object, slot, version, the pinning node, and
+the pin it was read through), and a read through a pin whose place has since been written is a
+**hazard**, reported after the run with both source positions. A fixed array is held by handle and
+copied when stored or returned. Failures print the runtime's message and exit with its status.
+What it does not model ends the run with `pir ineligible: <what>` (status 125) when it is reached:
+foreign functions other than the console, `exit` and the argument vector, `std.sys.raw`'s
+compile-time intrinsics, uncovered functions, floats other than `F64`, integers wider than 64
+bits. An integer division by zero, `MIN / -1` and an over-wide shift answer what AArch64 answers.
+There are no drops yet: every object keeps its allocation site and a state that stays `live`; P2
+sets it at drop, delegate and leak nodes, checks it on each access, and lists the live objects at
+exit. `tools/pir_differential.py` is the harness.
 
 What it is for:
 

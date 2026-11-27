@@ -58,6 +58,8 @@ public struct CompileOptions {
     public emitPir: String,
     // `--pir-coverage`: report how much of the program PIR can build.
     public pirCoverage: Bool,
+    // `--pir-run`: interpret the program over PIR instead of emitting it.
+    public pirRun: Bool,
     runDirectory: String
 }
 
@@ -75,6 +77,7 @@ public fn compileOptions() -> CompileOptions {
         quiet: false,
         emitPir: "".clone(),
         pirCoverage: false,
+        pirRun: false,
         runDirectory: "".clone()
     }
 }
@@ -477,6 +480,12 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
 
     // PIR (docs/PIR_PLAN.md) runs only when it was asked for, and only reads the tree.
     // After the analysis, whose answers its leak estimate is measured against.
+    if (options.pirRun) {
+        let status = pirRunInterpreted(mergedAst, path, options.emitPir, options.pirCoverage,
+            options.overflowChecks, outputFile)
+        diag_finish()
+        return status
+    }
     if (options.pirCoverage or options.emitPir.equals("") == false) {
         diag_progress("building PIR")
         if (pirRun(mergedAst, path, options.emitPir, options.pirCoverage, options.overflowChecks) == false) {

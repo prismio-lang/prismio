@@ -113,7 +113,13 @@ internal fn pirFor(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode) 
     let mut test = "enter".clone()
     if (stmt.i1 == 1) { test = "enter=".clone() }
     let bounds: Vec<Int> = [start, end]
-    let down = pirRange(f, "down", bounds, boolType, stmt)
+    // A `repeat` count only counts up (`i2`); every other range runs towards its end.
+    let mut down = -1
+    if (stmt.i2 == 1) {
+        down = pirConstant(program, f, s, "false", boolType, stmt)
+    } else {
+        down = pirRange(f, "down", bounds, boolType, stmt)
+    }
     let first: Vec<Int> = [start, end, down]
     let more = pirRange(f, test, first, boolType, stmt)
 

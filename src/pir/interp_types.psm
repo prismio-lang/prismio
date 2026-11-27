@@ -1,0 +1,204 @@
+// How the interpreter holds a value of each PIR type (docs/PIR_PLAN.md §14).
+//
+// Every value is one 64-bit word. An integer, `Bool`, `Char` or fieldless enum is the
+// number, sign or zero extended from its width; a float is its bit pattern. A `String`,
+// struct, `Vec`, array or slice is a handle to a heap object, 0 meaning none. A scalar
+// `T?` of up to 32 bits is the number or `pirAbsent()`; a wider one is a handle to a box,
+// because no word of its own is left to mean "absent".
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import ast.types
+import sema.enum_discriminants
+import pir.types
+import pir.builder
+
+public enum PirClass {
+    INT, FLOAT, BOOL, CHAR, ENUM, REF, OPT_NARROW, OPT_BOXED, OPT_REF, NONE, PTR, UNSUPPORTED
+}
+
+public struct PirShapes {
+    // Per PIR type id: its class, width and signedness (of the scalar inside, for an
+    // optional).
+    public class: Vec<PirClass>,
+    public bits: Vec<Int>,
+    public signed: Vec<Bool>,
+    // For a struct type, its fields in declaration order; filled when first asked.
+    public fieldStart: Vec<Int>,
+    public fieldCount: Vec<Int>,
+    public fieldNames: Vec<String>,
+    public fieldTypes: Vec<Int>,
+    // `Name.Variant` of a fieldless enum, to its value.
+    public enumValues: HashMap<String, Int>,
+    public enumWide: Vec<I64>,
+    // `Name#value` for every variant's value, and how many variants `Name` has.
+    public enumMembers: HashMap<String, Int>,
+    public enumCounts: HashMap<String, Int>,
+    // Fieldless enum names whose representation is not `Int`.
+    public enumReprBits: HashMap<String, Int>,
+    public enumReprUnsigned: HashMap<String, Int>
+}
+
+// The word that means "no value" in a narrow scalar optional: outside every width it holds.
+public fn pirAbsent() -> I64 { return (1 as I64) << (63 as I64) }
+
+public fn pirShapesNew(module: ASTNode) -> PirShapes {
+    let shapes = PirShapes {
+        class: [], bits: [], signed: [], fieldStart: [], fieldCount: [], fieldNames: [], fieldTypes: [],
+        enumValues: HashMap<String, Int>(), enumWide: [],
+        enumMembers: HashMap<String, Int>(), enumCounts: HashMap<String, Int>(),
+        enumReprBits: HashMap<String, Int>(), enumReprUnsigned: HashMap<String, Int>()
+    }
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.ENUM_DECL) { pirIndexEnum(shapes, stmt) }
+        p = stmt.next
+    }
+    return shapes
+}
+
+private fn pirIndexEnum(shapes: PirShapes, decl: ASTNode) {
+    let numbered = enumHasDiscriminants(decl)
+    if (numbered) {
+        let repr = enumReprType(decl)
+        shapes.enumReprBits.insert(decl.s1.clone(), typeIntBits(repr))
+        if (typeIntIsUnsigned(repr)) { shapes.enumReprUnsigned.insert(decl.s1.clone(), 1) }
+    }
+    let mut p = decl.child1
+    let mut ordinal = 0
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        let mut value = ordinal as I64
+        if (numbered) { value = enumVariantBits(variant) }
+        shapes.enumValues.insert(decl.s1.concat(".", variant.s1), shapes.enumWide.length)
+        shapes.enumWide.push(value)
+        shapes.enumMembers.set(decl.s1.concat("#", value.toString()), 1)
+        ordinal = ordinal + 1
+        p = variant.next
+    }
+    shapes.enumCounts.set(decl.s1.clone(), ordinal)
+}
+
+// The width of an integer type by its name: `Int`, `U8`, `Isize`, `Int<24>`.
+private fn pirIntBits(name: String) -> Int {
+    if (name.equals("Int")) { return 32 }
+    if (name.equals("Isize") or name.equals("Usize")) { return 64 }
+    let mut at = 0
+    while (at < name.length) {
+        let byte = name.byteAt(at)
+        if (byte >= 48 and byte <= 57) { break }
+        at = at + 1
+    }
+    let mut width = 0
+    while (at < name.length) {
+        let byte = name.byteAt(at)
+        if (byte < 48 or byte > 57) { break }
+        width = width * 10 + (byte - 48)
+        at = at + 1
+    }
+    return width
+}
+
+// Classifies every type interned so far; the table only grows while PIR is built, and the
+// interpreter starts after that.
+public fn pirShapesClassify(shapes: PirShapes, types: PirTypes) {
+    for id in shapes.class.length..<types.kind.length {
+        let mut class = PirClass.UNSUPPORTED
+        let mut bits = 64
+        let mut signed = true
+        match (types.kind[id]) {
+            PirTypeKind.INT => {
+                bits = pirIntBits(types.name[id])
+                signed = types.name[id].startsWith("U") == false
+                if (bits >= 1 and bits <= 64) { class = PirClass.INT }
+            }
+            PirTypeKind.FLOAT => {
+                // The narrower and wider floats are left out: the compiler cannot compute in
+                // them (an `F32` in its own source links std's `F128` formatter).
+                if (types.name[id].equals("Float") or types.name[id].equals("F64")) { class = PirClass.FLOAT }
+            }
+            PirTypeKind.BOOL => {
+                class = PirClass.BOOL
+                bits = 1
+                signed = false
+            }
+            PirTypeKind.CHAR => {
+                class = PirClass.CHAR
+                bits = 8
+                signed = false
+            }
+            PirTypeKind.ENUM => {
+                class = PirClass.ENUM
+                bits = shapes.enumReprBits.getOr(types.name[id].clone(), 32)
+                signed = shapes.enumReprUnsigned.contains(types.name[id].clone()) == false
+            }
+            PirTypeKind.STRING => { class = PirClass.REF }
+            PirTypeKind.STRUCT => { class = PirClass.REF }
+            PirTypeKind.VEC => { class = PirClass.REF }
+            PirTypeKind.ARRAY => { class = PirClass.REF }
+            PirTypeKind.SLICE => { class = PirClass.REF }
+            PirTypeKind.NONE => { class = PirClass.NONE }
+            PirTypeKind.PTR => { class = PirClass.PTR }
+            PirTypeKind.OPTIONAL => {
+                // The child is interned before its optional, so it is classified.
+                let child = types.child[id]
+                let inner = shapes.class[child]
+                bits = shapes.bits[child]
+                signed = shapes.signed[child]
+                if (inner == PirClass.REF) {
+                    class = PirClass.OPT_REF
+                } else if (inner == PirClass.INT or inner == PirClass.FLOAT or inner == PirClass.BOOL
+                        or inner == PirClass.CHAR or inner == PirClass.ENUM) {
+                    class = PirClass.OPT_NARROW
+                    if (inner == PirClass.FLOAT or bits > 32) { class = PirClass.OPT_BOXED }
+                }
+            }
+            _ => { }
+        }
+        shapes.class.push(class)
+        shapes.bits.push(bits)
+        shapes.signed.push(signed)
+        shapes.fieldStart.push(-1)
+        shapes.fieldCount.push(0)
+    }
+}
+
+// The number of fields of struct type `id`, listing them on first use; -1 if undeclared.
+public fn pirStructFields(program: PirProgram, shapes: PirShapes, id: Int) -> Int {
+    if (shapes.fieldStart[id] >= 0) { return shapes.fieldCount[id] }
+    let name = program.types.name[id].clone()
+    let index = program.structByName.getOr(name.clone(), -1)
+    if (index < 0) { return -1 }
+    let decl = ptr_to_node(program.declNodes[index])
+    let start = shapes.fieldNames.length
+    let mut names: Vec<String> = []
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let member = ptr_to_node(p)
+        if (member.kind == NodeKind.STRUCT_FIELD) { names.push(member.s1.clone()) }
+        p = member.next
+    }
+    // Types first: interning one may classify types that list their own fields.
+    let mut types: Vec<Int> = []
+    for field in names { types.push(pirFieldType(program, name, field)) }
+    pirShapesClassify(shapes, program.types)
+    for i in 0..<names.length {
+        shapes.fieldNames.push(names[i].clone())
+        shapes.fieldTypes.push(types[i])
+    }
+    shapes.fieldStart[id] = start
+    shapes.fieldCount[id] = names.length
+    return names.length
+}
+
+// The position of `field` in struct type `id`, or -1.
+public fn pirFieldIndex(program: PirProgram, shapes: PirShapes, id: Int, field: String) -> Int {
+    let count = pirStructFields(program, shapes, id)
+    for i in 0..<count {
+        if (shapes.fieldNames[shapes.fieldStart[id] + i].equals(field)) { return i }
+    }
+    return -1
+}

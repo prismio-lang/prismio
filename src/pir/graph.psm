@@ -124,6 +124,8 @@ public struct PirFunc {
     public valBinding: Vec<String>,
     // `own ?w` (§7.5): owned on some paths and a view on others.
     public valWitness: Vec<Bool>,
+    // For a call's extra result, the operand (an `inout` argument) it hands back; -1 otherwise.
+    public valFrom: Vec<Int>,
     // The storage class (§7.1). Filled by AIF over PIR, not in P0.
     public valStorage: Vec<Int>,
 
@@ -137,6 +139,9 @@ public struct PirFunc {
     public regPortStart: Vec<Int>,
     public regPortCount: Vec<Int>,
     public regLabel: Vec<String>,
+    // The text of the value an arm's case compares the selector against, where the label
+    // is not itself that value (a payload variant's tag); "" otherwise.
+    public regValue: Vec<String>,
     public ports: Vec<Int>,
 
     // The return port: the result, if any, then each `inout` parameter's final value.
@@ -173,9 +178,9 @@ public fn pirFuncNew(name: String, file: Int, line: Int, library: Bool) -> PirFu
         nodeTarget: [], nodePort: [], nodeLine: [], nodeCol: [], nodeAst: [], nodeSite: [],
         operands: [], operandUse: [], results: [],
         accStart: [], accCount: [], accPlace: [], accIn: [], accOut: [],
-        valDef: [], valRegion: [], valType: [], valMode: [], valName: [], valBinding: [], valWitness: [], valStorage: [],
+        valDef: [], valRegion: [], valType: [], valMode: [], valName: [], valBinding: [], valWitness: [], valFrom: [], valStorage: [],
         regKind: [], regParent: [], regNode: [], regHead: [], regTail: [],
-        regPortStart: [], regPortCount: [], regLabel: [], ports: [],
+        regPortStart: [], regPortCount: [], regLabel: [], regValue: [], ports: [],
         returnTypes: [], returnMode: PirMode.COPY, hasResult: false,
         placeKind: [], placeType: [], placeName: [], verPlace: [], verDef: [], verPrev: [],
         cons: HashMap<String, Int>(),
@@ -225,6 +230,7 @@ public fn pirRegionNew(f: PirFunc, kind: PirRegionKind, parent: Int, node: Int) 
     f.regPortStart.push(f.ports.length)
     f.regPortCount.push(0)
     f.regLabel.push("")
+    f.regValue.push("")
     return id
 }
 
@@ -281,6 +287,7 @@ private fn pirValueNew(f: PirFunc, def: Int, reg: Int, valueType: Int, mode: Pir
     f.valName.push(name.clone())
     f.valBinding.push("")
     f.valWitness.push(false)
+    f.valFrom.push(-1)
     f.valStorage.push(-1)
     return id
 }

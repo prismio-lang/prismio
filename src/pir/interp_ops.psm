@@ -1,0 +1,333 @@
+// The interpreter's scalar operations, on words (pir.interp_types). Each means what
+// src/ir/expr.psm and src/ir/numeric.psm lower the operator to, on the host's CPU: integers
+// wrap at their width, a float converts to an integer by saturating, and the cases LLVM
+// leaves to the machine -- a division by zero, a shift past the width -- answer what
+// AArch64 answers, since `/` and `%` have no check of their own.
+//
+// Floats go through the same operations the program would: the arithmetic is this
+// compiler's own `Float` arithmetic, and the library functions are std.math's.
+
+import std.collections.vec
+import std.string
+import std.math
+import std.mem
+import std.sys
+import ast.types
+import pir.interp_types
+
+public fn pirBinaryCode(op: String) -> Int {
+    let names: Array<String, 16> = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "==", "!=", "<", "<=", ">", ">="]
+    for i in 0..<16 {
+        if (names[i].equals(op)) { return i }
+    }
+    return -1
+}
+
+public const PIR_ADD = 0
+public const PIR_SUB = 1
+public const PIR_MUL = 2
+public const PIR_DIV = 3
+public const PIR_REM = 4
+public const PIR_AND = 5
+public const PIR_OR = 6
+public const PIR_XOR = 7
+public const PIR_SHL = 8
+public const PIR_SHR = 9
+public const PIR_EQ = 10
+public const PIR_NE = 11
+public const PIR_LT = 12
+public const PIR_LE = 13
+public const PIR_GT = 14
+public const PIR_GE = 15
+
+public fn pirUnaryCode(op: String) -> Int {
+    if (op.equals("-")) { return 0 }
+    if (op.equals("!") or op.equals("not")) { return 1 }
+    if (op.equals("~")) { return 2 }
+    return -1
+}
+
+public fn pirRangeCode(op: String) -> Int {
+    if (op.equals("down")) { return 0 }
+    if (op.equals("enter")) { return 1 }
+    if (op.equals("enter=")) { return 2 }
+    if (op.equals("more")) { return 3 }
+    if (op.equals("more=")) { return 4 }
+    if (op.equals("step")) { return 5 }
+    return -1
+}
+
+public fn pirMask(bits: Int) -> I64 {
+    if (bits >= 64) { return -1 as I64 }
+    return ((1 as I64) << (bits as I64)) - (1 as I64)
+}
+
+// `v` cut to `bits` and widened again by its signedness.
+public fn pirNormalize(v: I64, bits: Int, signed: Bool) -> I64 {
+    if (bits >= 64) { return v }
+    if (signed) {
+        let shift = (64 - bits) as I64
+        return (v << shift) >> shift
+    }
+    return v & pirMask(bits)
+}
+
+public fn pirBool(value: Bool) -> I64 {
+    if (value) { return 1 as I64 }
+    return 0 as I64
+}
+
+public fn pirFloatOf(word: I64) -> Float { return Float.fromBits(word as U64) }
+
+public fn pirFloatWord(value: Float) -> I64 { return value.bits as I64 }
+
+// A literal's text as the word of a value of `type`.
+public fn pirScalarLiteral(shapes: PirShapes, type: Int, text: String) -> I64 {
+    let class = shapes.class[type]
+    if (text.equals("none")) {
+        if (class == PirClass.OPT_NARROW) { return pirAbsent() }
+        return 0 as I64
+    }
+    if (text.equals("true")) { return 1 as I64 }
+    if (text.equals("false")) { return 0 as I64 }
+    if (text.startsWith("'")) {
+        return pirNormalize(pirIntegerText(text.substring(1, text.length - 2)), 8, false)
+    }
+    if (class == PirClass.FLOAT or (class == PirClass.OPT_BOXED and text.indexOf(".") >= 0)) {
+        return pirFloatWord(text.parseFloat() ?? 0.0)
+    }
+    if (class == PirClass.PTR) { return 0 as I64 }
+    return pirNormalize(pirIntegerText(text), shapes.bits[type], shapes.signed[type])
+}
+
+private fn pirIntegerText(text: String) -> I64 {
+    let negative = text.startsWith("-")
+    let mut at = 0
+    if (negative) { at = 1 }
+    let magnitude = typeIntLiteralMagnitude(text, at) ?? (0 as U64)
+    if (negative) { return ((0 as U64) - magnitude) as I64 }
+    return magnitude as I64
+}
+
+private fn pirUnsignedLess(a: I64, b: I64) -> Bool { return (a as U64) < (b as U64) }
+
+// Whether checked `+ - *` traps, under `--overflow-checks`.
+public fn pirOverflows(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> Bool {
+    if (bits < 64) {
+        if (signed) {
+            let mut exact = a + b
+            if (op == PIR_SUB) { exact = a - b }
+            if (op == PIR_MUL) { exact = a * b }
+            return pirNormalize(exact, bits, true) != exact
+        }
+        if (op == PIR_SUB) { return a < b }
+        let mut wide = (a as U64) + (b as U64)
+        if (op == PIR_MUL) { wide = (a as U64) * (b as U64) }
+        return wide > (pirMask(bits) as U64)
+    }
+    if (signed) {
+        if (op == PIR_ADD) { return ((a ^ (a + b)) & (b ^ (a + b))) < (0 as I64) }
+        if (op == PIR_SUB) { return ((a ^ b) & (a ^ (a - b))) < (0 as I64) }
+        if (a == (0 as I64)) { return false }
+        if (a == (-1 as I64)) { return b == pirAbsent() }
+        return (a * b) / a != b
+    }
+    if (op == PIR_ADD) { return pirUnsignedLess(a + b, a) }
+    if (op == PIR_SUB) { return pirUnsignedLess(a, b) }
+    if (a == (0 as I64)) { return false }
+    return ((a * b) as U64) / (a as U64) != (b as U64)
+}
+
+private fn pirDivide(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> I64 {
+    if (b == (0 as I64)) {
+        if (op == PIR_DIV) { return 0 as I64 }
+        return a
+    }
+    if (signed) {
+        if (b == (-1 as I64)) {
+            if (op == PIR_DIV) { return pirNormalize((0 as I64) - a, bits, true) }
+            return 0 as I64
+        }
+        if (op == PIR_DIV) { return pirNormalize(a / b, bits, true) }
+        return a % b
+    }
+    if (op == PIR_DIV) { return ((a as U64) / (b as U64)) as I64 }
+    return ((a as U64) % (b as U64)) as I64
+}
+
+// An operator on two integers (or Bools, Chars, enums) of one width.
+public fn pirIntBinary(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> I64 {
+    if (op == PIR_ADD) { return pirNormalize(a + b, bits, signed) }
+    if (op == PIR_SUB) { return pirNormalize(a - b, bits, signed) }
+    if (op == PIR_MUL) { return pirNormalize(a * b, bits, signed) }
+    if (op == PIR_DIV or op == PIR_REM) { return pirDivide(op, a, b, bits, signed) }
+    if (op == PIR_AND) { return a & b }
+    if (op == PIR_OR) { return a | b }
+    if (op == PIR_XOR) { return pirNormalize(a ^ b, bits, signed) }
+    if (op == PIR_SHL or op == PIR_SHR) {
+        // A shift is by the amount modulo the register it runs in.
+        let mut amount = b & (31 as I64)
+        if (bits > 32) { amount = b & (63 as I64) }
+        if (op == PIR_SHL) { return pirNormalize(a << amount, bits, signed) }
+        if (signed) { return a >> amount }
+        return ((a as U64) >> (amount as U64)) as I64
+    }
+    if (op == PIR_EQ) { return pirBool(a == b) }
+    if (op == PIR_NE) { return pirBool(a != b) }
+    if (op == PIR_LT) {
+        if (signed) { return pirBool(a < b) }
+        return pirBool(pirUnsignedLess(a, b))
+    }
+    if (op == PIR_LE) {
+        if (signed) { return pirBool(a <= b) }
+        return pirBool(pirUnsignedLess(b, a) == false)
+    }
+    if (op == PIR_GT) {
+        if (signed) { return pirBool(a > b) }
+        return pirBool(pirUnsignedLess(b, a))
+    }
+    if (signed) { return pirBool(a >= b) }
+    return pirBool(pirUnsignedLess(a, b) == false)
+}
+
+public fn pirFloatBinary(op: Int, left: I64, right: I64) -> I64 {
+    let a = pirFloatOf(left)
+    let b = pirFloatOf(right)
+    if (op == PIR_ADD) { return pirFloatWord(a + b) }
+    if (op == PIR_SUB) { return pirFloatWord(a - b) }
+    if (op == PIR_MUL) { return pirFloatWord(a * b) }
+    if (op == PIR_DIV) { return pirFloatWord(a / b) }
+    if (op == PIR_REM) { return pirFloatWord(a % b) }
+    if (op == PIR_EQ) { return pirBool(a == b) }
+    if (op == PIR_NE) { return pirBool(a != b) }
+    if (op == PIR_LT) { return pirBool(a < b) }
+    if (op == PIR_LE) { return pirBool(a <= b) }
+    if (op == PIR_GT) { return pirBool(a > b) }
+    return pirBool(a >= b)
+}
+
+// A scalar value of type `from` as a value of type `to` (src/ir/numeric.psm).
+public fn pirCastScalar(shapes: PirShapes, from: Int, to: Int, value: I64) -> I64 {
+    let source = shapes.class[from]
+    let target = shapes.class[to]
+    let toBits = shapes.bits[to]
+    let toSigned = shapes.signed[to]
+    if (target == PirClass.FLOAT) {
+        if (source == PirClass.FLOAT) { return value }
+        if (shapes.signed[from] == false) { return pirFloatWord((value as U64) as Float) }
+        return pirFloatWord(value as Float)
+    }
+    if (target != PirClass.INT and target != PirClass.CHAR and target != PirClass.ENUM) { return value }
+    if (source == PirClass.FLOAT) {
+        let number = pirFloatOf(value)
+        if (toSigned) {
+            let wide = number as I64
+            if (toBits >= 64) { return wide }
+            let high = pirMask(toBits - 1)
+            let low = (0 as I64) - high - (1 as I64)
+            if (wide > high) { return high }
+            if (wide < low) { return low }
+            return wide
+        }
+        let wide = number as U64
+        if (toBits < 64 and wide > (pirMask(toBits) as U64)) { return pirMask(toBits) }
+        return wide as I64
+    }
+    return pirNormalize(value, toBits, toSigned)
+}
+
+// Whether `value` of type `from` survives conversion to the number type `to`, which is
+// what `x as T?` answers (src/ir/numeric.psm `numericFits`).
+public fn pirFits(shapes: PirShapes, from: Int, to: Int, value: I64) -> Bool {
+    let target = shapes.class[to]
+    if (target == PirClass.FLOAT) { return true }
+    let bits = shapes.bits[to]
+    let unsigned = shapes.signed[to] == false and target != PirClass.CHAR
+    if (shapes.class[from] == PirClass.FLOAT) {
+        let number = pirFloatOf(value)
+        if (number.trunc() != number) { return false }
+        let mut high = 1.0
+        let mut steps = bits
+        if (unsigned == false) { steps = bits - 1 }
+        repeat(steps) { high = high * 2.0 }
+        let mut low = 0.0 - high
+        if (unsigned) { low = 0.0 }
+        return number >= low and number < high
+    }
+    let fromBits = shapes.bits[from]
+    // A Char counts as signed here, as `typeIntIsUnsigned` says it is not unsigned.
+    let fromUnsigned = shapes.signed[from] == false and shapes.class[from] != PirClass.CHAR
+    if (fromBits > bits) {
+        return pirNormalize(value, bits, unsigned == false) == pirNormalize(value, fromBits, fromUnsigned == false)
+    }
+    if (fromUnsigned == unsigned) { return true }
+    if (fromBits < bits and fromUnsigned) { return true }
+    return pirNormalize(value, fromBits, true) >= (0 as I64)
+}
+
+// A range `for`'s arithmetic (pir.loops), on `Int`s (src/ir/stmt.psm).
+public fn pirRangeValue(op: Int, a: I64, b: I64, c: I64, d: I64) -> I64 {
+    // down(start, end)
+    if (op == 0) { return pirBool(a > b) }
+    // enter(start, end, down), and with the end included
+    if (op == 1 or op == 2) {
+        let down = c != (0 as I64)
+        if (op == 2) {
+            if (down) { return pirBool(a >= b) }
+            return pirBool(a <= b)
+        }
+        if (down) { return pirBool(a > b) }
+        return pirBool(a < b)
+    }
+    // more(k, end, step, down): whether a step fits in what is left, unsigned.
+    if (op == 3 or op == 4) {
+        let mut left = pirNormalize(b - a, 32, false)
+        if (d != (0 as I64)) { left = pirNormalize(a - b, 32, false) }
+        let step = pirNormalize(c, 32, false)
+        if (op == 4) { return pirBool(left >= step) }
+        return pirBool(left > step)
+    }
+    // step(k, step, down)
+    if (c != (0 as I64)) { return pirNormalize(a - b, 32, true) }
+    return pirNormalize(a + b, 32, true)
+}
+
+// std.math's `__builtin_f64_<op>` by its position in the table common.float_builtins keeps.
+public fn pirFloatLibrary(op: Int, a: I64, b: I64, c: I64) -> I64 {
+    let x = pirFloatOf(a)
+    let y = pirFloatOf(b)
+    if (op == 0) { return pirFloatWord(x.sqrt()) }
+    if (op == 1) { return pirFloatWord(x.abs()) }
+    if (op == 2) { return pirFloatWord(x.floor()) }
+    if (op == 3) { return pirFloatWord(x.ceil()) }
+    if (op == 4) { return pirFloatWord(x.trunc()) }
+    if (op == 5) { return pirFloatWord(x.round()) }
+    if (op == 6) { return pirFloatWord(x.roundEven()) }
+    if (op == 7) { return pirFloatWord(x.exp()) }
+    if (op == 8) { return pirFloatWord(x.exp2()) }
+    if (op == 9) { return pirFloatWord(x.ln()) }
+    if (op == 10) { return pirFloatWord(x.log2()) }
+    if (op == 11) { return pirFloatWord(x.log10()) }
+    if (op == 12) { return pirFloatWord(x.sin()) }
+    if (op == 13) { return pirFloatWord(x.cos()) }
+    if (op == 14) { return pirFloatWord(x.tan()) }
+    if (op == 15) { return pirFloatWord(x.asin()) }
+    if (op == 16) { return pirFloatWord(x.acos()) }
+    if (op == 17) { return pirFloatWord(x.atan()) }
+    if (op == 18) { return pirFloatWord(x.sinh()) }
+    if (op == 19) { return pirFloatWord(x.cosh()) }
+    if (op == 20) { return pirFloatWord(x.tanh()) }
+    if (op == 21) { return pirFloatWord(x.cbrt()) }
+    if (op == 22) { return pirFloatWord(x.expm1()) }
+    if (op == 23) { return pirFloatWord(x.ln1p()) }
+    if (op == 24) { return pirFloatWord(x.asinh()) }
+    if (op == 25) { return pirFloatWord(x.acosh()) }
+    if (op == 26) { return pirFloatWord(x.atanh()) }
+    if (op == 27) { return pirFloatWord(x.pow(y)) }
+    if (op == 28) { return pirFloatWord(x.atan2(y)) }
+    if (op == 29) { return pirFloatWord(x.copySign(y)) }
+    if (op == 30) { return pirFloatWord(x.min(y)) }
+    if (op == 31) { return pirFloatWord(x.max(y)) }
+    if (op == 32) { return pirFloatWord(x.hypot(y)) }
+    return pirFloatWord(x.mulAdd(y, pirFloatOf(c)))
+}

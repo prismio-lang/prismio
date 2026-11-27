@@ -242,7 +242,10 @@ private fn pirSlice(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode)
     let end = pirOperandExpr(program, f, s, ptr_to_node(node.child3))
     let resultType = pirNodeType(program, s, node)
     if (pirOk(s) == false) { return -1 }
-    let slice = pirNodeNew(f, PirOp.SLICE, "", node)
+    // `a..b` was parsed as `[a, b+1)`; only the bounds failure still tells them apart.
+    let mut written = "".clone()
+    if (node.i1 == 1) { written = "inclusive".clone() }
+    let slice = pirNodeNew(f, PirOp.SLICE, written, node)
     pirOperand(f, slice, base, PirUse.BORROW)
     pirOperand(f, slice, start, PirUse.BORROW)
     pirOperand(f, slice, end, PirUse.BORROW)
@@ -338,6 +341,11 @@ private fn pirBuiltinOperation(program: PirProgram, f: PirFunc, s: PirScope, nod
     }
     if (name.equals("list_push") and count == 2) {
         pirPush(program, f, s, pirArgument(node, 0), pirArgument(node, 1), node)
+        out.push(-1)
+        return true
+    }
+    if (name.equals("__builtin_assert") and count >= 1) {
+        pirAssert(program, f, s, node)
         out.push(-1)
         return true
     }
@@ -437,8 +445,10 @@ private fn pirCall(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) 
     let mut uses: Vec<PirUse> = []
     // For each argument that is a local: which local, else -1.
     let mut named: Vec<Int> = []
-    // For each `inout` argument that is a local: the local the written value goes back to.
+    // For each `inout` argument that is a local: the local the written value goes back to,
+    // and the argument's position.
     let mut rebound: Vec<Int> = []
+    let mut reboundAt: Vec<Int> = []
 
     let mut paramPtr = ptr_null()
     let mut external = false
@@ -475,7 +485,10 @@ private fn pirCall(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) 
             // A field, element or global passed `inout` is written through; the call's
             // clobber is that write.
             use = PirUse.INOUT
-            if (local >= 0) { rebound.push(local) }
+            if (local >= 0) {
+                rebound.push(local)
+                reboundAt.push(position)
+            }
         } else if (consumes or (arg.kind == NodeKind.IDENTIFIER_EXPR and arg.i3 == 1)) {
             use = pirConsumingUse(f, value)
         }
@@ -525,10 +538,12 @@ private fn pirCall(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) 
     if (program.types.kind[resultType] != PirTypeKind.VOID) {
         result = pirCallResult(program, f, call, declIndex, symbol, resultType)
     }
-    for local in rebound {
+    for i in 0..<rebound.length {
+        let local = rebound[i]
         let before = s.values[local]
         let after = pirResult(f, call, s.declared[local], f.valMode[before], s.names[local])
         f.valWitness[after] = f.valWitness[before]
+        f.valFrom[after] = reboundAt[i]
         s.values[local] = after
         s.live[local] = true
     }
