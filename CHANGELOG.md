@@ -234,6 +234,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Repository
 
+- **The sanitizer gate sees the heap again (`tools/sanitizer_smoke.py`).** Since the slab became the default,
+  AddressSanitizer never saw a block of 512 bytes or less being freed. A runtime compiled with ASan or TSan now
+  has no slab; the tool compiles `std` from source into each program's IR, marks every function
+  `sanitize_address` (clang instruments only those, so the program's own reads were never checked), runs the
+  ownership probes as well as its four fixtures, and takes more files or directories as arguments. It reports
+  the known use-after-free of a held element view across a `Vec`'s growth, and nothing else, over 49 programs.
 - **Diagnostic codes are named in one registry (`src/common/diag_codes.psm`), and call sites pass the name.** 165 sites in 25 files wrote a `"Pnnnn"` literal and message at the call; now `diag_error_code(DIAG_CLI_CHECK_MISSING_SOURCE, "missing source file")`, with each code a `public const` String there. `tools/lint.py` reads the registry: a name is used at exactly one call site, a code is written once, a code is in the area of the file that reports it (now including `project/`, `driver/` and `fmt/`, which had no area check), no `"Pnnnn"` literal may be left in `src/`, and a registry that parses to nothing fails instead of passing. Messages stay at the call sites. `src/` now needs the compiler to understand `const` of a `String`, so the committed seed has to be refreshed before a bootstrap from it works: `bootstrap/seed.ll` is re-cut and left uncommitted.
 - **The compiler's biggest functions are split by family (`docs/SIMPLIFICATION_AUDIT.md`, steps 4-6).** `generateCall` goes from 1,459 to 695 lines and `semaCheckBuiltinCall` from 676 to 18, their builtin chains moved unchanged into per-family functions; `generateStatement`, `semaStatement` and `collectStringsStmt` are `match` on the node kind; and `irFindBorrowedTemporary` returns a struct instead of leaving three globals behind.
 - **The compiler's source walks chains and trees through one helper each (`docs/SIMPLIFICATION_AUDIT.md`, step 3).** `chainLength`, `chainAt` and `chainNamed` replace 20 hand-written copies, `astAny` and `astSum` (`ast/nodes.psm`) replace nine identical recursive walkers in `ir/expr.psm`, and the last exact duplicates (`implExists`, `semaMapReset`, three "is this Int in the Vec" helpers) are gone. A sampled self-compile shows none of those walkers in its top frames, so no per-function fact pass was built.

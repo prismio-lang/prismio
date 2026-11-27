@@ -7339,6 +7339,85 @@ def run_range_direction_test():
     return True
 
 
+# `run_ownership_probes_test`'s programs, which tools/sanitizer_smoke.py also runs under ASan.
+OWNERSHIP_PROBES = (
+    # file, text stdout must contain, and whether it must not leak either
+    ("option_methods_probe.psm", "fallback", False),
+    ("forwarding_literal_probe.psm", "fallback", False),
+    ("binder_return_probe.psm", "a literal payload, past twelve bytes", False),
+    ("binder_rewrap_probe.psm", "not a seven: y", False),
+    # `??` over Strings: both operands' ownership is the function's, and the
+    # right side is evaluated lazily, so a fallback that never ran must not be
+    # released and one that ran must be.
+    ("coalesce_probe.psm", "PASS", True),
+    # HashMap removal swaps a String key to the end and truncates it: a key the
+    # removal failed to release is a leak, so this one is held to 0.
+    ("test_193_map_methods.psm", "PASS", True),
+    # HashSet get/take/algebra/bulk operations hand out copies of String keys; all must be released.
+    ("test_set_api.psm", "ok", True),
+    ("test_map_api.psm", "ok", True),
+    # `upsert`, `modify` (a stored Vec or struct changed in place through an `inout` closure
+    # parameter) and `getOrInsertDefault`: the copies they hand around are all released.
+    ("test_map_entry.psm", "PASS", True),
+    # `shrinkToFit` on a Vec, a HashMap and a HashSet (the new `list_shrink_to_fit`).
+    ("test_map_shrink.psm", "PASS", True),
+    # A HashMap, a HashSet or a generic struct moved or written into the field of a struct a function
+    # returns: released once by the owner, not by the binding as well (it crashed) and not left
+    # unreleased (it leaked). aifFieldTypeName called every generic struct field a `List`.
+    ("test_map_in_struct.psm", "PASS", True),
+    # A composite key hashed through `Hash` and `Hasher`, nested and with a String field.
+    ("test_hash_hasher.psm", "PASS", True),
+    # A map literal of more than twelve computed entries: one `mapEntriesN` per run of twelve,
+    # merged; it was a `mapPut` chain that leaked 12 of 13 values.
+    ("test_map_long_literal.psm", "PASS", True),
+    # A child bound to a `let` and then stored into a recursive payload was
+    # freed by the binding and by the tree: a double free, and a leak if the
+    # fix declines the tree's release instead.
+    ("recursive_enum_bindings_probe.psm", "PASS", True),
+    # The same through a `Node?`, which also did not link: an optional's
+    # drop named no release.
+    ("recursive_optional_probe.psm", "PASS", True),
+    ("test_195_string_builder.psm", "PASS", True),
+    # One allocation site backs every `concat`; a builder storing `concat`
+    # results stopped every `concat` argument being released.
+    ("concat_argument_probe.psm", "PASS", True),
+    # A Vec<String> only literals reach, and an element replaced under a
+    # live view: both leaked, and releasing at the store would free the view.
+    ("vec_element_replace_probe.psm", "PASS", True),
+    ("test_217_vec_filled.psm", "ok", True),
+    # `HashMap<K, V>()`, `HashMap()` from an annotation, and a bare `let` of a HashMap,
+    # which was a zeroed struct until 2026-09-28.
+    ("test_222_type_constructors.psm", "ok", True),
+    # HashMap literals: a computed String key is an argument temporary, and a
+    # literal of plain keys is a producer, clean in a field and a return.
+    ("test_223_map_literals.psm", "ok", True),
+    # HashSet holds its own columns: a set wrapping a HashMap in a field leaked
+    # its whole table (7 allocated, 1 released for a HashSet<Int>).
+    ("test_369_hash_set.psm", "PASS", True),
+    # A HashMap that owns its values (`V: Copy`): every reader hands out a copy, so
+    # no view of a stored value leaves the table and the container is released.
+    # It read "leaks every value" when the readers returned the stored element.
+    ("test_map_owned.psm", "PASS", True),
+    # An owned temporary's String field or element compared in place (also on the right of
+    # `or`), bound off a statement head, and a struct literal argument that a callee copies.
+    ("test_owned_temporary_reads.psm", "PASS", True),
+    # A scalar element of an owned temporary Vec on the right of `or`, in a `while`, a `let`.
+    ("test_owned_temporary_scalars.psm", "PASS", True),
+    # An owned call result compared with `none` has no binding to drop it: a
+    # `while (next() != none)` leaked one block per iteration.
+    ("test_370_compare_owned_temporary.psm", "ok", True),
+    # std.mem: Buffers and Arenas release their bytes like any Vec, and the
+    # test frees every raw block it allocates, so a leak here is a wrong
+    # release or a Buffer that kept its bytes.
+    ("test_274_std_mem.psm", "PASS", True),
+    # The language-gaps forms: an owned String payload through `if let`, `let ... else`, guards and
+    # nested patterns is released once.
+    ("test_390_let_forms.psm", "PASS", True),
+    ("test_391_match_tests.psm", "PASS", True),
+    ("test_392_nested_patterns.psm", "PASS", True),
+)
+
+
 def run_ownership_probes_test():
     """Shapes that released memory that was not live, under `--verify`.
 
@@ -7354,82 +7433,6 @@ def run_ownership_probes_test():
     probes store literals on purpose.
     """
     print(f"\n{BLUE}--- Running ownership_probes ---{RESET}")
-    probes = (
-        # file, text stdout must contain, and whether it must not leak either
-        ("option_methods_probe.psm", "fallback", False),
-        ("forwarding_literal_probe.psm", "fallback", False),
-        ("binder_return_probe.psm", "a literal payload, past twelve bytes", False),
-        ("binder_rewrap_probe.psm", "not a seven: y", False),
-        # `??` over Strings: both operands' ownership is the function's, and the
-        # right side is evaluated lazily, so a fallback that never ran must not be
-        # released and one that ran must be.
-        ("coalesce_probe.psm", "PASS", True),
-        # HashMap removal swaps a String key to the end and truncates it: a key the
-        # removal failed to release is a leak, so this one is held to 0.
-        ("test_193_map_methods.psm", "PASS", True),
-        # HashSet get/take/algebra/bulk operations hand out copies of String keys; all must be released.
-        ("test_set_api.psm", "ok", True),
-        ("test_map_api.psm", "ok", True),
-        # `upsert`, `modify` (a stored Vec or struct changed in place through an `inout` closure
-        # parameter) and `getOrInsertDefault`: the copies they hand around are all released.
-        ("test_map_entry.psm", "PASS", True),
-        # `shrinkToFit` on a Vec, a HashMap and a HashSet (the new `list_shrink_to_fit`).
-        ("test_map_shrink.psm", "PASS", True),
-        # A HashMap, a HashSet or a generic struct moved or written into the field of a struct a function
-        # returns: released once by the owner, not by the binding as well (it crashed) and not left
-        # unreleased (it leaked). aifFieldTypeName called every generic struct field a `List`.
-        ("test_map_in_struct.psm", "PASS", True),
-        # A composite key hashed through `Hash` and `Hasher`, nested and with a String field.
-        ("test_hash_hasher.psm", "PASS", True),
-        # A map literal of more than twelve computed entries: one `mapEntriesN` per run of twelve,
-        # merged; it was a `mapPut` chain that leaked 12 of 13 values.
-        ("test_map_long_literal.psm", "PASS", True),
-        # A child bound to a `let` and then stored into a recursive payload was
-        # freed by the binding and by the tree: a double free, and a leak if the
-        # fix declines the tree's release instead.
-        ("recursive_enum_bindings_probe.psm", "PASS", True),
-        # The same through a `Node?`, which also did not link: an optional's
-        # drop named no release.
-        ("recursive_optional_probe.psm", "PASS", True),
-        ("test_195_string_builder.psm", "PASS", True),
-        # One allocation site backs every `concat`; a builder storing `concat`
-        # results stopped every `concat` argument being released.
-        ("concat_argument_probe.psm", "PASS", True),
-        # A Vec<String> only literals reach, and an element replaced under a
-        # live view: both leaked, and releasing at the store would free the view.
-        ("vec_element_replace_probe.psm", "PASS", True),
-        ("test_217_vec_filled.psm", "ok", True),
-        # `HashMap<K, V>()`, `HashMap()` from an annotation, and a bare `let` of a HashMap,
-        # which was a zeroed struct until 2026-09-28.
-        ("test_222_type_constructors.psm", "ok", True),
-        # HashMap literals: a computed String key is an argument temporary, and a
-        # literal of plain keys is a producer, clean in a field and a return.
-        ("test_223_map_literals.psm", "ok", True),
-        # HashSet holds its own columns: a set wrapping a HashMap in a field leaked
-        # its whole table (7 allocated, 1 released for a HashSet<Int>).
-        ("test_369_hash_set.psm", "PASS", True),
-        # A HashMap that owns its values (`V: Copy`): every reader hands out a copy, so
-        # no view of a stored value leaves the table and the container is released.
-        # It read "leaks every value" when the readers returned the stored element.
-        ("test_map_owned.psm", "PASS", True),
-        # An owned temporary's String field or element compared in place (also on the right of
-        # `or`), bound off a statement head, and a struct literal argument that a callee copies.
-        ("test_owned_temporary_reads.psm", "PASS", True),
-        # A scalar element of an owned temporary Vec on the right of `or`, in a `while`, a `let`.
-        ("test_owned_temporary_scalars.psm", "PASS", True),
-        # An owned call result compared with `none` has no binding to drop it: a
-        # `while (next() != none)` leaked one block per iteration.
-        ("test_370_compare_owned_temporary.psm", "ok", True),
-        # std.mem: Buffers and Arenas release their bytes like any Vec, and the
-        # test frees every raw block it allocates, so a leak here is a wrong
-        # release or a Buffer that kept its bytes.
-        ("test_274_std_mem.psm", "PASS", True),
-        # The language-gaps forms: an owned String payload through `if let`, `let ... else`, guards and
-        # nested patterns is released once.
-        ("test_390_let_forms.psm", "PASS", True),
-        ("test_391_match_tests.psm", "PASS", True),
-        ("test_392_nested_patterns.psm", "PASS", True),
-    )
     problems = []
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
     # A ledger that balances at exit says nothing about a loop that holds everything it ever
@@ -7438,7 +7441,7 @@ def run_ownership_probes_test():
     # displaced element is parked with its container.
     peak_limits = {"test_map_owned.psm": 262144}
     with tempfile.TemporaryDirectory(prefix="prismio-ownership-probes-") as tmp:
-        for name, want, no_leaks in probes:
+        for name, want, no_leaks in OWNERSHIP_PROBES:
             exe = Path(tmp) / ("probe" + exe_suffix)
             built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / name),
                                  "--verify", "-o", str(exe)])
@@ -7467,7 +7470,7 @@ def run_ownership_probes_test():
         for problem in problems:
             print(f"  {problem}")
         return False
-    print(f"{GREEN}[PASS] ownership probes: {len(probes)} shapes, right text and "
+    print(f"{GREEN}[PASS] ownership probes: {len(OWNERSHIP_PROBES)} shapes, right text and "
           f"0 violations{RESET}")
     return True
 

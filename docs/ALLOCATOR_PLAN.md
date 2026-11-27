@@ -91,6 +91,9 @@ Measuring each piece separately, on the same compiler:
   non-slab pointer goes to `realloc` as before.
 - `PRISMIO_SLAB=0` in the environment turns the slab off at run time (every block comes from `malloc`): the
   escape hatch for a sanitizer or valgrind, which cannot see slab blocks.
+- A runtime compiled with ASan or TSan has no slab at all (`PRISMIO_SLAB_ACTIVE` stays undefined), so
+  `tools/sanitizer_smoke.py` needs no variable; `PRISMIO_SLAB=0` is for valgrind and for a runtime built
+  without the sanitizer.
 - **Cost of the entry points.** `rt_base_alloc` and `rt_free` stay out of line. Letting the fast paths inline
   (`-DPRISMIO_SLAB_INLINE`) measured the same to within noise on all four arms.
 
@@ -123,7 +126,7 @@ the part of the change that must not be dropped when it is made real.
 | **wasm, freestanding** | `rt_base_alloc` is the program's `prismio_alloc` | the slab is compiled out (`PRISMIO_FREESTANDING`) | None. Freestanding codegen already allocates through the seam (`compile.psm:470`), so the call-site attributes help it too. |
 | **Threads Prismio did not create** | single-threaded doctrine | a foreign thread running Prismio code reads `prismio_memory_worker == 0` and shares the main thread's cache: a data race | Same rule the arena hint has. An embedder must call `prismio_memory_thread_enter` on its threads. State it in `INTEROP_PLAN.md` where it already lists thread-local initialisation. |
 | **Memory returned to the OS** | libc decides | never: a class's pages stay with that class. Measured on macOS, `fillAndFree` of 2M x 32, 48, 80-byte blocks: 321.7 MB peak (slab) against 323.9 MB (libmalloc), because xzone segregates by size as well | On Linux/glibc, which coalesces, this is a regression for programs that change size class. A `madvise(MADV_FREE)` pass over wholly free windows is the follow-up; not built. |
-| **Sanitizers, valgrind** | see every block | cannot see slab blocks | `PRISMIO_SLAB=0`. |
+| **Sanitizers, valgrind** | see every block | cannot see slab blocks | ASan/TSan builds compile the slab out; valgrind needs `PRISMIO_SLAB=0`. |
 
 Four rules in `CLAUDE.md` and `C_CODE_STYLE.md` change with it and have to be re-worded, not just remembered:
 "`rt_base_alloc` and `malloc` are interchangeable" becomes the one-way rule above; "an internal temporary that this

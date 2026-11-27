@@ -194,11 +194,20 @@ void rt_arena_hint_pop(void) {
 // `PRISMIO_SLAB=0` in the environment turns it off at run time, every block then libc's:
 // the escape hatch for a sanitizer or valgrind, which cannot see slab blocks. Not compiled
 // into a `--verify` build (the seam is the ledger there, so the ledger never exercises
-// this), a freestanding one (the program's allocator is the seam), a 32-bit target (no 64
+// this), an ASan or TSan one (a recycled slab block is neither a free nor an allocation to
+// them; a compile-time switch, so no variable can be forgotten), a freestanding one (the program's allocator is the seam), a 32-bit target (no 64
 // GiB to reserve) or Windows (not ported; it keeps the recycler below). Measured in
 // docs/ALLOCATOR_PLAN.md: the graph arms at 0.83x-1.01x of C++, an alloc+free pair 2-4 ns
 // against libmalloc's 10-14.
-#if !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING) \
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define PRISMIO_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define PRISMIO_SANITIZED 1
+#endif
+#endif
+
+#if !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING) && !defined(PRISMIO_SANITIZED) \
     && (defined(__unix__) || defined(__APPLE__)) && UINTPTR_MAX > 0xFFFFFFFFu
 #define PRISMIO_SLAB_ACTIVE 1
 #endif
