@@ -400,15 +400,6 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
 
     pruneUnreachableLibrary(mergedAst)
 
-    // PIR (docs/PIR_PLAN.md) runs only when it was asked for, and only reads the tree.
-    if (options.pirCoverage or options.emitPir.equals("") == false) {
-        diag_progress("building PIR")
-        if (pirRun(mergedAst, path, options.emitPir, options.pirCoverage) == false) {
-            diag_finish()
-            return 1
-        }
-    }
-
     // AIF, between sema and codegen. It reports nothing here and writes nothing
     // back to the AST; codegen queries it per allocation site through
     // aif_tier_at. `prismio aif` runs the same engine and prints the manifest.
@@ -483,6 +474,16 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     // A workload build runs the engine twice and this reads the second, real pass
     // -- which is the one whose layout ships.
     reportForcedLayouts()
+
+    // PIR (docs/PIR_PLAN.md) runs only when it was asked for, and only reads the tree.
+    // After the analysis, whose answers its leak estimate is measured against.
+    if (options.pirCoverage or options.emitPir.equals("") == false) {
+        diag_progress("building PIR")
+        if (pirRun(mergedAst, path, options.emitPir, options.pirCoverage, options.overflowChecks) == false) {
+            diag_finish()
+            return 1
+        }
+    }
 
     ir_reset()
 

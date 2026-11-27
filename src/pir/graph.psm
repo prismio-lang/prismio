@@ -18,9 +18,32 @@ public enum PirOp {
     CAST,
     // A value passed into a slot of its optional type: `T` as `T?`.
     WRAP,
+    // `lo..hi` arithmetic of a range loop: `down`, `enter`, `more`, `step`.
+    RANGE,
+    // Whether an optional holds a value, and the value it holds.
+    IS_SOME,
+    UNWRAP,
+    // A checked unwrap: it fails the program when there is nothing to unwrap.
+    EXPECT,
+    // Reads of memory: a field, an element, a container's length, a global.
     FIELD,
+    ELEM,
+    LENGTH,
+    GLOBAL,
+    // Writes. Each hands back what it displaced, where that is owned.
+    FIELD_SET,
+    ELEM_SET,
+    PUSH,
+    GLOBAL_SET,
+    // New objects.
+    STRUCT,
+    ARRAY,
+    ARRAY_ZERO,
+    COPY,
+    SLICE,
     CALL,
     BRANCH,
+    LOOP,
     EXIT
 }
 
@@ -30,10 +53,20 @@ public enum PirMode { COPY, OWN, VIEW }
 // takes it and, for a local, gives the written value back as a result (A8).
 public enum PirUse { BORROW, CONSUME, INOUT }
 
-public enum PirRegionKind { FN, BRANCH, ARM }
+public enum PirRegionKind { FN, BRANCH, ARM, LOOP }
 
-// The port an exit names: the function's return, a branch's merge, or no port at all.
-public enum PirPort { RETURN, MERGE, FAIL, UNREACHABLE }
+// The port an exit names: the function's return, a branch's merge, a loop's next
+// iteration or its end, or no port at all.
+public enum PirPort { RETURN, MERGE, NEXT, BREAK, FAIL, UNREACHABLE }
+
+// A part of memory with its own chain of versions (§6.1). Without a heap model the
+// object is the static type: every `Bag.items` is one place, which is always sound.
+public enum PirPlaceKind { WORLD, FIELD, ELEMENTS, HEADER, GLOBAL }
+
+// Bits of a node's flags.
+public const PIR_MAY_TRAP = 1
+// A call whose result may view what it was passed: every borrowed argument stays pinned.
+public const PIR_UNKNOWN_BASE = 2
 
 public struct PirFunc {
     public name: String,
@@ -41,6 +74,10 @@ public struct PirFunc {
     public line: Int,
     // From the standard library, rather than the program being built.
     public library: Bool,
+    // Why the function is not covered; "" when it is, and then the graph is complete.
+    public refusal: String,
+    // The Prismio functions this one calls, by symbol: whose summaries it was built on.
+    public callees: Vec<String>,
 
     // Nodes. `region` is -1 for a pure node. Operands are contiguous; results are too,
     // but a branch's are appended once both arms are built.
@@ -53,7 +90,7 @@ public struct PirFunc {
     public opCount: Vec<Int>,
     public resStart: Vec<Int>,
     public resCount: Vec<Int>,
-    // An exit's target region, or a branch node's own region; -1 otherwise.
+    // An exit's target region, or a branch or loop node's own region; -1 otherwise.
     public nodeTarget: Vec<Int>,
     // The exit port (PirPort as Int) of an EXIT; -1 otherwise.
     public nodePort: Vec<Int>,
@@ -68,17 +105,30 @@ public struct PirFunc {
     public operandUse: Vec<PirUse>,
     public results: Vec<Int>,
 
+    // State accesses, contiguous per node: the place, the version read or replaced
+    // (-1 for a version a branch or loop defines), and the version defined (-1 for a
+    // read, and for a version a clobber ends).
+    public accStart: Vec<Int>,
+    public accCount: Vec<Int>,
+    public accPlace: Vec<Int>,
+    public accIn: Vec<Int>,
+    public accOut: Vec<Int>,
+
     // Values. `def` is -1 for a region's input port; `region` is -1 for a pure value.
     public valDef: Vec<Int>,
     public valRegion: Vec<Int>,
     public valType: Vec<Int>,
     public valMode: Vec<PirMode>,
     public valName: Vec<String>,
+    // The `let` the value first initialised, "" if none.
+    public valBinding: Vec<String>,
+    // `own ?w` (§7.5): owned on some paths and a view on others.
+    public valWitness: Vec<Bool>,
     // The storage class (§7.1). Filled by AIF over PIR, not in P0.
     public valStorage: Vec<Int>,
 
-    // Regions. Region 0 is the function. `node` is the branch node that owns a BRANCH
-    // or ARM region.
+    // Regions. Region 0 is the function. `node` is the node that owns a BRANCH, ARM
+    // or LOOP region. An arm's label says which case it is.
     public regKind: Vec<PirRegionKind>,
     public regParent: Vec<Int>,
     public regNode: Vec<Int>,
@@ -86,6 +136,7 @@ public struct PirFunc {
     public regTail: Vec<Int>,
     public regPortStart: Vec<Int>,
     public regPortCount: Vec<Int>,
+    public regLabel: Vec<String>,
     public ports: Vec<Int>,
 
     // The return port: the result, if any, then each `inout` parameter's final value.
@@ -93,33 +144,75 @@ public struct PirFunc {
     public returnMode: PirMode,
     public hasResult: Bool,
 
-    // Places and state versions (§6). Empty until places are built.
-    public placeObject: Vec<Int>,
-    public placePath: Vec<Int>,
-    public stateOf: Vec<Int>,
-    public statePrev: Vec<Int>,
+    // Places and state versions (§6). Place 0 is `world`, version 0 its entry state.
+    public placeKind: Vec<PirPlaceKind>,
+    // The object type of a FIELD, the element type of ELEMENTS and HEADER, else -1.
+    public placeType: Vec<Int>,
+    public placeName: Vec<String>,
+    public verPlace: Vec<Int>,
+    // The node that defines a version (-1 on entry) and the one it replaced (-1 for a
+    // version defined by a branch or a loop, or on entry).
+    public verDef: Vec<Int>,
+    public verPrev: Vec<Int>,
 
-    // The pure graph's interning table.
-    cons: HashMap<String, Int>
+    // The interning tables of the pure graph and of places.
+    cons: HashMap<String, Int>,
+    placeIds: HashMap<String, Int>
 }
 
 public fn pirFuncNew(name: String, file: Int, line: Int, library: Bool) -> PirFunc {
-    return PirFunc {
+    let f = PirFunc {
         name: name.clone(),
         file: file,
         line: line,
         library: library,
+        refusal: "".clone(),
+        callees: [],
         op: [], nodeFlags: [], nodeRegion: [], nodeNext: [], nodeName: [],
         opStart: [], opCount: [], resStart: [], resCount: [],
         nodeTarget: [], nodePort: [], nodeLine: [], nodeCol: [], nodeAst: [], nodeSite: [],
         operands: [], operandUse: [], results: [],
-        valDef: [], valRegion: [], valType: [], valMode: [], valName: [], valStorage: [],
+        accStart: [], accCount: [], accPlace: [], accIn: [], accOut: [],
+        valDef: [], valRegion: [], valType: [], valMode: [], valName: [], valBinding: [], valWitness: [], valStorage: [],
         regKind: [], regParent: [], regNode: [], regHead: [], regTail: [],
-        regPortStart: [], regPortCount: [], ports: [],
+        regPortStart: [], regPortCount: [], regLabel: [], ports: [],
         returnTypes: [], returnMode: PirMode.COPY, hasResult: false,
-        placeObject: [], placePath: [], stateOf: [], statePrev: [],
-        cons: HashMap<String, Int>()
+        placeKind: [], placeType: [], placeName: [], verPlace: [], verDef: [], verPrev: [],
+        cons: HashMap<String, Int>(),
+        placeIds: HashMap<String, Int>()
     }
+    pirPlaceIntern(f, PirPlaceKind.WORLD, -1, "world")
+    pirVersionNew(f, 0, -1, -1)
+    return f
+}
+
+public fn pirPlaceIntern(f: PirFunc, kind: PirPlaceKind, placeType: Int, name: String) -> Int {
+    let key = (kind as Int).toString().concat(":", placeType.toString(), ":", name)
+    let found = f.placeIds.getOr(key, -1)
+    if (found >= 0) { return found }
+    let id = f.placeKind.length
+    f.placeKind.push(kind)
+    f.placeType.push(placeType)
+    f.placeName.push(name.clone())
+    f.placeIds.insert(key, id)
+    return id
+}
+
+public fn pirVersionNew(f: PirFunc, place: Int, def: Int, prev: Int) -> Int {
+    let id = f.verPlace.length
+    f.verPlace.push(place)
+    f.verDef.push(def)
+    f.verPrev.push(prev)
+    return id
+}
+
+// One access of `node`. A node's accesses are added together, with no other node's between.
+public fn pirAccess(f: PirFunc, node: Int, place: Int, before: Int, after: Int) {
+    if (f.accCount[node] == 0) { f.accStart[node] = f.accPlace.length }
+    f.accPlace.push(place)
+    f.accIn.push(before)
+    f.accOut.push(after)
+    f.accCount[node] = f.accCount[node] + 1
 }
 
 public fn pirRegionNew(f: PirFunc, kind: PirRegionKind, parent: Int, node: Int) -> Int {
@@ -131,6 +224,7 @@ public fn pirRegionNew(f: PirFunc, kind: PirRegionKind, parent: Int, node: Int) 
     f.regTail.push(-1)
     f.regPortStart.push(f.ports.length)
     f.regPortCount.push(0)
+    f.regLabel.push("")
     return id
 }
 
@@ -153,10 +247,15 @@ public fn pirNodeNew(f: PirFunc, op: PirOp, name: String, ast: ASTNode) -> Int {
     f.nodeCol.push(ast.col)
     f.nodeAst.push(node_to_ptr(ast))
     f.nodeSite.push(-1)
+    f.accStart.push(0)
+    f.accCount.push(0)
     return id
 }
 
+// A node's operands are added together too, though an exit's may wait until the
+// region it leaves is complete.
 public fn pirOperand(f: PirFunc, node: Int, value: Int, use: PirUse) {
+    if (f.opCount[node] == 0) { f.opStart[node] = f.operands.length }
     f.operands.push(value)
     f.operandUse.push(use)
     f.opCount[node] = f.opCount[node] + 1
@@ -180,6 +279,8 @@ private fn pirValueNew(f: PirFunc, def: Int, reg: Int, valueType: Int, mode: Pir
     f.valType.push(valueType)
     f.valMode.push(mode)
     f.valName.push(name.clone())
+    f.valBinding.push("")
+    f.valWitness.push(false)
     f.valStorage.push(-1)
     return id
 }
@@ -204,15 +305,22 @@ public fn pirPortNew(f: PirFunc, reg: Int, valueType: Int, mode: PirMode, name: 
 
 // The value of a pure node: one node per (op, name, operands, type). Every operand must
 // be a copy value, which is what makes sharing one node between uses sound.
-public fn pirPure(f: PirFunc, op: PirOp, name: String, operands: Vec<Int>, valueType: Int, ast: ASTNode) -> Int {
+//
+// `anchor` is -1, or the region a node that may trap sits in. Such a node is shared only
+// within that region, and scheduling never lifts it above it (§5).
+public fn pirPure(f: PirFunc, op: PirOp, name: String, operands: Vec<Int>, valueType: Int, anchor: Int, ast: ASTNode) -> Int {
     let mut key = (op as Int).toString().concat(":", valueType.toString(), ":", operands.length.toString())
     for operand in operands { key = key.concat(",", operand.toString()) }
-    key = key.concat(":", name)
+    key = key.concat(":", anchor.toString(), ":", name)
     let found = f.cons.getOr(key, -1)
     if (found >= 0) { return found }
 
     let node = pirNodeNew(f, op, name, ast)
     for operand in operands { pirOperand(f, node, operand, PirUse.BORROW) }
+    if (anchor >= 0) {
+        f.nodeFlags[node] = PIR_MAY_TRAP
+        f.nodeTarget[node] = anchor
+    }
     let value = pirResult(f, node, valueType, PirMode.COPY, "")
     f.cons.insert(key, value)
     return value

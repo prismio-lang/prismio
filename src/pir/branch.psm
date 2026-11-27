@@ -1,0 +1,504 @@
+// Branch regions (docs/PIR_PLAN.md §4.1): `if`, `match`, `and`/`or` and `??`. A branch
+// is opened on its condition, each arm is built between a begin and an end, and closing
+// it makes the merge port out of what the arms that come back hold.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import ast.types
+import lexer.token
+import pir.types
+import pir.graph
+import pir.state
+import pir.builder
+import pir.expr
+import pir.memory
+
+internal struct PirBranch {
+    internal node: Int,
+    internal reg: Int,
+    internal outer: Int,
+    // The outer locals the arms are concerned with, and which of them are handed in.
+    internal candidates: Vec<Int>,
+    internal ported: Vec<Bool>,
+    // Owned temporaries handed to every arm besides the locals.
+    internal passed: Vec<Int>,
+    // The locals and the state each arm starts from.
+    internal savedValues: Vec<Int>,
+    internal savedLive: Vec<Bool>,
+    internal savedState: PirState,
+    // How each arm ended: its region, whether it comes back, and for those that do,
+    // what it holds. `values` and `live` hold one entry per candidate per arm, `extras`
+    // the arm's own results.
+    internal arms: Vec<Int>,
+    internal merges: Vec<Bool>,
+    internal values: Vec<Int>,
+    internal live: Vec<Bool>,
+    internal extras: Vec<Int>,
+    // Into `PirScope.snapshots`, one per arm.
+    internal states: Vec<Int>
+}
+
+// The names the statements under `head` mention. A name an inner block declares for
+// itself is counted too; that only adds a port nobody needs.
+internal fn pirMentions(head: Ptr, names: HashMap<String, Int>) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.IDENTIFIER_EXPR) { names.insert(node.s1.clone(), 1) }
+        pirMentions(node.child1, names)
+        pirMentions(node.child2, names)
+        pirMentions(node.child3, names)
+        p = node.next
+    }
+}
+
+// Whether anything under `head` leaves by a `return`, or (with `jumps`) by a `break` or
+// `continue`; without it, only by one that names a label.
+internal fn pirEscapes(head: Ptr, jumps: Bool) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.RETURN_STATEMENT) { return true }
+        if (node.kind == NodeKind.BREAK_STATEMENT or node.kind == NodeKind.CONTINUE_STATEMENT) {
+            if (jumps or node.s1.equals("") == false) { return true }
+        }
+        if (pirEscapes(node.child1, jumps)) { return true }
+        if (pirEscapes(node.child2, jumps)) { return true }
+        if (pirEscapes(node.child3, jumps)) { return true }
+        p = node.next
+    }
+    return false
+}
+
+// A branch on `condition` whose arms are the code under `heads`. An arm that leaves the
+// function or a loop does so from inside, where every owned value still held has to be:
+// it leaves through the exit, or elaboration drops it there (§4.4). So a branch that
+// `escapes` is handed all of them.
+internal fn pirBranchOpen(program: PirProgram, f: PirFunc, s: PirScope, condition: Int, heads: Vec<Ptr>, escapes: Bool, passed: Vec<Int>, at: ASTNode) -> PirBranch {
+    let mentioned = HashMap<String, Int>()
+    let mut leaves = escapes
+    for i in 0..<heads.length {
+        pirMentions(heads[i], mentioned)
+        if (pirEscapes(heads[i], true)) { leaves = true }
+    }
+
+    let node = pirNodeNew(f, PirOp.BRANCH, "", at)
+    let b = PirBranch {
+        node: node,
+        reg: -1,
+        outer: s.reg,
+        candidates: [],
+        ported: [],
+        passed: [],
+        savedValues: [],
+        savedLive: [],
+        savedState: pirStateCopy(s.state),
+        arms: [],
+        merges: [],
+        values: [],
+        live: [],
+        extras: [],
+        states: []
+    }
+    // In declaration order, so nothing below depends on the order of a hash table.
+    for local in 0..<s.names.length {
+        // A name means its innermost declaration.
+        let named = mentioned.contains(s.names[local].clone()) and pirLookup(s, s.names[local]) == local
+        let owned = s.live[local] and f.valMode[s.values[local]] == PirMode.OWN
+        // One the enclosing loop does not carry is out of reach here, and stays outside.
+        let reachable = owned and f.valRegion[s.values[local]] == s.reg
+        if (named == false and (leaves and reachable) == false) { continue }
+        b.candidates.push(local)
+        b.ported.push(owned)
+        b.savedValues.push(s.values[local])
+        b.savedLive.push(s.live[local])
+    }
+
+    pirOperand(f, node, condition, PirUse.BORROW)
+    for i in 0..<b.candidates.length {
+        if (b.ported[i]) { pirOperand(f, node, s.values[b.candidates[i]], PirUse.CONSUME) }
+    }
+    for value in passed {
+        pirOperand(f, node, value, PirUse.CONSUME)
+        b.passed.push(value)
+    }
+    pirAppend(f, s.reg, node)
+    b.reg = pirRegionNew(f, PirRegionKind.BRANCH, s.reg, node)
+    f.nodeTarget[node] = b.reg
+    return b
+}
+
+// Starts the arm called `label`, answering its ports for the passed temporaries.
+internal fn pirArmBegin(program: PirProgram, f: PirFunc, s: PirScope, b: PirBranch, label: String) -> Vec<Int> {
+    let arm = pirRegionNew(f, PirRegionKind.ARM, b.reg, b.node)
+    f.regLabel[arm] = label.clone()
+    b.arms.push(arm)
+    // An owned value enters an arm only as its input port (§4.5).
+    for i in 0..<b.candidates.length {
+        if (b.ported[i] == false) { continue }
+        let local = b.candidates[i]
+        let outer = s.values[local]
+        let port = pirPortNew(f, arm, s.declared[local], PirMode.OWN, s.names[local])
+        f.valWitness[port] = f.valWitness[outer]
+        s.values[local] = port
+    }
+    let mut ports: Vec<Int> = []
+    for value in b.passed {
+        let port = pirPortNew(f, arm, f.valType[value], PirMode.OWN, "")
+        f.valWitness[port] = f.valWitness[value]
+        ports.push(port)
+    }
+    s.reg = arm
+    s.done = false
+    return ports
+}
+
+internal fn pirArmEnd(program: PirProgram, f: PirFunc, s: PirScope, b: PirBranch, extras: Vec<Int>) {
+    let merges = s.done == false
+    b.merges.push(merges)
+    for local in b.candidates {
+        b.values.push(s.values[local])
+        b.live.push(s.live[local])
+    }
+    for value in extras { b.extras.push(value) }
+    b.states.push(pirSnapshot(s))
+    for i in 0..<b.candidates.length {
+        let local = b.candidates[i]
+        s.values[local] = b.savedValues[i]
+        s.live[local] = b.savedLive[i]
+    }
+    pirStateRestore(s.state, b.savedState)
+    s.reg = b.outer
+    s.done = false
+}
+
+// The mode and witness of a port taking `values`: owned on some paths and a view on
+// others is `own ?w` (§7.5).
+internal fn pirJoinMode(f: PirFunc, result: Int, values: Vec<Int>) {
+    let mut mode = f.valMode[values[0]]
+    let mut witness = false
+    for value in values {
+        if (f.valWitness[value]) { witness = true }
+        if (f.valMode[value] != mode) {
+            witness = true
+        }
+    }
+    if (witness) { mode = PirMode.OWN }
+    f.valMode[result] = mode
+    f.valWitness[result] = witness
+}
+
+// Closes the branch, answering the values of the arms' own results, of types `extraTypes`.
+internal fn pirBranchClose(program: PirProgram, f: PirFunc, s: PirScope, b: PirBranch, extraTypes: Vec<Int>, at: ASTNode) -> Vec<Int> {
+    let mut results: Vec<Int> = []
+    if (pirOk(s) == false) { return results }
+    let width = b.candidates.length
+    let extraWidth = extraTypes.length
+    let mut merging: Vec<Int> = []
+    for arm in 0..<b.arms.length {
+        if (b.merges[arm]) { merging.push(arm) }
+    }
+
+    // The merge port: each local that every arm reaching it still holds, and that an
+    // arm replaced or was handed. A local some such arm moved is dead afterwards.
+    let mut outputs: Vec<Int> = []
+    for i in 0..<width {
+        if (merging.length == 0) { break }
+        let local = b.candidates[i]
+        let mut alive = true
+        let mut changed = s.live[local] == false
+        for arm in merging {
+            if (b.live[arm * width + i] == false) { alive = false }
+            if (b.values[arm * width + i] != s.values[local]) { changed = true }
+        }
+        if (alive == false) {
+            s.live[local] = false
+            continue
+        }
+        if (b.ported[i] or changed) { outputs.push(i) }
+    }
+
+    for i in outputs {
+        let local = b.candidates[i]
+        let mut held: Vec<Int> = []
+        for arm in merging { held.push(b.values[arm * width + i]) }
+        let result = pirResult(f, b.node, s.declared[local], f.valMode[held[0]], s.names[local])
+        pirJoinMode(f, result, held)
+    }
+    for j in 0..<extraWidth {
+        if (merging.length == 0) { break }
+        let mut held: Vec<Int> = []
+        for arm in merging { held.push(b.extras[arm * extraWidth + j]) }
+        let result = pirResult(f, b.node, extraTypes[j], f.valMode[held[0]], "")
+        pirJoinMode(f, result, held)
+        results.push(result)
+    }
+
+    let mut ends: Vec<Int> = []
+    for arm in merging { ends.push(b.states[arm]) }
+    let places = pirStateJoin(f, s.state, b.node, b.savedState, s.snapshots, ends)
+
+    for arm in merging {
+        let exit = pirExitNode(f, PirPort.MERGE, b.reg, at)
+        for i in outputs {
+            let value = b.values[arm * width + i]
+            pirOperand(f, exit, value, pirConsumingUse(f, value))
+        }
+        for j in 0..<extraWidth {
+            let value = b.extras[arm * extraWidth + j]
+            let mut use = pirConsumingUse(f, value)
+            // The same object cannot leave twice.
+            for i in outputs {
+                if (b.values[arm * width + i] == value) { use = PirUse.BORROW }
+            }
+            pirOperand(f, exit, value, use)
+        }
+        for place in places { pirAccess(f, exit, place, pirStateAt(s.snapshots[b.states[arm]], place), -1) }
+        pirAppend(f, b.arms[arm], exit)
+    }
+
+    for k in 0..<outputs.length {
+        let local = b.candidates[outputs[k]]
+        s.values[local] = pirResultAt(f, b.node, k)
+        s.live[local] = true
+    }
+
+    // No arm comes back, so nothing runs after the branch.
+    if (merging.length == 0) { pirExitPlain(f, s, PirPort.UNREACHABLE, at) }
+    return results
+}
+
+private fn pirNoValues() -> Vec<Int> {
+    let values: Vec<Int> = []
+    return values
+}
+
+internal fn pirIf(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode) {
+    let condition = pirOperandExpr(program, f, s, ptr_to_node(stmt.child1))
+    if (pirOk(s) == false) { return }
+    let heads: Vec<Ptr> = [stmt.child2, stmt.child3]
+    let b = pirBranchOpen(program, f, s, condition, heads, false, pirNoValues(), stmt)
+
+    pirArmBegin(program, f, s, b, "true")
+    pirBlock(program, f, s, ptr_to_node(stmt.child2))
+    pirArmEnd(program, f, s, b, pirNoValues())
+
+    pirArmBegin(program, f, s, b, "false")
+    if (nodeExists(stmt.child3)) {
+        let otherwise = ptr_to_node(stmt.child3)
+        // An `else if` is the next branch, in this arm.
+        if (otherwise.kind == NodeKind.IF_STATEMENT) {
+            pirIf(program, f, s, otherwise)
+        } else {
+            pirBlock(program, f, s, otherwise)
+        }
+    }
+    pirArmEnd(program, f, s, b, pirNoValues())
+
+    pirBranchClose(program, f, s, b, pirNoValues(), stmt)
+}
+
+// `a and b`, `a or b`: the right side is built, run and ended in one arm (A3).
+internal fn pirShortCircuit(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let both = node.s1.equals("and")
+    let left = pirOperandExpr(program, f, s, ptr_to_node(node.child1))
+    let boolType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let heads: Vec<Ptr> = [node.child2]
+    let b = pirBranchOpen(program, f, s, left, heads, false, pirNoValues(), node)
+
+    for arm in 0..<2 {
+        let taken = arm == 0
+        if (taken) {
+            pirArmBegin(program, f, s, b, "true")
+        } else {
+            pirArmBegin(program, f, s, b, "false")
+        }
+        let mut value = -1
+        if (taken == both) {
+            value = pirOperandExpr(program, f, s, ptr_to_node(node.child2))
+        } else {
+            // The left side already decided: `false and`, `true or`.
+            let mut text = "true"
+            if (both) { text = "false" }
+            value = pirConstant(program, f, s, text, boolType, node)
+        }
+        let extras: Vec<Int> = [value]
+        pirArmEnd(program, f, s, b, extras)
+    }
+
+    let types: Vec<Int> = [boolType]
+    let results = pirBranchClose(program, f, s, b, types, node)
+    if (results.length == 0) { return -1 }
+    return results[0]
+}
+
+private fn pirIsSome(program: PirProgram, f: PirFunc, s: PirScope, optional: Int, at: ASTNode) -> Int {
+    let boolType = pirTypeIntern(program.types, typeBool())
+    let operands: Vec<Int> = [optional]
+    return pirCompute(program, f, s, PirOp.IS_SOME, "", operands, boolType, false, at)
+}
+
+// `a ?? b`: the value `a` holds, else `b`, which only that arm evaluates.
+internal fn pirCoalesce(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let optionalPtr = node.child2
+    let source = ptr_to_node(optionalPtr)
+    let optional = pirOperandExpr(program, f, s, source)
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let mut local = -1
+    if (source.kind == NodeKind.IDENTIFIER_EXPR) { local = pirLookup(s, source.s1) }
+    let condition = pirIsSome(program, f, s, optional, node)
+
+    // An owned temporary has no name to hand it in by.
+    let temporary = local < 0 and f.valMode[optional] == PirMode.OWN
+    let mut passed: Vec<Int> = []
+    if (temporary) { passed.push(optional) }
+    let heads: Vec<Ptr> = [optionalPtr]
+    let b = pirBranchOpen(program, f, s, condition, heads, false, passed, node)
+
+    let ports = pirArmBegin(program, f, s, b, "some")
+    let mut held = optional
+    if (temporary) {
+        held = ports[0]
+    } else if (local >= 0 and s.live[local]) {
+        held = s.values[local]
+    }
+    let unwrap = pirNodeNew(f, PirOp.UNWRAP, "", node)
+    let mut use = PirUse.BORROW
+    let mut mode = pirReadMode(program, resultType)
+    if (temporary) {
+        use = PirUse.CONSUME
+        mode = pirFreshMode(program, resultType)
+    }
+    pirOperand(f, unwrap, held, use)
+    pirAppend(f, s.reg, unwrap)
+    let present: Vec<Int> = [pirResult(f, unwrap, resultType, mode, "")]
+    pirArmEnd(program, f, s, b, present)
+
+    pirArmBegin(program, f, s, b, "none")
+    let fallbackNode = ptr_to_node(source.next)
+    let mut fallback = pirOperandExpr(program, f, s, fallbackNode)
+    if (pirOk(s)) { fallback = pirCoerce(program, f, s, fallback, resultType, fallbackNode) }
+    let absent: Vec<Int> = [fallback]
+    pirArmEnd(program, f, s, b, absent)
+
+    let types: Vec<Int> = [resultType]
+    let results = pirBranchClose(program, f, s, b, types, node)
+    if (results.length == 0) { return -1 }
+    return results[0]
+}
+
+// The label of a pattern codegen can compare without evaluating anything, or "".
+private fn pirConstantPattern(pattern: ASTNode) -> String {
+    if (pattern.kind == NodeKind.LITERAL_EXPR) {
+        if (pattern.i1 == TokenType.NUMBER_LITERAL as Int or pattern.i1 == TokenType.BOOL_LITERAL as Int) {
+            return pattern.s1.clone()
+        }
+        if (pattern.i1 == TokenType.CHAR_LITERAL as Int) { return "'".concat(pattern.s1, "'") }
+        return "".clone()
+    }
+    if (pattern.kind == NodeKind.UNARY_EXPR and pattern.s1.equals("-")) {
+        let operand = ptr_to_node(pattern.child1)
+        if (operand.kind == NodeKind.LITERAL_EXPR) { return "-".concat(operand.s1) }
+    }
+    if (pattern.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let owner = ptr_to_node(pattern.child1)
+        if (owner.kind == NodeKind.IDENTIFIER_EXPR) { return owner.s1.concat(".", pattern.s1) }
+    }
+    return "".clone()
+}
+
+// The names a variant pattern binds: reads of the payload fields, in the arm.
+private fn pirBinders(program: PirProgram, f: PirFunc, s: PirScope, arm: ASTNode, object: Int) {
+    let pattern = ptr_to_node(arm.child1)
+    if (pattern.kind != NodeKind.CALL_EXPR) { return }
+    let objectType = f.valType[object]
+    let mut index = 0
+    let mut p = pattern.child2
+    while (nodeExists(p)) {
+        let binder = ptr_to_node(p)
+        let valueType = pirNodeType(program, s, binder)
+        if (pirOk(s) == false) { return }
+        // Sema's spelling of a payload field (enumPayloadField).
+        let field = arm.s2.concat("$", index.toString())
+        let operands: Vec<Int> = [object]
+        let place = pirFieldPlace(program, f, objectType, field)
+        let value = pirReadNode(program, f, s, PirOp.FIELD, field, operands, place, valueType, binder)
+        pirDeclare(s, binder.s1, value, valueType, true)
+        index = index + 1
+        p = binder.next
+    }
+}
+
+internal fn pirMatch(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode) {
+    let source = ptr_to_node(stmt.child1)
+    let scrutinee = pirOperandExpr(program, f, s, source)
+    if (pirOk(s) == false) { return }
+    let mut local = -1
+    if (source.kind == NodeKind.IDENTIFIER_EXPR) { local = pirLookup(s, source.s1) }
+
+    // A payload enum's arms test the tag and bind names out of the payload.
+    let mut payload = false
+    let mut wildcard = false
+    let mut p = stmt.child2
+    while (nodeExists(p)) {
+        let arm = ptr_to_node(p)
+        if (arm.s2.equals("") == false) { payload = true }
+        if (arm.s1.equals("_")) { wildcard = true }
+        p = arm.next
+    }
+    let mut selector = scrutinee
+    if (payload) {
+        let tagType = pirTypeIntern(program.types, typeInt())
+        let operands: Vec<Int> = [scrutinee]
+        let place = pirFieldPlace(program, f, f.valType[scrutinee], "$tag")
+        selector = pirReadNode(program, f, s, PirOp.FIELD, "$tag", operands, place, tagType, stmt)
+    }
+
+    let temporary = payload and local < 0 and f.valMode[scrutinee] == PirMode.OWN
+    let mut passed: Vec<Int> = []
+    if (temporary) { passed.push(scrutinee) }
+    let heads: Vec<Ptr> = [stmt.child2, stmt.child1]
+    let b = pirBranchOpen(program, f, s, selector, heads, false, passed, stmt)
+
+    p = stmt.child2
+    while (nodeExists(p) and pirOk(s)) {
+        let arm = ptr_to_node(p)
+        let mut label = "_".clone()
+        if (arm.s1.equals("_") == false) {
+            if (payload) {
+                label = arm.s2.clone()
+            } else {
+                label = pirConstantPattern(ptr_to_node(arm.child1))
+                if (label.equals("")) {
+                    pirRefuse(s, "match on a computed pattern")
+                    return
+                }
+            }
+        }
+        let ports = pirArmBegin(program, f, s, b, label)
+        let mark = s.names.length
+        if (payload and arm.s1.equals("_") == false) {
+            let mut object = scrutinee
+            if (temporary) {
+                object = ports[0]
+            } else if (local >= 0 and s.live[local]) {
+                object = s.values[local]
+            }
+            pirBinders(program, f, s, arm, object)
+        }
+        if (pirOk(s)) { pirBlock(program, f, s, ptr_to_node(arm.child2)) }
+        pirScopeTruncate(s, mark)
+        pirArmEnd(program, f, s, b, pirNoValues())
+        p = arm.next
+    }
+    // A match no arm of which takes some value falls through it.
+    if (wildcard == false and stmt.i3 != 1) {
+        pirArmBegin(program, f, s, b, "_")
+        pirArmEnd(program, f, s, b, pirNoValues())
+    }
+    pirBranchClose(program, f, s, b, pirNoValues(), stmt)
+}

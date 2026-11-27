@@ -1,8 +1,9 @@
 // pir_verify (docs/PIR_PLAN.md §16.3), for what stage P0 builds: the region tree, the
 // spine as a total order that defines every value before its use, exits that target an
-// ancestor's port with matching arguments, and owned values crossing regions only
-// through ports (§4.5). A1, one consumer per owned value, is counted and not enforced:
-// no drops exist until P2, so most owned values have none yet.
+// ancestor's port with matching arguments, owned values crossing regions only through
+// ports (§4.5), no owned value made from a borrowed one, and (pir.verify_state) state
+// versions in a linear chain per place. A1, one consumer per owned value, and A4 are
+// counted and not enforced: no drops exist until P2, so most owned values have none yet.
 //
 // A finding is a compiler bug. It names the function and the source line.
 
@@ -12,6 +13,7 @@ import common.source_files
 import pir.types
 import pir.graph
 import pir.builder
+import pir.verify_state
 
 public struct PirReport {
     public findings: Vec<String>,
@@ -21,19 +23,24 @@ public struct PirReport {
     public consumedOnce: Int,
     public consumedMore: Int,
     // Operands that read an owned value after the spine entry that consumed it.
-    public readAfterConsume: Int
+    public readAfterConsume: Int,
+    // Owned values a loop's `next` passes that something else also consumed (A4).
+    public carriedConsumed: Int,
+    // `own ?w` values (§7.5).
+    public witnessed: Int
 }
 
 public fn pirVerifyProgram(program: PirProgram) -> PirReport {
     let report = PirReport { findings: [], owned: 0, unconsumed: 0, consumedOnce: 0, consumedMore: 0,
-        readAfterConsume: 0 }
+        readAfterConsume: 0, carriedConsumed: 0, witnessed: 0 }
     for i in 0..<program.funcs.length {
-        pirVerifyFunc(program.types, program.funcs[i], report)
+        if (program.funcs[i].refusal.equals("") == false) { continue }
+        pirVerifyFunc(program, program.funcs[i], report)
     }
     return report
 }
 
-private fn pirFinding(f: PirFunc, report: PirReport, node: Int, message: String) {
+internal fn pirFinding(f: PirFunc, report: PirReport, node: Int, message: String) {
     let mut line = f.line
     if (node >= 0) { line = f.nodeLine[node] }
     let place = diag_file_path(f.file).concat(":", line.toString())
@@ -65,10 +72,30 @@ private fn pirVerifyRegions(f: PirFunc, report: PirReport) {
         if (f.regKind[r] == PirRegionKind.ARM and f.regKind[parent] != PirRegionKind.BRANCH) {
             pirFinding(f, report, f.regNode[r], "an arm is not inside a branch")
         }
+        if (f.regKind[r] == PirRegionKind.LOOP and f.regKind[parent] == PirRegionKind.BRANCH) {
+            pirFinding(f, report, f.regNode[r], "a loop is directly inside a branch")
+        }
         if (f.regKind[r] == PirRegionKind.FN) {
             pirFinding(f, report, f.regNode[r], "a second function region")
         }
     }
+}
+
+// Operations that touch memory or control, which only a spine may hold.
+private fn pirIsEffect(op: PirOp) -> Bool {
+    match (op) {
+        PirOp.CONST => { return false }
+        PirOp.ENUM_CONST => { return false }
+        PirOp.UNARY => { return false }
+        PirOp.BINARY => { return false }
+        PirOp.CAST => { return false }
+        PirOp.WRAP => { return false }
+        PirOp.RANGE => { return false }
+        PirOp.IS_SOME => { return false }
+        PirOp.UNWRAP => { return false }
+        _ => { }
+    }
+    return true
 }
 
 // Each spine node's position on its region's spine, -1 for a node on none.
@@ -106,7 +133,7 @@ private fn pirSpinePositions(f: PirFunc, report: PirReport) -> Vec<Int> {
         }
         if (f.nodeRegion[node] < 0) {
             let op = f.op[node]
-            if (op == PirOp.FIELD or op == PirOp.CALL or op == PirOp.BRANCH or op == PirOp.EXIT) {
+            if (pirIsEffect(op)) {
                 pirFinding(f, report, node, "an effect is off the spine")
             }
             if (f.resCount[node] != 1) { pirFinding(f, report, node, "a pure node does not have one result") }
@@ -123,6 +150,8 @@ private fn pirVisible(f: PirFunc, positions: Vec<Int>, value: Int, reg: Int, pos
     if (home < 0) {
         // A pure value is wherever its operands are. They are older than it, so this ends.
         let node = f.valDef[value]
+        // A node that may trap is never lifted out of the region it sits in (§5).
+        if (f.nodeTarget[node] >= 0 and pirRegionWithin(f, reg, f.nodeTarget[node]) == false) { return false }
         for i in 0..<f.opCount[node] {
             let operand = pirOperandAt(f, node, i)
             if (operand >= value) { return false }
@@ -138,9 +167,9 @@ private fn pirVisible(f: PirFunc, positions: Vec<Int>, value: Int, reg: Int, pos
             if (def < 0) { return true }
             return positions[def] < at
         }
-        // Out of an arm: what is visible here is what was visible before its branch.
+        // Out of an arm or a loop: what is visible here is what was visible before its node.
         let node = f.regNode[r]
-        if (f.regKind[r] == PirRegionKind.ARM) {
+        if (f.regKind[r] == PirRegionKind.ARM or f.regKind[r] == PirRegionKind.LOOP) {
             at = positions[node]
             r = f.nodeRegion[node]
         } else {
@@ -188,6 +217,9 @@ private fn pirVerifyUses(types: PirTypes, f: PirFunc, report: PirReport, positio
             pirFinding(f, report, f.valDef[value], "%".concat(value.toString(), " has no type"))
             continue
         }
+        if (f.valWitness[value] and f.valMode[value] != PirMode.OWN) {
+            pirFinding(f, report, f.valDef[value], "%".concat(value.toString(), " is conditioned but not owned"))
+        }
         if ((f.valMode[value] == PirMode.COPY) == types.moveOnly[valueType]) {
             let shown = pirModeText(f.valMode[value]).concat(" ", pirTypeText(types, valueType))
             pirFinding(f, report, f.valDef[value], "%".concat(value.toString(), " is `", shown, "`"))
@@ -210,6 +242,17 @@ private fn pirTypeFits(types: PirTypes, expected: Int, actual: Int) -> Bool {
     // A length that is not known takes any length.
     if (kind == PirTypeKind.ARRAY) { return types.child[expected] == types.child[actual] }
     return false
+}
+
+// A value passed into a port must have the port's mode, unless the port is `own ?w`;
+// and an owned port must not be given a borrowed value.
+private fn pirVerifyPassed(f: PirFunc, report: PirReport, node: Int, value: Int, taken: Int) {
+    if (f.valWitness[taken]) { return }
+    if (f.valMode[value] != f.valMode[taken] or f.valWitness[value]) {
+        let mut shown = pirModeText(f.valMode[value])
+        if (f.valWitness[value]) { shown = "own ?w".clone() }
+        pirFinding(f, report, node, "a ".concat(shown, " value enters a ", pirModeText(f.valMode[taken]), " port"))
+    }
 }
 
 private fn pirVerifyExit(types: PirTypes, f: PirFunc, report: PirReport, node: Int) {
@@ -238,10 +281,37 @@ private fn pirVerifyExit(types: PirTypes, f: PirFunc, report: PirReport, node: I
                 pirFinding(f, report, node, "a merge exit passes ".concat(pirTypeText(types, f.valType[value]),
                     " where the port takes ", expected))
             }
-            if (f.valMode[value] != f.valMode[result]) {
-                pirFinding(f, report, node, "a merge exit passes a ".concat(pirModeText(f.valMode[value]),
-                    " value where the port takes ", pirModeText(f.valMode[result])))
+            pirVerifyPassed(f, report, node, value, result)
+        }
+        return
+    }
+    if (port == PirPort.NEXT as Int or port == PirPort.BREAK as Int) {
+        if (f.regKind[target] != PirRegionKind.LOOP) {
+            pirFinding(f, report, node, "a `next` or `break` targets something that is not a loop")
+            return
+        }
+        let loopNode = f.regNode[target]
+        let mut arity = f.regPortCount[target]
+        if (port == PirPort.BREAK as Int) { arity = f.resCount[loopNode] }
+        if (f.opCount[node] != arity) {
+            pirFinding(f, report, node, "a loop exit passes ".concat(f.opCount[node].toString(),
+                " values to a port of ", arity.toString()))
+            return
+        }
+        for i in 0..<f.opCount[node] {
+            let value = pirOperandAt(f, node, i)
+            let mut taken = 0
+            if (port == PirPort.NEXT as Int) {
+                taken = pirPortAt(f, target, i)
+            } else {
+                taken = pirResultAt(f, loopNode, i)
             }
+            if (pirTypeFits(types, f.valType[taken], f.valType[value]) == false) {
+                let expected = pirTypeText(types, f.valType[taken])
+                pirFinding(f, report, node, "a loop exit passes ".concat(pirTypeText(types, f.valType[value]),
+                    " where the port takes ", expected))
+            }
+            pirVerifyPassed(f, report, node, value, taken)
         }
         return
     }
@@ -292,7 +362,53 @@ private fn pirVerifyBranch(types: PirTypes, f: PirFunc, report: PirReport, node:
             }
         }
     }
-    if (arms != 2) { pirFinding(f, report, node, "a branch does not have two arms") }
+    if (arms < 2) { pirFinding(f, report, node, "a branch has fewer than two arms") }
+}
+
+private fn pirVerifyLoop(types: PirTypes, f: PirFunc, report: PirReport, node: Int) {
+    let reg = f.nodeTarget[node]
+    if (reg < 0 or reg >= f.regKind.length or f.regNode[reg] != node or f.regKind[reg] != PirRegionKind.LOOP) {
+        pirFinding(f, report, node, "a loop does not own a loop region")
+        return
+    }
+    if (f.regParent[reg] != f.nodeRegion[node]) { pirFinding(f, report, node, "a loop region is nested elsewhere") }
+    if (f.regPortCount[reg] != f.opCount[node]) {
+        pirFinding(f, report, node, "a loop's ports do not match the values passed in")
+        return
+    }
+    for i in 0..<f.opCount[node] {
+        let inner = pirPortAt(f, reg, i)
+        let outer = pirOperandAt(f, node, i)
+        if (pirTypeFits(types, f.valType[inner], f.valType[outer]) == false) {
+            pirFinding(f, report, node, "a loop's port differs in type from the value passed in")
+        }
+        pirVerifyPassed(f, report, node, outer, inner)
+    }
+}
+
+// What a call answers must be a view where its callee may answer one: an owned value is
+// never made from something borrowed.
+private fn pirVerifyProvenance(program: PirProgram, f: PirFunc, report: PirReport) {
+    for node in 0..<f.op.length {
+        if (f.op[node] == PirOp.CALL and f.resCount[node] > 0) {
+            // A result with a name is an `inout` local given back, not what was answered.
+            let result = pirResultAt(f, node, 0)
+            if (f.valName[result].equals("") and f.valMode[result] == PirMode.OWN
+                    and program.viewResults.contains(f.nodeName[node].clone())) {
+                pirFinding(f, report, node, "a call to a function that may answer a view is `own`")
+            }
+        }
+        let op = f.op[node]
+        // The same object under another name: an owned result needs an owned operand.
+        if (op != PirOp.CAST and op != PirOp.WRAP and op != PirOp.UNWRAP and op != PirOp.EXPECT) { continue }
+        if (f.nodeRegion[node] < 0 or f.resCount[node] != 1 or f.opCount[node] != 1) { continue }
+        let result = pirResultAt(f, node, 0)
+        let operand = pirOperandAt(f, node, 0)
+        if (f.valMode[result] != PirMode.OWN or f.valWitness[result]) { continue }
+        if (f.valMode[operand] != PirMode.OWN or f.valWitness[operand]) {
+            pirFinding(f, report, node, "an owned value is made from a borrowed one")
+        }
+    }
 }
 
 private fn pirCountConsumers(f: PirFunc, report: PirReport, positions: Vec<Int>) {
@@ -317,7 +433,17 @@ private fn pirCountConsumers(f: PirFunc, report: PirReport, positions: Vec<Int>)
             if (positions[node] > consumedAt[value]) { report.readAfterConsume = report.readAfterConsume + 1 }
         }
     }
+    for node in 0..<f.op.length {
+        if (f.op[node] != PirOp.EXIT or f.nodePort[node] != PirPort.NEXT as Int) { continue }
+        for i in 0..<f.opCount[node] {
+            let value = pirOperandAt(f, node, i)
+            if (f.valMode[value] == PirMode.OWN and consumers[value] > 1) {
+                report.carriedConsumed = report.carriedConsumed + 1
+            }
+        }
+    }
     for value in 0..<f.valDef.length {
+        if (f.valWitness[value]) { report.witnessed = report.witnessed + 1 }
         if (f.valMode[value] != PirMode.OWN) { continue }
         report.owned = report.owned + 1
         if (consumers[value] == 0) {
@@ -330,7 +456,8 @@ private fn pirCountConsumers(f: PirFunc, report: PirReport, positions: Vec<Int>)
     }
 }
 
-private fn pirVerifyFunc(types: PirTypes, f: PirFunc, report: PirReport) {
+private fn pirVerifyFunc(program: PirProgram, f: PirFunc, report: PirReport) {
+    let types = program.types
     let before = report.findings.length
     pirVerifyRegions(f, report)
     // The checks below walk parent links, which a broken tree would loop on.
@@ -340,6 +467,9 @@ private fn pirVerifyFunc(types: PirTypes, f: PirFunc, report: PirReport) {
     for node in 0..<f.op.length {
         if (f.op[node] == PirOp.EXIT) { pirVerifyExit(types, f, report, node) }
         if (f.op[node] == PirOp.BRANCH) { pirVerifyBranch(types, f, report, node) }
+        if (f.op[node] == PirOp.LOOP) { pirVerifyLoop(types, f, report, node) }
     }
+    pirVerifyProvenance(program, f, report)
+    pirVerifyState(f, report)
     pirCountConsumers(f, report, positions)
 }

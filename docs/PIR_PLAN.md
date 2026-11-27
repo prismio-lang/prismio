@@ -252,6 +252,12 @@ sees value numbering for free. They are scheduled only when lowering:
   which is loop-invariant code motion by construction;
 - with ties broken by node id, which is builder order, which is source order.
 
+**A pure node may still trap.** Integer `/` and `%`, and checked `+ - *` under
+`--overflow-checks`, are pure in that they touch no place, but evaluating one can end the program.
+Such a node carries a `may_trap` flag and the region it was built in, is shared only within that
+region, and **scheduling never moves it above the branch arm, loop or guard it sits in**: no
+speculation. The verifier rejects a use that would require it.
+
 This is the part of sea of nodes that pays, without the part that does not. V8 moved its optimising
 compiler away from a full sea of nodes, citing the cost of scheduling everything and of effect
 chains on every node (from memory: the Turboshaft work, 2023–2025). Cranelift keeps a side-effect

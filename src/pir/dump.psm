@@ -11,32 +11,49 @@ import pir.builder
 
 public fn pirDumpProgram(program: PirProgram) -> String {
     let mut out = StringBuilder.new()
+    let mut written = 0
     for i in 0..<program.funcs.length {
-        if (i > 0) { out.appendLine("") }
+        if (program.funcs[i].refusal.equals("") == false) { continue }
+        if (written > 0) { out.appendLine("") }
         pirDumpFunc(program.types, program.funcs[i], out)
+        written = written + 1
     }
     return out.toString()
 }
 
-private fn pirValueText(id: Int) -> String { return "%".concat(id.toString()) }
+// Everything below appends its pieces straight to `out`. Building each line by
+// concatenation first cost gigabytes on the compiler's own dump.
 
-// `%4: own String`, with the source name where the value is a local's.
-private fn pirDefinition(types: PirTypes, f: PirFunc, value: Int) -> String {
-    let mut text = pirValueText(value)
-    if (f.valName[value].equals("") == false) { text = text.concat(" %", f.valName[value]) }
-    return text.concat(": ", pirModeText(f.valMode[value]), " ", pirTypeText(types, f.valType[value]))
+private fn pirWriteNumbered(prefix: String, id: Int, inout out: StringBuilder) {
+    out.append(prefix)
+    out.append(id.toString())
 }
 
-private fn pirOperandList(f: PirFunc, node: Int, from: Int) -> String {
-    let mut text = ""
-    for i in from..<f.opCount[node] {
-        if (i > from) { text = text.concat(", ") }
-        let use = f.operandUse[f.opStart[node] + i]
-        if (use == PirUse.CONSUME) { text = text.concat("move ") }
-        if (use == PirUse.INOUT) { text = text.concat("inout ") }
-        text = text.concat(pirValueText(pirOperandAt(f, node, i)))
+// `%4 %name: own String`, with the source name where the value is a local's.
+private fn pirWriteDefinition(types: PirTypes, f: PirFunc, value: Int, inout out: StringBuilder) {
+    pirWriteNumbered("%", value, out)
+    if (f.valName[value].equals("") == false) {
+        out.append(" %")
+        out.append(f.valName[value])
     }
-    return text
+    out.append(": ")
+    if (f.valWitness[value]) {
+        out.append("own ?w")
+    } else {
+        out.append(pirModeText(f.valMode[value]))
+    }
+    out.append(" ")
+    out.append(pirTypeText(types, f.valType[value]))
+}
+
+private fn pirWriteOperands(f: PirFunc, node: Int, from: Int, inout out: StringBuilder) {
+    for i in from..<f.opCount[node] {
+        if (i > from) { out.append(", ") }
+        let use = f.operandUse[f.opStart[node] + i]
+        if (use == PirUse.CONSUME) { out.append("move ") }
+        if (use == PirUse.INOUT) { out.append("inout ") }
+        pirWriteNumbered("%", pirOperandAt(f, node, i), out)
+    }
 }
 
 private fn pirOpText(op: PirOp) -> String {
@@ -47,100 +64,225 @@ private fn pirOpText(op: PirOp) -> String {
         PirOp.BINARY => { return "binary" }
         PirOp.CAST => { return "cast" }
         PirOp.WRAP => { return "wrap" }
+        PirOp.RANGE => { return "range" }
+        PirOp.IS_SOME => { return "is_some" }
+        PirOp.UNWRAP => { return "unwrap" }
+        PirOp.EXPECT => { return "expect" }
         PirOp.FIELD => { return "field" }
+        PirOp.ELEM => { return "get" }
+        PirOp.LENGTH => { return "len" }
+        PirOp.GLOBAL => { return "global" }
+        PirOp.FIELD_SET => { return "set_field" }
+        PirOp.ELEM_SET => { return "set" }
+        PirOp.PUSH => { return "push" }
+        PirOp.GLOBAL_SET => { return "set_global" }
+        PirOp.STRUCT => { return "struct.new" }
+        PirOp.ARRAY => { return "array.new" }
+        PirOp.ARRAY_ZERO => { return "array.zero" }
+        PirOp.COPY => { return "copy" }
+        PirOp.SLICE => { return "slice" }
         PirOp.CALL => { return "call" }
         PirOp.BRANCH => { return "branch" }
+        PirOp.LOOP => { return "loop" }
         PirOp.EXIT => { return "exit" }
     }
 }
 
 // One computing node: its definitions, its operation and its operands.
-private fn pirNodeText(types: PirTypes, f: PirFunc, node: Int) -> String {
-    let mut text = ""
-    for i in 0..<f.resCount[node] {
-        if (i > 0) { text = text.concat(", ") }
-        text = text.concat(pirDefinition(types, f, pirResultAt(f, node, i)))
+private fn pirWriteNode(types: PirTypes, f: PirFunc, node: Int, inout out: StringBuilder) {
+    pirWriteResults(types, f, node, out)
+    out.append(pirOpText(f.op[node]))
+    if (f.nodeName[node].equals("") == false) {
+        out.append(" ")
+        out.append(f.nodeName[node])
     }
-    if (f.resCount[node] > 0) { text = text.concat(" = ") }
-    text = text.concat(pirOpText(f.op[node]))
-    if (f.nodeName[node].equals("") == false) { text = text.concat(" ", f.nodeName[node]) }
-    if (f.opCount[node] > 0) { text = text.concat(" (", pirOperandList(f, node, 0), ")") }
-    return text
+    if (f.opCount[node] > 0) {
+        out.append(" (")
+        pirWriteOperands(f, node, 0, out)
+        out.append(")")
+    }
+    if ((f.nodeFlags[node] & PIR_MAY_TRAP) != 0) {
+        out.append(" may_trap")
+        if (f.nodeRegion[node] < 0) { pirWriteNumbered(" @r", f.nodeTarget[node], out) }
+    }
+    if ((f.nodeFlags[node] & PIR_UNKNOWN_BASE) != 0) {
+        // The result may view any of these, so each stays as long as it does.
+        out.append(" base unknown{")
+        let mut pinned = 0
+        for i in 0..<f.opCount[node] {
+            let value = pirOperandAt(f, node, i)
+            if (f.operandUse[f.opStart[node] + i] == PirUse.CONSUME or f.valMode[value] == PirMode.COPY) { continue }
+            if (pinned > 0) { out.append(", ") }
+            pirWriteNumbered("%", value, out)
+            pinned = pinned + 1
+        }
+        out.append("}")
+    }
+    pirWriteStates(f, node, out)
 }
 
-private fn pirExitText(f: PirFunc, node: Int) -> String {
+// A node's state accesses: `world s0>s3` replaces, `Bag.n s2` reads, `Bag.n s2~` ends a
+// place's own version under a clobber, and `>s5` is a version a join defines.
+private fn pirWriteStates(f: PirFunc, node: Int, inout out: StringBuilder) {
+    if (f.accCount[node] == 0) { return }
+    let mut clobbers = false
+    for i in 0..<f.accCount[node] {
+        let access = f.accStart[node] + i
+        if (f.accPlace[access] == 0 and f.accOut[access] >= 0) { clobbers = true }
+    }
+    out.append("  {")
+    for i in 0..<f.accCount[node] {
+        let access = f.accStart[node] + i
+        if (i > 0) { out.append(", ") }
+        out.append(f.placeName[f.accPlace[access]])
+        out.append(" ")
+        if (f.accIn[access] >= 0) { pirWriteNumbered("s", f.accIn[access], out) }
+        if (f.accOut[access] >= 0) {
+            pirWriteNumbered(">s", f.accOut[access], out)
+        } else if (clobbers and f.accPlace[access] != 0 and f.op[node] != PirOp.EXIT) {
+            out.append("~")
+        }
+    }
+    out.append("}")
+}
+
+private fn pirWriteExit(f: PirFunc, node: Int, inout out: StringBuilder) {
     let port = f.nodePort[node]
-    if (port == PirPort.FAIL as Int) { return "exit fail" }
-    if (port == PirPort.UNREACHABLE as Int) { return "exit unreachable" }
-    let mut target = "@fn.return"
-    if (port == PirPort.MERGE as Int) { target = "@r".concat(f.nodeTarget[node].toString(), ".merge") }
-    return "exit ".concat(target, "(", pirOperandList(f, node, 0), ")")
+    if (port == PirPort.FAIL as Int) {
+        out.append("exit fail")
+        return
+    }
+    if (port == PirPort.UNREACHABLE as Int) {
+        out.append("exit unreachable")
+        return
+    }
+    if (port == PirPort.RETURN as Int) {
+        out.append("exit @fn.return(")
+    } else {
+        pirWriteNumbered("exit @r", f.nodeTarget[node], out)
+        if (port == PirPort.MERGE as Int) { out.append(".merge(") }
+        if (port == PirPort.NEXT as Int) { out.append(".next(") }
+        if (port == PirPort.BREAK as Int) { out.append(".break(") }
+    }
+    pirWriteOperands(f, node, 0, out)
+    out.append(")")
+    pirWriteStates(f, node, out)
 }
 
 private fn pirDumpRegion(types: PirTypes, f: PirFunc, reg: Int, indent: String, inout out: StringBuilder) {
     let mut node = f.regHead[reg]
     while (node >= 0) {
-        if (f.op[node] == PirOp.EXIT) {
-            out.appendLine(indent.concat(pirExitText(f, node)))
-        } else if (f.op[node] == PirOp.BRANCH) {
+        if (f.op[node] == PirOp.BRANCH) {
             pirDumpBranch(types, f, node, indent, out)
+        } else if (f.op[node] == PirOp.LOOP) {
+            pirDumpLoop(types, f, node, indent, out)
         } else {
-            out.appendLine(indent.concat(pirNodeText(types, f, node)))
+            out.append(indent)
+            if (f.op[node] == PirOp.EXIT) {
+                pirWriteExit(f, node, out)
+            } else {
+                pirWriteNode(types, f, node, out)
+            }
+            out.appendLine("")
         }
         node = f.nodeNext[node]
     }
 }
 
+// `%3: own String, %4: copy Int = `, or nothing.
+private fn pirWriteResults(types: PirTypes, f: PirFunc, node: Int, inout out: StringBuilder) {
+    for i in 0..<f.resCount[node] {
+        if (i > 0) { out.append(", ") }
+        pirWriteDefinition(types, f, pirResultAt(f, node, i), out)
+    }
+    if (f.resCount[node] > 0) { out.append(" = ") }
+}
+
+private fn pirWritePorts(types: PirTypes, f: PirFunc, reg: Int, inout out: StringBuilder) {
+    for i in 0..<f.regPortCount[reg] {
+        if (i > 0) { out.append(", ") }
+        pirWriteDefinition(types, f, pirPortAt(f, reg, i), out)
+    }
+}
+
 private fn pirDumpBranch(types: PirTypes, f: PirFunc, node: Int, indent: String, inout out: StringBuilder) {
     let reg = f.nodeTarget[node]
-    let mut head = ""
-    for i in 0..<f.resCount[node] {
-        if (i > 0) { head = head.concat(", ") }
-        head = head.concat(pirDefinition(types, f, pirResultAt(f, node, i)))
+    out.append(indent)
+    pirWriteResults(types, f, node, out)
+    pirWriteNumbered("branch %", pirOperandAt(f, node, 0), out)
+    if (f.opCount[node] > 1) {
+        out.append(" (")
+        pirWriteOperands(f, node, 1, out)
+        out.append(")")
     }
-    if (f.resCount[node] > 0) { head = head.concat(" = ") }
-    head = head.concat("branch ", pirValueText(pirOperandAt(f, node, 0)))
-    if (f.opCount[node] > 1) { head = head.concat(" (", pirOperandList(f, node, 1), ")") }
-    out.appendLine(indent.concat(head, " @r", reg.toString(), " {"))
+    pirWriteNumbered(" @r", reg, out)
+    pirWriteStates(f, node, out)
+    out.appendLine(" {")
 
     let deeper = indent.concat("    ")
-    let mut arm = 0
     for r in (reg + 1)..<f.regKind.length {
         if (f.regParent[r] != reg) { continue }
-        let mut label = "false"
-        if (arm == 0) { label = "true" }
-        let mut ports = ""
-        for i in 0..<f.regPortCount[r] {
-            if (i > 0) { ports = ports.concat(", ") }
-            ports = ports.concat(pirDefinition(types, f, pirPortAt(f, r, i)))
-        }
-        out.appendLine(indent.concat("  ", label, "(", ports, "):"))
+        out.append(indent)
+        out.append("  ")
+        out.append(f.regLabel[r])
+        out.append("(")
+        pirWritePorts(types, f, r, out)
+        out.appendLine("):")
         pirDumpRegion(types, f, r, deeper, out)
-        arm = arm + 1
     }
-    out.appendLine(indent.concat("}"))
+    out.append(indent)
+    out.appendLine("}")
+}
+
+private fn pirDumpLoop(types: PirTypes, f: PirFunc, node: Int, indent: String, inout out: StringBuilder) {
+    let reg = f.nodeTarget[node]
+    out.append(indent)
+    pirWriteResults(types, f, node, out)
+    out.append("loop")
+    if (f.nodeName[node].equals("") == false) {
+        out.append(" ")
+        out.append(f.nodeName[node])
+        out.append("@")
+    }
+    if (f.opCount[node] > 0) {
+        out.append(" (")
+        pirWriteOperands(f, node, 0, out)
+        out.append(")")
+    }
+    pirWriteNumbered(" @r", reg, out)
+    pirWriteStates(f, node, out)
+    out.appendLine(" {")
+    out.append(indent)
+    out.append("  head(")
+    pirWritePorts(types, f, reg, out)
+    out.appendLine("):")
+    pirDumpRegion(types, f, reg, indent.concat("    "), out)
+    out.append(indent)
+    out.appendLine("}")
 }
 
 private fn pirDumpFunc(types: PirTypes, f: PirFunc, inout out: StringBuilder) {
-    let mut signature = "fn ".concat(f.name, "(")
-    for i in 0..<f.regPortCount[0] {
-        if (i > 0) { signature = signature.concat(", ") }
-        signature = signature.concat(pirDefinition(types, f, pirPortAt(f, 0, i)))
-    }
-    signature = signature.concat(")")
+    out.append("fn ")
+    out.append(f.name)
+    out.append("(")
+    pirWritePorts(types, f, 0, out)
+    out.append(")")
     for i in 0..<f.returnTypes.length {
         if (i == 0) {
-            signature = signature.concat(" -> ")
+            out.append(" -> ")
         } else {
-            signature = signature.concat(", ")
+            out.append(", ")
         }
-        if (i > 0 or f.hasResult == false) { signature = signature.concat("inout ") }
-        signature = signature.concat(pirTypeText(types, f.returnTypes[i]))
+        if (i > 0 or f.hasResult == false) { out.append("inout ") }
+        out.append(pirTypeText(types, f.returnTypes[i]))
     }
-    out.appendLine(signature.concat(" {"))
+    out.appendLine(" {")
     // The pure graph, in id order. It has no place on a spine until lowering schedules it.
     for node in 0..<f.op.length {
-        if (f.nodeRegion[node] < 0) { out.appendLine("  pure ".concat(pirNodeText(types, f, node))) }
+        if (f.nodeRegion[node] >= 0) { continue }
+        out.append("  pure ")
+        pirWriteNode(types, f, node, out)
+        out.appendLine("")
     }
     pirDumpRegion(types, f, 0, "  ", out)
     out.appendLine("}")

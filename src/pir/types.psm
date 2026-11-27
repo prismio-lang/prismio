@@ -115,6 +115,14 @@ public fn pirTypeIsValid(types: PirTypes, id: Int) -> Bool {
     return id >= 0 and types.kind[id] != PirTypeKind.INVALID
 }
 
+// Whether binding an array of this type copies its elements: a known length of elements
+// that own nothing (typeArrayCopies).
+public fn pirArrayCopies(types: PirTypes, id: Int) -> Bool {
+    if (types.kind[id] != PirTypeKind.ARRAY or types.count[id] <= 0 or types.child[id] < 0) { return false }
+    let element = types.child[id]
+    return types.moveOnly[element] == false and types.kind[element] != PirTypeKind.ARRAY
+}
+
 // The canonical spelling of a type in a dump and in a verifier finding.
 public fn pirTypeText(types: PirTypes, id: Int) -> String {
     if (id < 0) { return "<no type>" }

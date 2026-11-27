@@ -426,7 +426,7 @@ private fn aifFfiAllocatesThroughArenaHint(name: String) -> Bool {
     return false
 }
 
-internal fn aifFfiProduces(name: String) -> Bool {
+public fn aifFfiProduces(name: String) -> Bool {
     // What comes out of a channel was allocated by the sending task and is this
     // frame's from here on -- the same shape as `read_file`, with the allocation
     // on another thread instead of in libc. Without this the received value has

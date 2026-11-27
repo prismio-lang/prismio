@@ -1,0 +1,546 @@
+// Expressions as PIR nodes: literals, the pure graph, conversions, member reads,
+// literals of objects and calls. Each function answers its value, or -1 when it has none
+// or the function was refused.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import ast.types
+import ast.fn_attrs
+import lexer.token
+import common.builtin_names
+import common.source_files
+import common.lang_items
+import aif.contracts
+import pir.types
+import pir.graph
+import pir.state
+import pir.builder
+import pir.memory
+import pir.branch
+
+internal fn pirExpr(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    if (pirOk(s) == false) { return -1 }
+    match (node.kind) {
+        NodeKind.LITERAL_EXPR => { return pirLiteral(program, f, s, node) }
+        NodeKind.NONE_LITERAL_EXPR => {
+            // Sema leaves some `none`s untyped; a slot's type is applied by pirCoerce.
+            let mut noneType = pirTypeIntern(program.types, nodeGetType(node))
+            if (pirTypeIsValid(program.types, noneType) == false) {
+                noneType = pirTypeIntern(program.types, typeNone())
+            }
+            return pirConstant(program, f, s, "none", noneType, node)
+        }
+        NodeKind.IDENTIFIER_EXPR => { return pirIdentifier(program, f, s, node) }
+        NodeKind.UNARY_EXPR => { return pirUnary(program, f, s, node) }
+        NodeKind.BINARY_EXPR => { return pirBinary(program, f, s, node) }
+        NodeKind.CAST_EXPR => { return pirCast(program, f, s, node) }
+        NodeKind.MEMBER_ACCESS_EXPR => { return pirMember(program, f, s, node) }
+        NodeKind.CALL_EXPR => { return pirCall(program, f, s, node) }
+        NodeKind.INDEX_EXPR => {
+            return pirElementRead(program, f, s, ptr_to_node(node.child1), ptr_to_node(node.child2), node)
+        }
+        NodeKind.SLICE_EXPR => { return pirSlice(program, f, s, node) }
+        NodeKind.ARRAY_LITERAL_EXPR => { return pirArrayLiteral(program, f, s, node) }
+        NodeKind.STRUCT_LITERAL_EXPR => { return pirStructLiteral(program, f, s, node) }
+        NodeKind.SPAWN_EXPR => { pirRefuse(s, "spawn") }
+        NodeKind.JOIN_EXPR => { pirRefuse(s, "join") }
+        NodeKind.DYN_MAKE => { pirRefuse(s, "dyn make") }
+        NodeKind.DYN_CALL => { pirRefuse(s, "dyn call") }
+        _ => { pirRefuse(s, "unsupported expression") }
+    }
+    return -1
+}
+
+// A literal. A copy one floats; an owned one (a String, `none` in an owned slot) is a
+// node of its own on the spine, because each occurrence is a value with one consumer.
+internal fn pirConstant(program: PirProgram, f: PirFunc, s: PirScope, text: String, valueType: Int, at: ASTNode) -> Int {
+    if (program.types.moveOnly[valueType] == false) {
+        let operands: Vec<Int> = []
+        return pirPure(f, PirOp.CONST, text, operands, valueType, -1, at)
+    }
+    let node = pirNodeNew(f, PirOp.CONST, text, at)
+    pirAppend(f, s.reg, node)
+    return pirResult(f, node, valueType, PirMode.OWN, "")
+}
+
+private fn pirLiteral(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let literalType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    // The quotes are kept: `"1"`, `'1'` and `1` differ.
+    let mut text = node.s1.clone()
+    if (node.i1 == TokenType.STRING_LITERAL as Int) { text = "\"".concat(node.s1, "\"") }
+    if (node.i1 == TokenType.CHAR_LITERAL as Int) { text = "'".concat(node.s1, "'") }
+    return pirConstant(program, f, s, text, literalType, node)
+}
+
+private fn pirIdentifier(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let local = pirLookup(s, node.s1)
+    if (local < 0) {
+        let top = program.topNames.getOr(node.s1.clone(), 0)
+        if (top == 1) { return pirGlobalRead(program, f, s, node) }
+        if (top == 2) {
+            pirRefuse(s, "function value")
+        } else {
+            pirRefuse(s, "unresolved name")
+        }
+        return -1
+    }
+    if (s.live[local] == false) {
+        pirRefuse(s, "use of a local with no value")
+        return -1
+    }
+    let value = s.values[local]
+    // Sema's move mark. A view is never moved out of, whatever the mark says.
+    if (node.i3 == 1 and f.valMode[value] == PirMode.OWN) { s.live[local] = false }
+    return value
+}
+
+// A node that computes from its operands: floating and shared when every operand and
+// the result are copy values, on the spine otherwise.
+internal fn pirCompute(program: PirProgram, f: PirFunc, s: PirScope, op: PirOp, name: String, operands: Vec<Int>, valueType: Int, traps: Bool, at: ASTNode) -> Int {
+    let mut pure = program.types.moveOnly[valueType] == false
+    for operand in operands {
+        if (f.valMode[operand] != PirMode.COPY) { pure = false }
+    }
+    if (pure) {
+        let mut anchor = -1
+        if (traps) { anchor = s.reg }
+        return pirPure(f, op, name, operands, valueType, anchor, at)
+    }
+
+    let node = pirNodeNew(f, op, name, at)
+    for operand in operands { pirOperand(f, node, operand, PirUse.BORROW) }
+    if (traps) { f.nodeFlags[node] = PIR_MAY_TRAP }
+    pirAppend(f, s.reg, node)
+    return pirResult(f, node, valueType, pirFreshMode(program, valueType), "")
+}
+
+private fn pirUnary(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let operand = pirOperandExpr(program, f, s, ptr_to_node(node.child1))
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let operands: Vec<Int> = [operand]
+    return pirCompute(program, f, s, PirOp.UNARY, node.s1, operands, resultType, false, node)
+}
+
+// Whether codegen can trap on this operator: integer division, and checked `+ - *` in
+// the program's own code when overflow checks are on (src/ir/expr.psm).
+private fn pirBinaryTraps(program: PirProgram, f: PirFunc, op: String, operand: Int, at: ASTNode) -> Bool {
+    let kind = program.types.kind[f.valType[operand]]
+    if (kind != PirTypeKind.INT and kind != PirTypeKind.CHAR) { return false }
+    if (op.equals("/") or op.equals("%")) { return true }
+    if (program.overflowChecks == false or fileFromLibraryRoot(at.file)) { return false }
+    return op.equals("+") or op.equals("-") or op.equals("*")
+}
+
+private fn pirBinary(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    if (node.s1.equals("and") or node.s1.equals("or")) { return pirShortCircuit(program, f, s, node) }
+    let left = pirOperandExpr(program, f, s, ptr_to_node(node.child1))
+    if (pirOk(s) == false) { return -1 }
+    let right = pirOperandExpr(program, f, s, ptr_to_node(node.child2))
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let operands: Vec<Int> = [left, right]
+    let traps = pirBinaryTraps(program, f, node.s1, left, node)
+    return pirCompute(program, f, s, PirOp.BINARY, node.s1, operands, resultType, traps, node)
+}
+
+private fn pirCast(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let source = ptr_to_node(node.child1)
+    let operand = pirOperandExpr(program, f, s, source)
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    // A cast with no written type is sema's present-value wrap into a scalar's `T?`.
+    if (nodeIsNull(node.child2)) { return pirWrap(program, f, s, operand, resultType, node) }
+    let operands: Vec<Int> = [operand]
+    if (program.types.moveOnly[resultType] == false) {
+        return pirCompute(program, f, s, PirOp.CAST, "as", operands, resultType, false, node)
+    }
+    // A cast of a local sema did not move leaves the local holding the object.
+    let mut kept = false
+    if (source.kind == NodeKind.IDENTIFIER_EXPR) { kept = source.i3 != 1 }
+    return pirConvert(program, f, s, PirOp.CAST, "as", operand, resultType, kept, node)
+}
+
+// The same object under another type: an owned operand is consumed, a view stays one.
+// When the operand's holder keeps it, the result only views it.
+private fn pirConvert(program: PirProgram, f: PirFunc, s: PirScope, op: PirOp, name: String, operand: Int, resultType: Int, kept: Bool, at: ASTNode) -> Int {
+    let node = pirNodeNew(f, op, name, at)
+    let mut use = PirUse.BORROW
+    if (kept == false) { use = pirConsumingUse(f, operand) }
+    pirOperand(f, node, operand, use)
+    pirAppend(f, s.reg, node)
+    let mut mode = pirFreshMode(program, resultType)
+    let mut witness = false
+    if (mode == PirMode.OWN) {
+        if (kept or f.valMode[operand] == PirMode.VIEW) { mode = PirMode.VIEW }
+        witness = kept == false and f.valWitness[operand]
+    }
+    let result = pirResult(f, node, resultType, mode, "")
+    f.valWitness[result] = witness
+    return result
+}
+
+private fn pirWrap(program: PirProgram, f: PirFunc, s: PirScope, operand: Int, resultType: Int, at: ASTNode) -> Int {
+    if (program.types.moveOnly[resultType] == false) {
+        let operands: Vec<Int> = [operand]
+        return pirCompute(program, f, s, PirOp.WRAP, "some", operands, resultType, false, at)
+    }
+    return pirConvert(program, f, s, PirOp.WRAP, "some", operand, resultType, false, at)
+}
+
+// `value` as it enters a slot of type `target`. Sema lets a reference stand where its
+// optional is wanted without writing anything into the tree; PIR writes it down.
+internal fn pirCoerce(program: PirProgram, f: PirFunc, s: PirScope, value: Int, target: Int, at: ASTNode) -> Int {
+    let actual = f.valType[value]
+    if (actual == target or program.types.kind[target] != PirTypeKind.OPTIONAL) { return value }
+    if (program.types.kind[actual] == PirTypeKind.NONE) { return pirConstant(program, f, s, "none", target, at) }
+    if (program.types.child[target] == actual) { return pirWrap(program, f, s, value, target, at) }
+    return value
+}
+
+private fn pirMember(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let object = ptr_to_node(node.child1)
+    let mut resultType = pirTypeIntern(program.types, nodeGetType(node))
+
+    // `Color.Red`: a fieldless variant, named through the enum rather than a value.
+    if (pirTypeIsValid(program.types, resultType) and program.types.kind[resultType] == PirTypeKind.ENUM
+            and object.kind == NodeKind.IDENTIFIER_EXPR and pirLookup(s, object.s1) < 0
+            and program.topNames.getOr(object.s1.clone(), 0) == 0) {
+        let operands: Vec<Int> = []
+        return pirPure(f, PirOp.ENUM_CONST, object.s1.concat(".", node.s1), operands, resultType, -1, node)
+    }
+
+    let base = pirOperandExpr(program, f, s, object)
+    if (pirOk(s) == false) { return -1 }
+    let objectType = f.valType[base]
+    if (program.types.kind[objectType] == PirTypeKind.DATAELEMENT) {
+        pirRefuse(s, "data element field")
+        return -1
+    }
+    // Sema leaves a closure's captured name, rewritten to `self.name`, untyped; the
+    // capture struct's field says what it is.
+    if (pirTypeIsValid(program.types, resultType) == false) {
+        resultType = pirFieldType(program, pirTypeText(program.types, objectType), node.s1)
+        if (resultType < 0) {
+            pirRefuse(s, "untyped expression")
+            return -1
+        }
+    }
+    let operands: Vec<Int> = [base]
+    let place = pirFieldPlace(program, f, objectType, node.s1)
+    return pirReadNode(program, f, s, PirOp.FIELD, node.s1, operands, place, resultType, node)
+}
+
+private fn pirSlice(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let base = pirOperandExpr(program, f, s, ptr_to_node(node.child1))
+    if (pirOk(s) == false) { return -1 }
+    let start = pirOperandExpr(program, f, s, ptr_to_node(node.child2))
+    if (pirOk(s) == false) { return -1 }
+    let end = pirOperandExpr(program, f, s, ptr_to_node(node.child3))
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let slice = pirNodeNew(f, PirOp.SLICE, "", node)
+    pirOperand(f, slice, base, PirUse.BORROW)
+    pirOperand(f, slice, start, PirUse.BORROW)
+    pirOperand(f, slice, end, PirUse.BORROW)
+    pirAppend(f, s.reg, slice)
+    return pirResult(f, slice, resultType, pirReadMode(program, resultType), "")
+}
+
+// The node that makes an object out of `values`, which it takes.
+private fn pirBuildObject(program: PirProgram, f: PirFunc, s: PirScope, op: PirOp, name: String, values: Vec<Int>, resultType: Int, at: ASTNode) -> Int {
+    let node = pirNodeNew(f, op, name, at)
+    for value in values { pirOperand(f, node, value, pirConsumingUse(f, value)) }
+    pirAppend(f, s.reg, node)
+    return pirResult(f, node, resultType, pirFreshMode(program, resultType), "")
+}
+
+private fn pirArrayLiteral(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let mut values: Vec<Int> = []
+    let mut p = node.child1
+    while (nodeExists(p)) {
+        let element = ptr_to_node(p)
+        let value = pirOperandExpr(program, f, s, element)
+        if (pirOk(s) == false) { return -1 }
+        values.push(value)
+        p = element.next
+    }
+    return pirBuildObject(program, f, s, PirOp.ARRAY, "", values, resultType, node)
+}
+
+private fn pirStructLiteral(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let mut values: Vec<Int> = []
+    let mut name = node.s1.concat("{")
+    let mut p = node.child1
+    while (nodeExists(p)) {
+        let field = ptr_to_node(p)
+        let source = ptr_to_node(field.child1)
+        let declared = pirFieldType(program, node.s1, field.s1)
+        // The zero sema writes for a field left out -- an enum's unused payload slots --
+        // has no type of its own: it is the field's.
+        let filler = source.kind == NodeKind.LITERAL_EXPR and declared >= 0
+            and pirTypeIsValid(program.types, pirTypeIntern(program.types, nodeGetType(source))) == false
+        let mut value = -1
+        if (filler) {
+            value = pirConstant(program, f, s, source.s1, declared, source)
+        } else {
+            value = pirOperandExpr(program, f, s, source)
+        }
+        if (pirOk(s) == false) { return -1 }
+        if (declared >= 0) { value = pirCoerce(program, f, s, value, declared, source) }
+        if (values.length > 0) { name = name.concat(",") }
+        name = name.concat(field.s1)
+        values.push(value)
+        p = field.next
+    }
+    return pirBuildObject(program, f, s, PirOp.STRUCT, name.concat("}"), values, resultType, node)
+}
+
+// ---------------------------------------------------------------------------
+// Calls
+// ---------------------------------------------------------------------------
+
+// The argument position a builtin takes ownership of, or -1 (sema/builtins.psm).
+private fn pirBuiltinConsumes(name: String) -> Int {
+    if (name.equals("drop") or name.equals("soa") or name.equals("aos")) { return 0 }
+    if (name.equals("list_insert")) { return 2 }
+    if (name.equals("chan_send")) { return 1 }
+    return -1
+}
+
+private fn pirArgument(node: ASTNode, position: Int) -> ASTNode {
+    return ptr_to_node(chainAt(node.child2, position))
+}
+
+// The builtins that are operations of their own. Answers whether `node` was one, and
+// leaves its value (or -1) in `out`.
+private fn pirBuiltinOperation(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode, name: String, inout out: Vec<Int>) -> Bool {
+    let count = chainLength(node.child2)
+    if (name.equals("list_get") and count == 2) {
+        out.push(pirElementRead(program, f, s, pirArgument(node, 0), pirArgument(node, 1), node))
+        return true
+    }
+    if (name.equals("list_len") and count == 1) {
+        out.push(pirLength(program, f, s, pirArgument(node, 0), node))
+        return true
+    }
+    if ((name.equals("list_set") or name.equals("list_set_exclusive") or name.equals("slice_set")) and count == 3) {
+        pirElementStore(program, f, s, pirArgument(node, 0), pirArgument(node, 1), pirArgument(node, 2), node)
+        out.push(-1)
+        return true
+    }
+    if (name.equals("list_push") and count == 2) {
+        pirPush(program, f, s, pirArgument(node, 0), pirArgument(node, 1), node)
+        out.push(-1)
+        return true
+    }
+    if (name.equals("expect") and count == 1) {
+        out.push(pirExpect(program, f, s, node))
+        return true
+    }
+    if (name.equals("unwrapOr") and count == 2) {
+        // A scalar's `T?` with a fallback is a select: both are evaluated.
+        let optional = pirOperandExpr(program, f, s, pirArgument(node, 0))
+        if (pirOk(s) == false) { return true }
+        let fallback = pirOperandExpr(program, f, s, pirArgument(node, 1))
+        let resultType = pirNodeType(program, s, node)
+        if (pirOk(s) == false) { return true }
+        let operands: Vec<Int> = [optional, fallback]
+        out.push(pirCompute(program, f, s, PirOp.UNWRAP, "or", operands, resultType, false, node))
+        return true
+    }
+    return false
+}
+
+// `expect(x)`: the value `x` holds, or the end of the program (§9.2: a check on the
+// spine with its failure edge implicit). An owned temporary gives up its object; anything
+// still held elsewhere is viewed.
+private fn pirExpect(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let source = pirArgument(node, 0)
+    let optional = pirOperandExpr(program, f, s, source)
+    let resultType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let taken = source.kind != NodeKind.IDENTIFIER_EXPR and f.valMode[optional] == PirMode.OWN
+    let check = pirNodeNew(f, PirOp.EXPECT, "", node)
+    let mut use = PirUse.BORROW
+    if (taken) { use = PirUse.CONSUME }
+    pirOperand(f, check, optional, use)
+    f.nodeFlags[check] = PIR_MAY_TRAP
+    pirAppend(f, s.reg, check)
+    let mut mode = pirReadMode(program, resultType)
+    if (taken) { mode = pirFreshMode(program, resultType) }
+    return pirResult(f, check, resultType, mode, "")
+}
+
+// The mode of what a call hands back, and whether it pins the arguments. A builtin or an
+// extern gives up its result only when it is declared to; a Prismio function does unless
+// it is known to be able to answer a view (pir.summaries).
+private fn pirCallResult(program: PirProgram, f: PirFunc, call: Int, declIndex: Int, symbol: String, resultType: Int) -> Int {
+    let mut mode = pirFreshMode(program, resultType)
+    if (mode == PirMode.OWN) {
+        let mut views = false
+        if (declIndex < 0) {
+            views = aifFfiProduces(symbol) == false
+        } else {
+            let decl = ptr_to_node(program.declNodes[declIndex])
+            if (decl.kind == NodeKind.EXTERN_FUNCTION) {
+                let mut produces = aifFfiProduces(symbol)
+                if (nodeExists(decl.child2)) {
+                    if (ptr_to_node(decl.child2).s2.startsWith("produce")) { produces = true }
+                }
+                views = produces == false
+            } else {
+                views = program.viewResults.contains(symbol.clone())
+            }
+        }
+        if (views) {
+            mode = PirMode.VIEW
+            f.nodeFlags[call] = f.nodeFlags[call] | PIR_UNKNOWN_BASE
+        }
+    }
+    return pirResult(f, call, resultType, mode, "")
+}
+
+private fn pirCall(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let callee = ptr_to_node(node.child1)
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR or pirLookup(s, callee.s1) >= 0) {
+        pirRefuse(s, "indirect call")
+        return -1
+    }
+    // `a ?? b` is a call to sema and a branch here: the fallback runs only when `a` is absent.
+    if (langNameIsInstance(callee.s1, LangItem.OPTION_COALESCE) and chainLength(node.child2) == 2) {
+        return pirCoalesce(program, f, s, node)
+    }
+
+    // A resolved call carries its target's symbol; a builtin has only its name.
+    let mut symbol = node.s2.clone()
+    let mut declIndex = -1
+    if (symbol.equals("")) {
+        symbol = callee.s1.clone()
+        let mut built: Vec<Int> = []
+        if (pirBuiltinOperation(program, f, s, node, symbol, built)) {
+            if (built.length == 0) { return -1 }
+            return built[0]
+        }
+    } else {
+        declIndex = program.declBySymbol.getOr(symbol.clone(), -1)
+    }
+
+    let mut operands: Vec<Int> = []
+    let mut uses: Vec<PirUse> = []
+    // For each argument that is a local: which local, else -1.
+    let mut named: Vec<Int> = []
+    // For each `inout` argument that is a local: the local the written value goes back to.
+    let mut rebound: Vec<Int> = []
+
+    let mut paramPtr = ptr_null()
+    let mut external = false
+    if (declIndex >= 0) {
+        let decl = ptr_to_node(program.declNodes[declIndex])
+        paramPtr = decl.child1
+        external = decl.kind == NodeKind.EXTERN_FUNCTION
+        if (external == false) { f.callees.push(symbol.clone()) }
+    }
+
+    let mut position = 0
+    let mut argPtr = node.child2
+    while (nodeExists(argPtr)) {
+        let arg = ptr_to_node(argPtr)
+        let mut isInout = false
+        let mut consumes = declIndex < 0 and pirBuiltinConsumes(symbol) == position
+        if (nodeExists(paramPtr)) {
+            let param = ptr_to_node(paramPtr)
+            isInout = param.s2.equals("inout")
+            consumes = param.s2.equals("sink")
+            if (external and nodeExists(param.child1)) {
+                consumes = ptr_to_node(param.child1).s2.equals("consume")
+            }
+            paramPtr = param.next
+        }
+
+        let mut local = -1
+        if (arg.kind == NodeKind.IDENTIFIER_EXPR) { local = pirLookup(s, arg.s1) }
+        let value = pirOperandExpr(program, f, s, arg)
+        if (pirOk(s) == false) { return -1 }
+
+        let mut use = PirUse.BORROW
+        if (isInout) {
+            // A field, element or global passed `inout` is written through; the call's
+            // clobber is that write.
+            use = PirUse.INOUT
+            if (local >= 0) { rebound.push(local) }
+        } else if (consumes or (arg.kind == NodeKind.IDENTIFIER_EXPR and arg.i3 == 1)) {
+            use = pirConsumingUse(f, value)
+        }
+        operands.push(value)
+        uses.push(use)
+        named.push(local)
+        position = position + 1
+        argPtr = arg.next
+    }
+
+    let resultType = pirTypeIntern(program.types, nodeGetType(node))
+    if (pirTypeIsValid(program.types, resultType) == false) {
+        pirRefuse(s, "untyped expression")
+        return -1
+    }
+
+    // One local passed `inout` and named again (`pushBoth(xs, xs)`) is two names for one
+    // object during the call, which a value taken and given back cannot say.
+    for i in 0..<operands.length {
+        if (uses[i] != PirUse.INOUT or named[i] < 0) { continue }
+        for k in 0..<operands.length {
+            if (k != i and named[k] == named[i]) {
+                pirRefuse(s, "aliased inout argument")
+                return -1
+            }
+        }
+    }
+
+    // A later argument may itself have passed an earlier local `inout`
+    // (`declare(src, typeOf(src))`). What this call receives is the local as it stands
+    // once every argument is evaluated; a copy keeps the value it was read as.
+    for i in 0..<operands.length {
+        let local = named[i]
+        if (local < 0 or s.live[local] == false) { continue }
+        if (uses[i] == PirUse.INOUT or f.valMode[operands[i]] != PirMode.COPY) {
+            operands[i] = s.values[local]
+        }
+    }
+
+    let call = pirNodeNew(f, PirOp.CALL, symbol, node)
+    for i in 0..<operands.length { pirOperand(f, call, operands[i], uses[i]) }
+    pirAppend(f, s.reg, call)
+    // Until signatures exist (§10), any call may write anything.
+    pirStateClobber(f, s.state, call)
+
+    let mut result = -1
+    if (program.types.kind[resultType] != PirTypeKind.VOID) {
+        result = pirCallResult(program, f, call, declIndex, symbol, resultType)
+    }
+    for local in rebound {
+        let before = s.values[local]
+        let after = pirResult(f, call, s.declared[local], f.valMode[before], s.names[local])
+        f.valWitness[after] = f.valWitness[before]
+        s.values[local] = after
+        s.live[local] = true
+    }
+    return result
+}
+
+// Whether control never comes back from this call.
+internal fn pirCallDiverges(program: PirProgram, node: ASTNode) -> Bool {
+    if (node.kind != NodeKind.CALL_EXPR or nodeIsNull(node.child1)) { return false }
+    if (node.s2.equals("")) { return builtinNeverReturns(ptr_to_node(node.child1).s1) }
+    let declIndex = program.declBySymbol.getOr(node.s2.clone(), -1)
+    if (declIndex < 0) { return false }
+    let decl = ptr_to_node(program.declNodes[declIndex])
+    return decl.kind == NodeKind.FUNCTION and nodeIsNoreturn(decl)
+}

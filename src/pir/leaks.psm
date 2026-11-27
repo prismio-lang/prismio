@@ -1,0 +1,154 @@
+// A static estimate of what drop elaboration could release and today's code does not
+// (`--pir-coverage`). It decides nothing and changes nothing.
+//
+// An allocation here is an owned value a call answered or a struct literal made. PIR
+// would drop it where some value it is renamed to -- itself, a port it enters, a merge
+// it leaves by -- has no consumer. Today's code releases it where the analysis answers
+// one of the questions codegen asks: its arena, its frame, a count, the end of its
+// binding's scope, or the call that produced it. The questions codegen asks on top can
+// only decline, so what is counted as unreleased is a lower bound; and a release
+// codegen reaches by another route is counted against it.
+
+import std.collections.vec
+import std.string
+import common.source_files
+import aifcore.ownership
+import aifcore.arenas
+import aifcore.dispositions
+import aifcore.call_results
+import aifcore.constants
+import pir.types
+import pir.graph
+import pir.builder
+
+public struct PirLeaks {
+    // Owned allocations in covered functions, and those PIR would drop somewhere.
+    public allocations: Int,
+    public dropped: Int,
+    // Of those, the ones some release of today's reaches, and the ones none does.
+    public released: Int,
+    public unreleased: Int,
+    public unreleasedOwn: Int,
+    // Displaced elements and fields nothing in the function consumes.
+    public displaced: Int,
+    // `file:line: function: callee`, for the program's own functions.
+    public examples: Vec<String>
+}
+
+// Where each value goes under another name.
+private fn pirRenames(f: PirFunc) -> Vec<Vec<Int>> {
+    let mut into: Vec<Vec<Int>> = []
+    repeat(f.valDef.length) {
+        let targets: Vec<Int> = []
+        into.push(targets)
+    }
+    for node in 0..<f.op.length {
+        let op = f.op[node]
+        if (op == PirOp.BRANCH) {
+            let reg = f.nodeTarget[node]
+            for r in (reg + 1)..<f.regKind.length {
+                if (f.regParent[r] != reg) { continue }
+                for i in 0..<f.regPortCount[r] { into[pirOperandAt(f, node, i + 1)].push(pirPortAt(f, r, i)) }
+            }
+        } else if (op == PirOp.LOOP) {
+            for i in 0..<f.opCount[node] { into[pirOperandAt(f, node, i)].push(pirPortAt(f, f.nodeTarget[node], i)) }
+        } else if (op == PirOp.EXIT) {
+            let port = f.nodePort[node]
+            let target = f.nodeTarget[node]
+            for i in 0..<f.opCount[node] {
+                if (f.operandUse[f.opStart[node] + i] != PirUse.CONSUME) { continue }
+                if (port == PirPort.MERGE as Int) {
+                    into[pirOperandAt(f, node, i)].push(pirResultAt(f, f.regNode[target], i))
+                } else if (port == PirPort.BREAK as Int) {
+                    into[pirOperandAt(f, node, i)].push(pirResultAt(f, f.regNode[target], i))
+                } else if (port == PirPort.NEXT as Int) {
+                    into[pirOperandAt(f, node, i)].push(pirPortAt(f, target, i))
+                }
+            }
+        } else if (op == PirOp.CAST or op == PirOp.WRAP or op == PirOp.EXPECT) {
+            if (f.opCount[node] == 1 and f.resCount[node] == 1 and f.operandUse[f.opStart[node]] == PirUse.CONSUME) {
+                into[pirOperandAt(f, node, 0)].push(pirResultAt(f, node, 0))
+            }
+        }
+    }
+    return into
+}
+
+private fn pirNeedsDrop(f: PirFunc, into: Vec<Vec<Int>>, consumed: Vec<Bool>, start: Int) -> Bool {
+    let mut seen: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut work: Vec<Int> = [start]
+    seen[start] = true
+    let mut at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        if (f.valMode[value] != PirMode.OWN) { continue }
+        if (consumed[value] == false) { return true }
+        for i in 0..<into[value].length {
+            let next = into[value][i]
+            if (seen[next]) { continue }
+            seen[next] = true
+            work.push(next)
+        }
+    }
+    return false
+}
+
+private fn pirReleasedToday(f: PirFunc, node: Int, value: Int) -> Bool {
+    let ast = f.nodeAst[node]
+    if (aif_arena_at_node(ast) != 0 or aif_tier_at_node(ast) == 0 or aif_rc_at_node(ast) != 0) { return true }
+    if (aif_frees_at_scope_node(ast) != 0) { return true }
+    if (f.valBinding[value].equals("") == false and aif_frees_unless_returned_node(ast, f.valBinding[value]) != 0) {
+        return true
+    }
+    return f.op[node] == PirOp.CALL and aif_owns_call_result_at_node(ast) != AIF_ELEM_NONE
+}
+
+private fn pirLeaksIn(program: PirProgram, f: PirFunc, leaks: PirLeaks) {
+    let into = pirRenames(f)
+    let mut consumed: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    for node in 0..<f.op.length {
+        for i in 0..<f.opCount[node] {
+            if (f.operandUse[f.opStart[node] + i] != PirUse.BORROW) { consumed[pirOperandAt(f, node, i)] = true }
+        }
+    }
+    for node in 0..<f.op.length {
+        let op = f.op[node]
+        if (op == PirOp.ELEM_SET or op == PirOp.FIELD_SET or op == PirOp.GLOBAL_SET) {
+            if (f.resCount[node] == 1 and consumed[pirResultAt(f, node, 0)] == false) {
+                leaks.displaced = leaks.displaced + 1
+            }
+            continue
+        }
+        if (op != PirOp.CALL and op != PirOp.STRUCT) { continue }
+        if (f.resCount[node] == 0) { continue }
+        // A result with a name is an `inout` local given back.
+        let value = pirResultAt(f, node, 0)
+        if (f.valName[value].equals("") == false or f.valMode[value] != PirMode.OWN or f.valWitness[value]) { continue }
+        leaks.allocations = leaks.allocations + 1
+        if (pirNeedsDrop(f, into, consumed, value) == false) { continue }
+        leaks.dropped = leaks.dropped + 1
+        if (pirReleasedToday(f, node, value)) {
+            leaks.released = leaks.released + 1
+            continue
+        }
+        leaks.unreleased = leaks.unreleased + 1
+        if (f.library == false) {
+            leaks.unreleasedOwn = leaks.unreleasedOwn + 1
+            let place = diag_file_path(f.file).concat(":", f.nodeLine[node].toString())
+            let mut what = f.nodeName[node].clone()
+            leaks.examples.push(place.concat(": ", f.name, ": ", what))
+        }
+    }
+}
+
+// The analysis must have run on the module the program was built from.
+public fn pirEstimateLeaks(program: PirProgram) -> PirLeaks {
+    let leaks = PirLeaks { allocations: 0, dropped: 0, released: 0, unreleased: 0, unreleasedOwn: 0,
+        displaced: 0, examples: [] }
+    for i in 0..<program.funcs.length {
+        if (program.funcs[i].refusal.equals("") == false) { continue }
+        pirLeaksIn(program, program.funcs[i], leaks)
+    }
+    return leaks
+}

@@ -1,0 +1,420 @@
+// Loop regions (docs/PIR_PLAN.md §4.1, §4.4): `while`, `for` and `loop`, with `break`
+// and `continue` as exits to the loop they name.
+//
+// The loop's input ports are what it carries from one iteration to the next: every outer
+// local the body assigns, and every owned one it touches (A4). `next` supplies them
+// again, `break` leaves with what the code after the loop receives. A `while`'s test is a
+// branch at the head of the body whose false arm breaks. A range `for` carries a counter
+// and whether another iteration remains, so that `continue` and the end of the body run
+// the same step and the end of the range is never stepped past.
+//
+// What state the head has to carry is known only once the body has been built, so a
+// build that finds more records it as a hint and the function is built again.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import ast.types
+import pir.types
+import pir.graph
+import pir.state
+import pir.builder
+import pir.expr
+import pir.memory
+import pir.branch
+
+private fn pirHint(s: PirScope, key: String) {
+    if (s.hints.contains(key.clone())) { return }
+    s.hints.insert(key, 1)
+    s.retry = true
+}
+
+// The names the code under `head` gives a new value: assignment targets, and locals
+// passed to an `inout` parameter.
+private fn pirAssigned(program: PirProgram, head: Ptr, names: HashMap<String, Int>) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(node.child1)) {
+            let target = ptr_to_node(node.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR) { names.insert(target.s1.clone(), 1) }
+        }
+        if (node.kind == NodeKind.CALL_EXPR and node.s2.equals("") == false) {
+            let declIndex = program.declBySymbol.getOr(node.s2.clone(), -1)
+            if (declIndex >= 0) {
+                let mut paramPtr = ptr_to_node(program.declNodes[declIndex]).child1
+                let mut argPtr = node.child2
+                while (nodeExists(paramPtr) and nodeExists(argPtr)) {
+                    let param = ptr_to_node(paramPtr)
+                    let arg = ptr_to_node(argPtr)
+                    if (param.s2.equals("inout") and arg.kind == NodeKind.IDENTIFIER_EXPR) {
+                        names.insert(arg.s1.clone(), 1)
+                    }
+                    paramPtr = param.next
+                    argPtr = arg.next
+                }
+            }
+        }
+        pirAssigned(program, node.child1, names)
+        pirAssigned(program, node.child2, names)
+        pirAssigned(program, node.child3, names)
+        p = node.next
+    }
+}
+
+internal fn pirWhile(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode) {
+    pirLoop(program, f, s, stmt, stmt.child1, ptr_to_node(stmt.child2), -1)
+}
+
+internal fn pirLoopForever(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode) {
+    pirLoop(program, f, s, stmt, ptr_null(), ptr_to_node(stmt.child1), -1)
+}
+
+private fn pirRange(f: PirFunc, name: String, operands: Vec<Int>, valueType: Int, at: ASTNode) -> Int {
+    return pirPure(f, PirOp.RANGE, name, operands, valueType, -1, at)
+}
+
+internal fn pirFor(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode) {
+    if (nodeIsNull(stmt.child2)) {
+        pirRefuse(s, "for over a collection")
+        return
+    }
+    let body = ptr_to_node(stmt.child3)
+    let assigned = HashMap<String, Int>()
+    pirAssigned(program, stmt.child3, assigned)
+    if (assigned.contains(stmt.s1.clone())) {
+        pirRefuse(s, "loop variable assigned")
+        return
+    }
+
+    let start = pirOperandExpr(program, f, s, ptr_to_node(stmt.child1))
+    if (pirOk(s) == false) { return }
+    let endNode = ptr_to_node(stmt.child2)
+    let end = pirOperandExpr(program, f, s, endNode)
+    if (pirOk(s) == false) { return }
+    let intType = f.valType[start]
+    let boolType = pirTypeIntern(program.types, typeBool())
+    let mut step = -1
+    if (nodeExists(endNode.next)) {
+        let stepNode = ptr_to_node(endNode.next)
+        step = pirOperandExpr(program, f, s, stepNode)
+        if (pirOk(s) == false) { return }
+        // A step that is not a literal is checked where the loop is entered.
+        if (stepNode.kind != NodeKind.LITERAL_EXPR) {
+            let check = pirNodeNew(f, PirOp.CALL, "prismio_step_check", stepNode)
+            pirOperand(f, check, step, PirUse.BORROW)
+            f.nodeFlags[check] = PIR_MAY_TRAP
+            pirAppend(f, s.reg, check)
+        }
+    } else {
+        step = pirConstant(program, f, s, "1", intType, stmt)
+    }
+    let mut test = "enter".clone()
+    if (stmt.i1 == 1) { test = "enter=".clone() }
+    let bounds: Vec<Int> = [start, end]
+    let down = pirRange(f, "down", bounds, boolType, stmt)
+    let first: Vec<Int> = [start, end, down]
+    let more = pirRange(f, test, first, boolType, stmt)
+
+    // Hidden locals, under names no source can spell: the counter and whether it is in
+    // range, which the loop carries, and the three it reads.
+    let mark = s.names.length
+    pirDeclare(s, "$k", start, intType, true)
+    pirDeclare(s, "$more", more, boolType, true)
+    pirDeclare(s, "$end", end, intType, true)
+    pirDeclare(s, "$step", step, intType, true)
+    pirDeclare(s, "$down", down, boolType, true)
+    pirLoop(program, f, s, stmt, ptr_null(), body, mark)
+    if (s.done == false) { pirScopeTruncate(s, mark) }
+}
+
+// The branch at a loop's head: go on, or leave the loop.
+private fn pirGuard(program: PirProgram, f: PirFunc, s: PirScope, condition: Int, at: ASTNode) {
+    let heads: Vec<Ptr> = []
+    let nothing: Vec<Int> = []
+    let b = pirBranchOpen(program, f, s, condition, heads, true, nothing, at)
+    pirArmBegin(program, f, s, b, "true")
+    pirArmEnd(program, f, s, b, nothing)
+    pirArmBegin(program, f, s, b, "false")
+    pirLeave(program, f, s, s.loopRegions.length - 1, true, at)
+    pirArmEnd(program, f, s, b, nothing)
+    pirBranchClose(program, f, s, b, nothing, at)
+}
+
+// `break` (`leaves`) or `continue`, to the loop its label names.
+internal fn pirJump(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode, leaves: Bool) {
+    let mut loopIndex = s.loopRegions.length - 1
+    if (stmt.s1.equals("") == false) {
+        while (loopIndex >= 0 and s.loopLabels[loopIndex].equals(stmt.s1) == false) { loopIndex = loopIndex - 1 }
+    }
+    if (loopIndex < 0) {
+        pirRefuse(s, "jump to a loop that was not built")
+        return
+    }
+    pirLeave(program, f, s, loopIndex, leaves, stmt)
+}
+
+// An exit to a loop. Its operands wait until the loop is complete, so what it will pass
+// is kept: the locals that existed when the loop was entered, and the state.
+private fn pirLeave(program: PirProgram, f: PirFunc, s: PirScope, loopIndex: Int, leaves: Bool, at: ASTNode) {
+    let mut values: Vec<Int> = []
+    let mut live: Vec<Bool> = []
+    for local in 0..<s.loopMarks[loopIndex] {
+        values.push(s.values[local])
+        live.push(s.live[local])
+    }
+    // A range loop steps on the way to its next iteration.
+    let counter = s.loopCounters[loopIndex]
+    if (leaves == false and counter >= 0) {
+        let mut test = "more".clone()
+        if (ptr_to_node(s.loopStmts[loopIndex]).i1 == 1) { test = "more=".clone() }
+        let current: Vec<Int> = [values[counter], values[counter + 2], values[counter + 3], values[counter + 4]]
+        let more = pirRange(f, test, current, f.valType[values[counter + 1]], at)
+        let from: Vec<Int> = [values[counter], values[counter + 3], values[counter + 4]]
+        let next = pirRange(f, "step", from, f.valType[values[counter]], at)
+        values[counter + 1] = more
+        values[counter] = next
+    }
+    let mut port = PirPort.NEXT
+    if (leaves) { port = PirPort.BREAK }
+    let target = s.loopRegions[loopIndex]
+    let exit = pirExitNode(f, port, target, at)
+    pirAppend(f, s.reg, exit)
+    let state = pirSnapshot(s)
+    s.pending.push(PirExitSnapshot {
+        node: exit,
+        target: target,
+        leaves: leaves,
+        values: values,
+        live: live,
+        state: state
+    })
+    s.done = true
+}
+
+// `counter` is where a range loop's hidden locals begin, or -1; `condition` is a
+// `while`'s test, or null.
+private fn pirLoop(program: PirProgram, f: PirFunc, s: PirScope, stmt: ASTNode, condition: Ptr, body: ASTNode, counter: Int) {
+    let ordinal = s.loopCount
+    s.loopCount = s.loopCount + 1
+    let key = ordinal.toString()
+
+    let mentioned = HashMap<String, Int>()
+    let assigned = HashMap<String, Int>()
+    pirMentions(condition, mentioned)
+    pirMentions(node_to_ptr(body), mentioned)
+    pirAssigned(program, condition, assigned)
+    pirAssigned(program, node_to_ptr(body), assigned)
+    if (counter >= 0) {
+        assigned.insert("$k".clone(), 1)
+        assigned.insert("$more".clone(), 1)
+    }
+    // A `return`, or a jump past this loop, leaves from inside it.
+    let escapes = pirEscapes(node_to_ptr(body), false)
+
+    let mark = s.names.length
+    // The locals the head carries, and those the body first gives a value.
+    let mut carried: Vec<Int> = []
+    let mut fresh: Vec<Int> = []
+    for local in 0..<mark {
+        let visible = pirLookup(s, s.names[local]) == local
+        let given = visible and assigned.contains(s.names[local].clone())
+        if (s.live[local] == false) {
+            if (given) { fresh.push(local) }
+            continue
+        }
+        let owned = f.valMode[s.values[local]] == PirMode.OWN
+        let used = visible and mentioned.contains(s.names[local].clone())
+        if (given or (owned and (used or escapes))) { carried.push(local) }
+    }
+
+    let node = pirNodeNew(f, PirOp.LOOP, body.s1, stmt)
+    let mut before: Vec<Int> = []
+    let mut beforeLive: Vec<Bool> = []
+    for local in 0..<mark {
+        before.push(s.values[local])
+        beforeLive.push(s.live[local])
+    }
+    for local in carried {
+        let value = s.values[local]
+        let witness = s.hints.contains("W".concat(key, ":", local.toString()))
+        let mut use = pirConsumingUse(f, value)
+        // A view entering an `own ?w` port is not given up.
+        if (witness and f.valMode[value] != PirMode.OWN) { use = PirUse.BORROW }
+        pirOperand(f, node, value, use)
+    }
+    pirAppend(f, s.reg, node)
+    let outer = s.reg
+    let reg = pirRegionNew(f, PirRegionKind.LOOP, outer, node)
+    f.nodeTarget[node] = reg
+
+    for local in carried {
+        let value = s.values[local]
+        let witness = s.hints.contains("W".concat(key, ":", local.toString()))
+        let mut mode = f.valMode[value]
+        if (witness) { mode = PirMode.OWN }
+        let port = pirPortNew(f, reg, s.declared[local], mode, s.names[local])
+        f.valWitness[port] = witness or f.valWitness[value]
+        s.values[local] = port
+    }
+
+    // The head's state: a new version for each place some earlier attempt found the
+    // body leaves different.
+    let entry = pirStateCopy(s.state)
+    let mut headPlaces: Vec<Int> = []
+    let mut headBefore: Vec<Int> = []
+    let mut headAfter: Vec<Int> = []
+    for place in 0..<f.placeKind.length {
+        if (s.hints.contains("P".concat(key, ":", place.toString())) == false) { continue }
+        let version = pirVersionNew(f, place, node, -1)
+        headPlaces.push(place)
+        headBefore.push(pirStateAt(entry, place))
+        headAfter.push(version)
+        pirStateSet(s.state, place, version)
+    }
+    let head = pirStateCopy(s.state)
+
+    s.loopLabels.push(body.s1.clone())
+    s.loopRegions.push(reg)
+    s.loopMarks.push(mark)
+    s.loopCounters.push(counter)
+    s.loopStmts.push(node_to_ptr(stmt))
+    let depth = s.loopRegions.length - 1
+    s.reg = reg
+    s.done = false
+
+    if (nodeExists(condition)) {
+        let test = pirOperandExpr(program, f, s, ptr_to_node(condition))
+        if (pirOk(s)) { pirGuard(program, f, s, test, stmt) }
+    }
+    if (counter >= 0 and pirOk(s)) { pirGuard(program, f, s, s.values[counter + 1], stmt) }
+    if (pirOk(s) and s.done == false) {
+        let inner = s.names.length
+        if (counter >= 0) { pirDeclare(s, stmt.s1, s.values[counter], s.declared[counter], true) }
+        pirBlock(program, f, s, body)
+        pirScopeTruncate(s, inner)
+        if (pirOk(s) and s.done == false) { pirLeave(program, f, s, depth, false, stmt) }
+    }
+
+    s.loopLabels.truncate(depth)
+    s.loopRegions.truncate(depth)
+    s.loopMarks.truncate(depth)
+    s.loopCounters.truncate(depth)
+    s.loopStmts.truncate(depth)
+    s.reg = outer
+    s.done = false
+    if (pirOk(s) == false) { return }
+
+    let mut nexts: Vec<Int> = []
+    let mut breaks: Vec<Int> = []
+    for i in 0..<s.pending.length {
+        if (s.pending[i].target != reg) { continue }
+        if (s.pending[i].leaves) {
+            breaks.push(i)
+        } else {
+            nexts.push(i)
+        }
+    }
+
+    // What this attempt learned the head must carry.
+    for i in nexts {
+        if (s.snapshots[s.pending[i].state].world != head.world and s.hints.contains("P".concat(key, ":0")) == false) {
+            pirHint(s, "P".concat(key, ":0"))
+        }
+        for place in 1..<f.placeKind.length {
+            if (pirStateOwn(s.snapshots[s.pending[i].state], place) == pirStateOwn(head, place)) { continue }
+            let hint = "P".concat(key, ":", place.toString())
+            if (s.hints.contains(hint.clone()) == false) { pirHint(s, hint) }
+        }
+        for k in 0..<carried.length {
+            let local = carried[k]
+            let port = pirPortAt(f, reg, k)
+            let value = s.pending[i].values[local]
+            if (s.pending[i].live[local] == false) {
+                pirRefuse(s, "carried local moved in a loop")
+                return
+            }
+            if (f.valWitness[port]) { continue }
+            if (f.valMode[value] != f.valMode[port] or f.valWitness[value]) {
+                pirHint(s, "W".concat(key, ":", local.toString()))
+            }
+        }
+    }
+
+    // Back to the entry, from which the exit port takes over.
+    for local in 0..<mark {
+        s.values[local] = before[local]
+        s.live[local] = beforeLive[local]
+    }
+
+    // The values the code after the loop receives.
+    let mut outputs: Vec<Int> = []
+    for k in 0..<carried.length {
+        let local = carried[k]
+        if (breaks.length == 0) { break }
+        let port = pirPortAt(f, reg, k)
+        let mut alive = true
+        let mut changed = f.valMode[port] == PirMode.OWN
+        for i in breaks {
+            if (s.pending[i].live[local] == false) { alive = false }
+            if (s.pending[i].values[local] != port) { changed = true }
+        }
+        for i in nexts {
+            if (s.pending[i].values[local] != port) { changed = true }
+        }
+        if (alive == false) {
+            s.live[local] = false
+            continue
+        }
+        if (changed) { outputs.push(local) }
+    }
+    for local in fresh {
+        if (breaks.length == 0) { break }
+        let mut alive = true
+        for i in breaks {
+            if (s.pending[i].live[local] == false) { alive = false }
+        }
+        if (alive) { outputs.push(local) }
+    }
+    for local in outputs {
+        let mut held: Vec<Int> = []
+        for i in breaks { held.push(s.pending[i].values[local]) }
+        let result = pirResult(f, node, s.declared[local], f.valMode[held[0]], s.names[local])
+        pirJoinMode(f, result, held)
+    }
+
+    // The head's versions, then the exit's.
+    for h in 0..<headPlaces.length { pirAccess(f, node, headPlaces[h], headBefore[h], headAfter[h]) }
+    let mut ends: Vec<Int> = []
+    for i in breaks { ends.push(s.pending[i].state) }
+    let places = pirStateJoin(f, s.state, node, entry, s.snapshots, ends)
+
+    for i in nexts {
+        let exit = s.pending[i].node
+        for k in 0..<carried.length {
+            let value = s.pending[i].values[carried[k]]
+            let port = pirPortAt(f, reg, k)
+            let mut use = pirConsumingUse(f, value)
+            if (f.valMode[port] != PirMode.OWN) { use = PirUse.BORROW }
+            pirOperand(f, exit, value, use)
+        }
+        for place in headPlaces { pirAccess(f, exit, place, pirStateAt(s.snapshots[s.pending[i].state], place), -1) }
+    }
+    for i in breaks {
+        let exit = s.pending[i].node
+        for local in outputs {
+            let value = s.pending[i].values[local]
+            pirOperand(f, exit, value, pirConsumingUse(f, value))
+        }
+        for place in places { pirAccess(f, exit, place, pirStateAt(s.snapshots[s.pending[i].state], place), -1) }
+    }
+
+    for k in 0..<outputs.length {
+        s.values[outputs[k]] = pirResultAt(f, node, k)
+        s.live[outputs[k]] = true
+    }
+
+    // A loop nothing breaks out of never ends.
+    if (breaks.length == 0) { pirExitPlain(f, s, PirPort.UNREACHABLE, stmt) }
+}

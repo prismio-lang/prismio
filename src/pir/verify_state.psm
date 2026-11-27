@@ -1,0 +1,215 @@
+// The state half of pir_verify (docs/PIR_PLAN.md §6, §16.3): walks each function the way
+// its effects run, keeping the version in force for every place, and checks that every
+// access names exactly that version -- so each place's versions form one chain along
+// every path -- and that each join defines a version wherever its paths differ.
+//
+// Written without the builder's helpers on purpose: it is the check on them.
+
+import std.collections.vec
+import std.string
+import pir.graph
+import pir.verify
+
+private struct PirSim {
+    own: Vec<Int>,
+    world: Int
+}
+
+private fn pirSimCopy(f: PirFunc, sim: PirSim) -> PirSim {
+    let mut own: Vec<Int> = []
+    for place in 0..<f.placeKind.length { own.push(sim.own[place]) }
+    return PirSim { own: own, world: sim.world }
+}
+
+private fn pirSimAt(sim: PirSim, place: Int) -> Int {
+    if (place == 0 or sim.own[place] < 0) { return sim.world }
+    return sim.own[place]
+}
+
+private fn pirSimSet(sim: PirSim, place: Int, version: Int) {
+    if (place == 0) {
+        sim.world = version
+        return
+    }
+    sim.own[place] = version
+}
+
+// What the walk has gathered: the states arriving at each exit, kept until the node they
+// join after is checked.
+private struct PirArrivals {
+    exits: Vec<Int>,
+    states: Vec<PirSim>
+}
+
+private fn pirPlaceText(f: PirFunc, place: Int) -> String { return f.placeName[place].clone() }
+
+// The accesses of `node` that define a join's versions (`defines`) or carry a loop
+// head's (not `defines`).
+private fn pirJoinAccesses(f: PirFunc, node: Int, defines: Bool) -> Vec<Int> {
+    let mut found: Vec<Int> = []
+    for i in 0..<f.accCount[node] {
+        let access = f.accStart[node] + i
+        if ((f.accIn[access] < 0) == defines) { found.push(access) }
+    }
+    return found
+}
+
+private fn pirCheckDefinition(f: PirFunc, report: PirReport, node: Int, access: Int, prev: Int) {
+    let version = f.accOut[access]
+    if (version < 0 or version >= f.verPlace.length or f.verPlace[version] != f.accPlace[access]
+            or f.verDef[version] != node or f.verPrev[version] != prev) {
+        pirFinding(f, report, node, "a state version does not record its definition")
+    }
+}
+
+// An exit must pass, in order, the version it holds of each place the target joins.
+private fn pirCheckExitStates(f: PirFunc, report: PirReport, exit: Int, joins: Vec<Int>, sim: PirSim) {
+    if (f.accCount[exit] != joins.length) {
+        pirFinding(f, report, exit, "an exit passes the wrong number of state versions")
+        return
+    }
+    for k in 0..<joins.length {
+        let access = f.accStart[exit] + k
+        let place = f.accPlace[joins[k]]
+        if (f.accPlace[access] != place or f.accIn[access] != pirSimAt(sim, place) or f.accOut[access] >= 0) {
+            pirFinding(f, report, exit, "an exit passes a stale version of ".concat(pirPlaceText(f, place)))
+        }
+    }
+}
+
+// After a join: `sim` was in force before the node, `arrived` are the exits into it.
+private fn pirJoinStates(f: PirFunc, report: PirReport, node: Int, joins: Vec<Int>, sim: PirSim, arrived: PirArrivals, exits: Vec<Int>) {
+    for i in exits { pirCheckExitStates(f, report, arrived.exits[i], joins, arrived.states[i]) }
+    let mut joined: Vec<Bool> = Vec<Bool>.filled(f.placeKind.length, false)
+    for access in joins { joined[f.accPlace[access]] = true }
+    for place in 0..<f.placeKind.length {
+        if (exits.length == 0) { break }
+        let mut follows = place != 0
+        let mut changed = false
+        for i in exits {
+            if (place == 0) {
+                if (arrived.states[i].world != sim.world) { changed = true }
+            } else {
+                if (arrived.states[i].own[place] >= 0) { follows = false }
+                if (arrived.states[i].own[place] != sim.own[place]) { changed = true }
+            }
+        }
+        if (follows) {
+            sim.own[place] = -1
+        } else if (changed and joined[place] == false) {
+            pirFinding(f, report, node, "no version joins the paths for ".concat(pirPlaceText(f, place)))
+        }
+    }
+    for access in joins {
+        pirCheckDefinition(f, report, node, access, -1)
+        pirSimSet(sim, f.accPlace[access], f.accOut[access])
+    }
+}
+
+private fn pirArrivalsFor(f: PirFunc, arrived: PirArrivals, target: Int, port: Int) -> Vec<Int> {
+    let mut found: Vec<Int> = []
+    for i in 0..<arrived.exits.length {
+        let exit = arrived.exits[i]
+        if (f.nodeTarget[exit] == target and f.nodePort[exit] == port) { found.push(i) }
+    }
+    return found
+}
+
+// An ordinary node: every access reads or replaces the version in force. A node that
+// writes `world` must end every place's own version.
+private fn pirCheckNode(f: PirFunc, report: PirReport, node: Int, sim: PirSim) {
+    let mut writesWorld = false
+    for i in 0..<f.accCount[node] {
+        let access = f.accStart[node] + i
+        if (f.accPlace[access] == 0 and f.accOut[access] >= 0) { writesWorld = true }
+    }
+    for i in 0..<f.accCount[node] {
+        let access = f.accStart[node] + i
+        let place = f.accPlace[access]
+        if (f.accIn[access] != pirSimAt(sim, place)) {
+            pirFinding(f, report, node, "an access names a stale version of ".concat(pirPlaceText(f, place)))
+        }
+        if (f.accOut[access] >= 0) { pirCheckDefinition(f, report, node, access, f.accIn[access]) }
+    }
+    if (writesWorld) {
+        for place in 1..<f.placeKind.length {
+            if (sim.own[place] < 0) { continue }
+            let mut ended = false
+            for i in 0..<f.accCount[node] {
+                if (f.accPlace[f.accStart[node] + i] == place) { ended = true }
+            }
+            if (ended == false) { pirFinding(f, report, node, "a clobber leaves a version of ".concat(pirPlaceText(f, place))) }
+            sim.own[place] = -1
+        }
+    }
+    for i in 0..<f.accCount[node] {
+        let access = f.accStart[node] + i
+        if (f.accOut[access] >= 0) { pirSimSet(sim, f.accPlace[access], f.accOut[access]) }
+    }
+    let op = f.op[node]
+    if (f.accCount[node] == 0 and (op == PirOp.FIELD or op == PirOp.ELEM or op == PirOp.LENGTH or op == PirOp.GLOBAL
+            or op == PirOp.FIELD_SET or op == PirOp.ELEM_SET or op == PirOp.PUSH or op == PirOp.GLOBAL_SET)) {
+        pirFinding(f, report, node, "a memory access names no state version")
+    }
+}
+
+private fn pirWalkRegion(f: PirFunc, report: PirReport, reg: Int, sim: PirSim, arrived: PirArrivals) {
+    let mut node = f.regHead[reg]
+    while (node >= 0) {
+        if (f.op[node] == PirOp.EXIT) {
+            arrived.exits.push(node)
+            arrived.states.push(pirSimCopy(f, sim))
+        } else if (f.op[node] == PirOp.BRANCH) {
+            let branch = f.nodeTarget[node]
+            for r in (branch + 1)..<f.regKind.length {
+                if (f.regParent[r] != branch) { continue }
+                pirWalkRegion(f, report, r, pirSimCopy(f, sim), arrived)
+            }
+            let exits = pirArrivalsFor(f, arrived, branch, PirPort.MERGE as Int)
+            pirJoinStates(f, report, node, pirJoinAccesses(f, node, true), sim, arrived, exits)
+        } else if (f.op[node] == PirOp.LOOP) {
+            pirWalkLoop(f, report, node, sim, arrived)
+        } else {
+            pirCheckNode(f, report, node, sim)
+        }
+        node = f.nodeNext[node]
+    }
+}
+
+private fn pirWalkLoop(f: PirFunc, report: PirReport, node: Int, sim: PirSim, arrived: PirArrivals) {
+    let body = f.nodeTarget[node]
+    let heads = pirJoinAccesses(f, node, false)
+    let head = pirSimCopy(f, sim)
+    for access in heads {
+        let place = f.accPlace[access]
+        if (f.accIn[access] != pirSimAt(sim, place)) {
+            pirFinding(f, report, node, "a loop is entered with a stale version of ".concat(pirPlaceText(f, place)))
+        }
+        pirCheckDefinition(f, report, node, access, -1)
+        pirSimSet(head, place, f.accOut[access])
+    }
+    pirWalkRegion(f, report, body, pirSimCopy(f, head), arrived)
+
+    let mut carried: Vec<Bool> = Vec<Bool>.filled(f.placeKind.length, false)
+    for access in heads { carried[f.accPlace[access]] = true }
+    let nexts = pirArrivalsFor(f, arrived, body, PirPort.NEXT as Int)
+    for i in nexts {
+        pirCheckExitStates(f, report, arrived.exits[i], heads, arrived.states[i])
+        for place in 0..<f.placeKind.length {
+            let mut same = arrived.states[i].world == head.world
+            if (place != 0) { same = arrived.states[i].own[place] == head.own[place] }
+            if (same == false and carried[place] == false) {
+                pirFinding(f, report, node, "a loop does not carry ".concat(pirPlaceText(f, place)))
+            }
+        }
+    }
+    let breaks = pirArrivalsFor(f, arrived, body, PirPort.BREAK as Int)
+    pirJoinStates(f, report, node, pirJoinAccesses(f, node, true), sim, arrived, breaks)
+}
+
+internal fn pirVerifyState(f: PirFunc, report: PirReport) {
+    let mut own: Vec<Int> = []
+    for place in 0..<f.placeKind.length { own.push(-1) }
+    let arrived = PirArrivals { exits: [], states: [] }
+    pirWalkRegion(f, report, 0, PirSim { own: own, world: 0 }, arrived)
+}

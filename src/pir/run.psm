@@ -12,14 +12,16 @@ import common.diagnostics
 import common.diag_codes
 import pir.graph
 import pir.builder
+import pir.summaries
+import pir.leaks
 import pir.verify
 import pir.dump
 
 // `emit` is "" for no dump, "-" for standard output, and otherwise the file to write.
 // False when the dump could not be written or the verifier found something, with the
 // diagnostics already raised.
-public fn pirRun(module: ASTNode, sourcePath: String, emit: String, coverage: Bool) -> Bool {
-    let program = pirBuildProgram(module)
+public fn pirRun(module: ASTNode, sourcePath: String, emit: String, coverage: Bool, overflowChecks: Bool) -> Bool {
+    let program = pirBuildProgram(module, overflowChecks)
     let report = pirVerifyProgram(program)
 
     let mut written = true
@@ -31,7 +33,10 @@ public fn pirRun(module: ASTNode, sourcePath: String, emit: String, coverage: Bo
             diag_error_code(DIAG_DRIVER_PIR_UNWRITABLE, "cannot write PIR to ".concat(diagQuote(emit)))
         }
     }
-    if (coverage) { pirPrintCoverage(program, report, sourcePath) }
+    if (coverage) {
+        pirPrintCoverage(program, report, sourcePath)
+        pirPrintLeaks(pirEstimateLeaks(program))
+    }
 
     for finding in report.findings {
         diag_error_code(DIAG_DRIVER_PIR_REJECTED, "PIR verification failed (a compiler bug): ".concat(finding))
@@ -43,13 +48,37 @@ private fn pirRatio(covered: Int, total: Int) -> String {
     return covered.toString().concat("/", total.toString())
 }
 
+private fn pirPrintLeaks(leaks: PirLeaks) {
+    println("  allocations ".concat(leaks.allocations.toString(),
+        ", PIR would drop ", leaks.dropped.toString(),
+        ": released today ", leaks.released.toString(),
+        ", not released today ", leaks.unreleased.toString(),
+        " (program ", leaks.unreleasedOwn.toString(), ")",
+        "; displaced values nothing consumes ", leaks.displaced.toString()))
+    for i in 0..<leaks.examples.length {
+        if (i == 40) { break }
+        println("    unreleased ".concat(leaks.examples[i]))
+    }
+}
+
 private fn pirPrintCoverage(program: PirProgram, report: PirReport, sourcePath: String) {
     let mut ownCovered = 0
     let mut libraryCovered = 0
+    let mut ownRefused = 0
+    let mut libraryRefused = 0
     let mut nodes = 0
     let mut values = 0
     for i in 0..<program.funcs.length {
-        if (program.funcs[i].library) {
+        let library = program.funcs[i].library
+        if (program.funcs[i].refusal.equals("") == false) {
+            if (library) {
+                libraryRefused = libraryRefused + 1
+            } else {
+                ownRefused = ownRefused + 1
+            }
+            continue
+        }
+        if (library) {
             libraryCovered = libraryCovered + 1
         } else {
             ownCovered = ownCovered + 1
@@ -57,16 +86,9 @@ private fn pirPrintCoverage(program: PirProgram, report: PirReport, sourcePath: 
         nodes = nodes + program.funcs[i].op.length
         values = values + program.funcs[i].valDef.length
     }
-    let mut ownRefused = 0
-    for library in program.refusedLibrary {
-        if (library == false) { ownRefused = ownRefused + 1 }
-    }
-    let libraryRefused = program.refusedLibrary.length - ownRefused
-    let covered = ownCovered + libraryCovered
-    let total = covered + program.refusedName.length
 
     println("pir coverage: ".concat(sourcePath))
-    println("  functions ".concat(pirRatio(covered, total), " covered (program ",
+    println("  functions ".concat(pirRatio(ownCovered + libraryCovered, program.funcs.length), " covered (program ",
         pirRatio(ownCovered, ownCovered + ownRefused), ", library ",
         pirRatio(libraryCovered, libraryCovered + libraryRefused), ")"))
     println("  nodes ".concat(nodes.toString(), ", values ", values.toString(),
@@ -77,6 +99,8 @@ private fn pirPrintCoverage(program: PirProgram, report: PirReport, sourcePath: 
         ", one ", report.consumedOnce.toString(),
         ", more ", report.consumedMore.toString(),
         "; read after consume ", report.readAfterConsume.toString()))
+    println("  A4 carried values also consumed ".concat(report.carriedConsumed.toString(),
+        "; own ?w values ", report.witnessed.toString()))
     pirPrintRefusals(program)
 }
 
@@ -88,18 +112,19 @@ private fn pirPrintRefusals(program: PirProgram) {
     let mut own: Vec<Int> = []
     let mut first: Vec<Int> = []
     let seen = HashMap<String, Int>()
-    for i in 0..<program.refusedReason.length {
-        let mut at = seen.getOr(program.refusedReason[i].clone(), -1)
+    for i in 0..<program.funcs.length {
+        if (program.funcs[i].refusal.equals("")) { continue }
+        let mut at = seen.getOr(program.funcs[i].refusal.clone(), -1)
         if (at < 0) {
             at = reasons.length
-            seen.insert(program.refusedReason[i].clone(), at)
-            reasons.push(program.refusedReason[i].clone())
+            seen.insert(program.funcs[i].refusal.clone(), at)
+            reasons.push(program.funcs[i].refusal.clone())
             counts.push(0)
             own.push(0)
             first.push(i)
         }
         counts[at] = counts[at] + 1
-        if (program.refusedLibrary[i] == false) { own[at] = own[at] + 1 }
+        if (program.funcs[i].library == false) { own[at] = own[at] + 1 }
     }
     if (reasons.length == 0) { return }
     println("  refused (reason, functions, of which program; first met in):")
@@ -115,6 +140,6 @@ private fn pirPrintRefusals(program: PirProgram) {
         }
         printed[best] = true
         println("    ".concat(reasons[best], "\t", counts[best].toString(), "\t", own[best].toString(),
-            "\t", program.refusedName[first[best]]))
+            "\t", program.funcs[first[best]].name))
     }
 }

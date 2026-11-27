@@ -1,0 +1,84 @@
+// Which functions' results may view something (docs/PIR_PLAN.md §10.1, the part P0b
+// needs): a value owned is one this function may end, so a call may only answer `own`
+// where the callee cannot hand back a view of an argument or of memory it can reach.
+//
+// A least fixed point. Every function is built as if its callees answered owned values;
+// a function seen to return a view, or not covered and so not seen at all, joins the set,
+// and its callers are built again. The set only grows, so this ends.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import pir.types
+import pir.graph
+import pir.builder
+
+private fn pirReturnsView(types: PirTypes, f: PirFunc) -> Bool {
+    if (f.refusal.equals("") == false) { return true }
+    if (f.hasResult == false or types.moveOnly[f.returnTypes[0]] == false) { return false }
+    for node in 0..<f.op.length {
+        if (f.op[node] != PirOp.EXIT or f.nodePort[node] != PirPort.RETURN as Int) { continue }
+        if (f.opCount[node] == 0) { continue }
+        let result = pirOperandAt(f, node, 0)
+        if (f.valMode[result] == PirMode.VIEW or f.valWitness[result]) { return true }
+        // An `inout` parameter answered as the result is still the caller's object.
+        for i in 1..<f.opCount[node] {
+            if (pirOperandAt(f, node, i) == result) { return true }
+        }
+    }
+    return false
+}
+
+// Every function of `module`, built against the settled set.
+public fn pirBuildProgram(module: ASTNode, overflowChecks: Bool) -> PirProgram {
+    let program = pirProgramNew(module, overflowChecks)
+    let count = program.sources.length
+
+    // The callers of each symbol, as linked lists in build order.
+    let first = HashMap<String, Int>()
+    let mut callerOf: Vec<Int> = []
+    let mut nextCaller: Vec<Int> = []
+    let mut queue: Vec<Int> = []
+    let mut queued: Vec<Bool> = Vec<Bool>.filled(count, false)
+
+    for index in 0..<count {
+        let f = pirBuildFunction(program, index)
+        for callee in f.callees {
+            let head = first.getOr(callee.clone(), -1)
+            // One entry per caller, however often it calls.
+            if (head >= 0 and callerOf[head] == index) { continue }
+            first.set(callee.clone(), callerOf.length)
+            callerOf.push(index)
+            nextCaller.push(head)
+        }
+        if (pirReturnsView(program.types, f)) {
+            queue.push(index)
+            queued[index] = true
+        }
+        program.funcs.push(f)
+    }
+
+    let mut at = 0
+    while (at < queue.length) {
+        let found = queue[at]
+        at = at + 1
+        let symbol = program.funcs[found].name.clone()
+        program.viewResults.insert(symbol.clone(), 1)
+        let mut entry = first.getOr(symbol, -1)
+        while (entry >= 0) {
+            let caller = callerOf[entry]
+            entry = nextCaller[entry]
+            // A function not covered stays so, and is in the set already.
+            if (program.funcs[caller].refusal.equals("") == false) { continue }
+            let rebuilt = pirBuildFunction(program, caller)
+            let views = pirReturnsView(program.types, rebuilt)
+            program.funcs[caller] = rebuilt
+            if (views and queued[caller] == false) {
+                queue.push(caller)
+                queued[caller] = true
+            }
+        }
+    }
+    return program
+}

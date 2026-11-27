@@ -1,0 +1,115 @@
+// Places and their state versions while a function is built (docs/PIR_PLAN.md §6).
+//
+// Each place has a version. A read pins one, a write replaces it. A call whose effects
+// are not known writes `world`: every place then follows the new world version until it
+// is written again, so an opaque call costs one version rather than one per place.
+//
+// Where paths join -- after a branch, at a loop's head and after it -- a place whose
+// version differs gets a new one defined by that node, and each exit into the join
+// passes the version it holds, as it passes values.
+
+import std.collections.vec
+import pir.graph
+
+// The versions in force at one point: `world`, and for each place its own version, or
+// -1 while it follows `world`.
+internal struct PirState {
+    internal own: Vec<Int>,
+    internal world: Int
+}
+
+internal fn pirStateEntry() -> PirState {
+    return PirState { own: [], world: 0 }
+}
+
+internal fn pirStateCopy(state: PirState) -> PirState {
+    let mut own: Vec<Int> = []
+    for version in state.own { own.push(version) }
+    return PirState { own: own, world: state.world }
+}
+
+internal fn pirStateOwn(state: PirState, place: Int) -> Int {
+    if (place < state.own.length) { return state.own[place] }
+    return -1
+}
+
+// The version a read of `place` sees.
+internal fn pirStateAt(state: PirState, place: Int) -> Int {
+    if (place == 0) { return state.world }
+    let own = pirStateOwn(state, place)
+    if (own >= 0) { return own }
+    return state.world
+}
+
+internal fn pirStateSet(state: PirState, place: Int, version: Int) {
+    if (place == 0) {
+        state.world = version
+        return
+    }
+    while (state.own.length <= place) { state.own.push(-1) }
+    state.own[place] = version
+}
+
+internal fn pirStateRestore(state: PirState, saved: PirState) {
+    state.world = saved.world
+    state.own.truncate(0)
+    for version in saved.own { state.own.push(version) }
+}
+
+internal fn pirStateRead(f: PirFunc, state: PirState, node: Int, place: Int) {
+    pirAccess(f, node, place, pirStateAt(state, place), -1)
+}
+
+internal fn pirStateWrite(f: PirFunc, state: PirState, node: Int, place: Int) {
+    let before = pirStateAt(state, place)
+    let after = pirVersionNew(f, place, node, before)
+    pirAccess(f, node, place, before, after)
+    pirStateSet(state, place, after)
+}
+
+// A write to everything: each place with a version of its own gives it up to `world`.
+internal fn pirStateClobber(f: PirFunc, state: PirState, node: Int) {
+    // `world` has no entry here. (`1..<0` would count down.)
+    for place in 0..<state.own.length {
+        if (place == 0 or state.own[place] < 0) { continue }
+        pirAccess(f, node, place, state.own[place], -1)
+        state.own[place] = -1
+    }
+    pirStateWrite(f, state, node, 0)
+}
+
+// The join of the paths that reach `node`'s exits, whose states are the entries `ends`
+// of `states`, after `node` began in `before`. Defines a
+// version on `node` for each place that needs one, leaves `state` as the code after the
+// join sees it, and answers those places in the order the exits must pass them.
+internal fn pirStateJoin(f: PirFunc, state: PirState, node: Int, before: PirState, states: Vec<PirState>, ends: Vec<Int>) -> Vec<Int> {
+    let mut places: Vec<Int> = []
+    pirStateRestore(state, before)
+    if (ends.length == 0) { return places }
+
+    for end in 0..<ends.length {
+        if (states[ends[end]].world != before.world) {
+            places.push(0)
+            break
+        }
+    }
+    for place in 1..<f.placeKind.length {
+        let mut follows = true
+        let mut changed = false
+        for end in 0..<ends.length {
+            if (pirStateOwn(states[ends[end]], place) >= 0) { follows = false }
+            if (pirStateOwn(states[ends[end]], place) != pirStateOwn(before, place)) { changed = true }
+        }
+        if (follows) {
+            if (pirStateOwn(before, place) >= 0) { pirStateSet(state, place, -1) }
+        } else if (changed) {
+            places.push(place)
+        }
+    }
+    for place in places {
+        let version = pirVersionNew(f, place, node, -1)
+        pirAccess(f, node, place, -1, version)
+        pirStateSet(state, place, version)
+    }
+    return places
+}

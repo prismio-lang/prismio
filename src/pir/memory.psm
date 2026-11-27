@@ -1,0 +1,230 @@
+// Reads and writes of memory as PIR nodes (docs/PIR_PLAN.md §6, A7): fields, elements,
+// a container's length and globals, each naming the version of the place it reads or
+// replaces. A store hands back what it displaced, where that is owned, as a value of its
+// own: something has to end it.
+
+import std.collections.vec
+import std.string
+import ast.nodes
+import ast.types
+import pir.types
+import pir.graph
+import pir.state
+import pir.builder
+import pir.expr
+
+// The place a field of `objectType` lives in. Anything but a struct -- what a typed
+// pointer or a trait object leads to -- could be any memory.
+internal fn pirFieldPlace(program: PirProgram, f: PirFunc, objectType: Int, field: String) -> Int {
+    if (program.types.kind[objectType] != PirTypeKind.STRUCT) { return 0 }
+    let name = pirTypeText(program.types, objectType).concat(".", field)
+    return pirPlaceIntern(f, PirPlaceKind.FIELD, objectType, name)
+}
+
+// The elements of every container holding what `containerType` holds.
+internal fn pirElementsPlace(program: PirProgram, f: PirFunc, containerType: Int) -> Int {
+    let element = program.types.child[containerType]
+    if (element < 0) { return 0 }
+    let name = "elems<".concat(pirTypeText(program.types, element), ">")
+    return pirPlaceIntern(f, PirPlaceKind.ELEMENTS, element, name)
+}
+
+// The length and capacity of every container of that element type.
+internal fn pirHeaderPlace(program: PirProgram, f: PirFunc, containerType: Int) -> Int {
+    let element = program.types.child[containerType]
+    if (element < 0) { return 0 }
+    let name = "hdr<".concat(pirTypeText(program.types, element), ">")
+    return pirPlaceIntern(f, PirPlaceKind.HEADER, element, name)
+}
+
+private fn pirGlobalPlace(f: PirFunc, name: String) -> Int {
+    return pirPlaceIntern(f, PirPlaceKind.GLOBAL, -1, "@".concat(name))
+}
+
+// A read: operands, the place whose version it pins, and a value that is a view where
+// the type is owned.
+internal fn pirReadNode(program: PirProgram, f: PirFunc, s: PirScope, op: PirOp, name: String, operands: Vec<Int>, place: Int, valueType: Int, at: ASTNode) -> Int {
+    let node = pirNodeNew(f, op, name, at)
+    for operand in operands { pirOperand(f, node, operand, PirUse.BORROW) }
+    pirAppend(f, s.reg, node)
+    pirStateRead(f, s.state, node, place)
+    return pirResult(f, node, valueType, pirReadMode(program, valueType), "")
+}
+
+// A write: every operand but the last is borrowed, the last is the value stored. What it
+// displaced comes back as an owned result when the stored type is owned.
+private fn pirWriteNode(program: PirProgram, f: PirFunc, s: PirScope, op: PirOp, name: String, operands: Vec<Int>, place: Int, storedType: Int, at: ASTNode) {
+    let node = pirNodeNew(f, op, name, at)
+    for i in 0..<operands.length {
+        let mut use = PirUse.BORROW
+        if (i == operands.length - 1) { use = pirConsumingUse(f, operands[i]) }
+        pirOperand(f, node, operands[i], use)
+    }
+    pirAppend(f, s.reg, node)
+    // A write through a pointer could be to anything.
+    if (place == 0) {
+        pirStateClobber(f, s.state, node)
+    } else {
+        pirStateWrite(f, s.state, node, place)
+        // An array stored whole is copied into the slot: its elements change too.
+        if (program.types.kind[storedType] == PirTypeKind.ARRAY) {
+            let elements = pirElementsPlace(program, f, storedType)
+            if (elements != place and elements != 0) { pirStateWrite(f, s.state, node, elements) }
+        }
+    }
+    if (program.types.moveOnly[storedType]) { pirResult(f, node, storedType, PirMode.OWN, "") }
+}
+
+// The value of an expression that must have one.
+internal fn pirOperandExpr(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let value = pirExpr(program, f, s, node)
+    if (pirOk(s) == false) { return -1 }
+    if (value < 0) { pirRefuse(s, "operand with no value") }
+    return value
+}
+
+// `value`, or the object a local named by `source` holds now: evaluating a later operand
+// may have passed that local `inout`.
+private fn pirSettled(f: PirFunc, s: PirScope, value: Int, source: ASTNode) -> Int {
+    if (source.kind != NodeKind.IDENTIFIER_EXPR or f.valMode[value] == PirMode.COPY) { return value }
+    let local = pirLookup(s, source.s1)
+    if (local < 0 or s.live[local] == false) { return value }
+    return s.values[local]
+}
+
+internal fn pirGlobalRead(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    let valueType = pirNodeType(program, s, node)
+    if (pirOk(s) == false) { return -1 }
+    let operands: Vec<Int> = []
+    return pirReadNode(program, f, s, PirOp.GLOBAL, node.s1, operands, pirGlobalPlace(f, node.s1), valueType, node)
+}
+
+internal fn pirGlobalStore(program: PirProgram, f: PirFunc, s: PirScope, target: ASTNode, source: ASTNode) {
+    if (program.topNames.getOr(target.s1.clone(), 0) != 1) {
+        pirRefuse(s, "unresolved name")
+        return
+    }
+    let stored = pirNodeType(program, s, target)
+    if (pirOk(s) == false) { return }
+    let mut value = pirOperandExpr(program, f, s, source)
+    if (pirOk(s) == false) { return }
+    value = pirCoerce(program, f, s, value, stored, source)
+    let operands: Vec<Int> = [value]
+    pirWriteNode(program, f, s, PirOp.GLOBAL_SET, target.s1, operands, pirGlobalPlace(f, target.s1), stored, target)
+}
+
+internal fn pirFieldStore(program: PirProgram, f: PirFunc, s: PirScope, target: ASTNode, source: ASTNode) {
+    let object = ptr_to_node(target.child1)
+    let mut base = pirOperandExpr(program, f, s, object)
+    if (pirOk(s) == false) { return }
+    let objectType = f.valType[base]
+    if (program.types.kind[objectType] == PirTypeKind.DATAELEMENT) {
+        pirRefuse(s, "data element field")
+        return
+    }
+    let mut stored = pirTypeIntern(program.types, nodeGetType(target))
+    if (pirTypeIsValid(program.types, stored) == false) {
+        stored = pirFieldType(program, pirTypeText(program.types, objectType), target.s1)
+    }
+    if (stored < 0) {
+        pirRefuse(s, "untyped expression")
+        return
+    }
+    let mut value = pirOperandExpr(program, f, s, source)
+    if (pirOk(s) == false) { return }
+    value = pirCoerce(program, f, s, value, stored, source)
+    base = pirSettled(f, s, base, object)
+    let operands: Vec<Int> = [base, value]
+    let place = pirFieldPlace(program, f, objectType, target.s1)
+    pirWriteNode(program, f, s, PirOp.FIELD_SET, target.s1, operands, place, stored, target)
+}
+
+private fn pirIsContainer(program: PirProgram, valueType: Int) -> Bool {
+    let kind = program.types.kind[valueType]
+    return kind == PirTypeKind.VEC or kind == PirTypeKind.ARRAY or kind == PirTypeKind.SLICE
+}
+
+internal fn pirElementRead(program: PirProgram, f: PirFunc, s: PirScope, container: ASTNode, index: ASTNode, at: ASTNode) -> Int {
+    let mut base = pirOperandExpr(program, f, s, container)
+    if (pirOk(s) == false) { return -1 }
+    if (pirIsContainer(program, f.valType[base]) == false) {
+        pirRefuse(s, "index read of a value that is not a container")
+        return -1
+    }
+    let position = pirOperandExpr(program, f, s, index)
+    let elementType = pirNodeType(program, s, at)
+    if (pirOk(s) == false) { return -1 }
+    base = pirSettled(f, s, base, container)
+    let operands: Vec<Int> = [base, position]
+    let place = pirElementsPlace(program, f, f.valType[base])
+    return pirReadNode(program, f, s, PirOp.ELEM, "", operands, place, elementType, at)
+}
+
+internal fn pirElementStore(program: PirProgram, f: PirFunc, s: PirScope, container: ASTNode, index: ASTNode, source: ASTNode, at: ASTNode) {
+    let mut base = pirOperandExpr(program, f, s, container)
+    if (pirOk(s) == false) { return }
+    let containerType = f.valType[base]
+    if (pirIsContainer(program, containerType) == false) {
+        pirRefuse(s, "index store into a value that is not a container")
+        return
+    }
+    let stored = program.types.child[containerType]
+    if (stored < 0) {
+        pirRefuse(s, "untyped expression")
+        return
+    }
+    let position = pirOperandExpr(program, f, s, index)
+    if (pirOk(s) == false) { return }
+    let mut value = pirOperandExpr(program, f, s, source)
+    if (pirOk(s) == false) { return }
+    value = pirCoerce(program, f, s, value, stored, source)
+    base = pirSettled(f, s, base, container)
+    let operands: Vec<Int> = [base, position, value]
+    let place = pirElementsPlace(program, f, containerType)
+    pirWriteNode(program, f, s, PirOp.ELEM_SET, "", operands, place, stored, at)
+}
+
+internal fn pirIndexStore(program: PirProgram, f: PirFunc, s: PirScope, target: ASTNode, source: ASTNode) {
+    pirElementStore(program, f, s, ptr_to_node(target.child1), ptr_to_node(target.child2), source, target)
+}
+
+internal fn pirLength(program: PirProgram, f: PirFunc, s: PirScope, container: ASTNode, at: ASTNode) -> Int {
+    let base = pirOperandExpr(program, f, s, container)
+    let lengthType = pirNodeType(program, s, at)
+    if (pirOk(s) == false) { return -1 }
+    if (pirIsContainer(program, f.valType[base]) == false) {
+        pirRefuse(s, "length of a value that is not a container")
+        return -1
+    }
+    let operands: Vec<Int> = [base]
+    let place = pirHeaderPlace(program, f, f.valType[base])
+    return pirReadNode(program, f, s, PirOp.LENGTH, "", operands, place, lengthType, at)
+}
+
+internal fn pirPush(program: PirProgram, f: PirFunc, s: PirScope, container: ASTNode, source: ASTNode, at: ASTNode) {
+    let mut base = pirOperandExpr(program, f, s, container)
+    if (pirOk(s) == false) { return }
+    let containerType = f.valType[base]
+    if (pirIsContainer(program, containerType) == false) {
+        pirRefuse(s, "push into a value that is not a container")
+        return
+    }
+    let mut value = pirOperandExpr(program, f, s, source)
+    if (pirOk(s) == false) { return }
+    let stored = program.types.child[containerType]
+    if (stored >= 0) { value = pirCoerce(program, f, s, value, stored, source) }
+    base = pirSettled(f, s, base, container)
+
+    let node = pirNodeNew(f, PirOp.PUSH, "", at)
+    pirOperand(f, node, base, PirUse.BORROW)
+    pirOperand(f, node, value, pirConsumingUse(f, value))
+    pirAppend(f, s.reg, node)
+    let elements = pirElementsPlace(program, f, containerType)
+    let header = pirHeaderPlace(program, f, containerType)
+    if (elements == 0) {
+        pirStateClobber(f, s.state, node)
+    } else {
+        pirStateWrite(f, s.state, node, elements)
+        pirStateWrite(f, s.state, node, header)
+    }
+}
