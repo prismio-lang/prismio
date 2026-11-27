@@ -100,20 +100,22 @@ let USAGE_DEVELOPER =
                     [--freestanding-target <triple>]... -o <out.plib>
                                    precompile one library module; a freestanding target gets a
                                    section only when the module's header says it is freestanding
-      prismio dump-ast <source.psm>
+      prismio dump-ast <source.psm> [--pir=plan]
       prismio aif <source.psm> [--manifest] [--summary] [--layout] [--copyable-collections]
-                               [--theta-fields] [--budget=N] [--target <triple>]
+                               [--theta-fields] [--budget=N] [--target <triple>] [--pir=plan]
       prismio aif <source.psm> --why=<ID|symbol>   explain one allocation decision
       prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate
       prismio build <source.psm> --verify | --debug
 
-      prismio build <source.psm> [--emit-pir[=<file>]] [--pir-coverage] [--pir-run]
+      prismio build <source.psm> [--emit-pir[=<file>]] [--pir-coverage] [--pir-run] [--pir=plan]
 
           --emit-pir writes the PIR dump (docs/PIR_PLAN.md) to standard output or
           the file, and --pir-coverage reports how many functions PIR can build.
           Both verify what was built, and neither changes the program's code.
           --pir-run interprets `main` over PIR instead of building the program,
           exits with its status, and reports views read after a write.
+          --pir=plan moves a field or payload out of a local that is dead afterwards
+          instead of viewing it; --pir-coverage then also lists what moved.
 
           --debug is the zero-analysis level and says nothing about debug info;
           --verify builds with the allocation ledger.
@@ -400,7 +402,17 @@ private fn cliDumpAst() -> Int {
         pointAtUsage()
         return 1
     }
-    return dumpAstCommand(process.args[2])
+    let mut plan = false
+    for i in 3..<process.args.count {
+        if (process.args[i].equals("--pir=plan")) {
+            plan = true
+        } else {
+            diag_error_code(DIAG_CLI_DUMP_AST_UNKNOWN_ARGUMENT, "unknown argument ".concat(diagQuote(process.args[i])))
+            pointAtUsage()
+            return 1
+        }
+    }
+    return dumpAstCommand(process.args[2], plan)
 }
 
 // The memory model. `--summary` prints the tier distribution in the form
@@ -427,6 +439,7 @@ private fn cliAif() -> Int {
     let mut aifWhy = ""
     let mut aifLayout = false
     let mut aifManifest = false
+    let mut aifPlan = false
     let mut aifBudgetArg = AIF_DEFAULT_ROUNDS
     let mut aifArg = 3
 
@@ -477,6 +490,8 @@ private fn cliAif() -> Int {
             // Accepted so existing scripts keep working, and because saying
             // so explicitly costs nothing.
             aifOwned = true
+        } else if (flag.equals("--pir=plan")) {
+            aifPlan = true
         } else if (flag.equals("--copyable-collections")) {
             // The pre-Level-4 language, where only structs were move-only.
             // Kept because it is the differential's second arm, not because
@@ -507,7 +522,7 @@ private fn cliAif() -> Int {
     }
 
     return aifCommand(process.args[2], aifSummary, aifOwned, aifThetaFields, aifBudgetArg,
-        aifWhy, aifLayout, aifManifest)
+        aifWhy, aifLayout, aifManifest, aifPlan)
 }
 
 fn main() -> Int {
@@ -778,6 +793,9 @@ fn main() -> Int {
             argIndex = argIndex + 1
         } else if (arg.equals("--pir-coverage")) {
             options.pirCoverage = true
+            argIndex = argIndex + 1
+        } else if (arg.equals("--pir=plan")) {
+            options.pirPlan = true
             argIndex = argIndex + 1
         } else if (arg.equals("--pir-run")) {
             options.pirRun = true

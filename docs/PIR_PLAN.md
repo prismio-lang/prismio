@@ -524,6 +524,17 @@ changes is where constraints come from:
   first step keeps the walk emitting the same constraints from PIR that it emits from the AST, so
   `tools/aif_differential.py` stays unchanged until the oracle reader lands.
 
+**Take sites (decided at P2).** Which reads take is PIR's choice, made by a pre-pass before the
+analysis from liveness and not by AIF. The pass writes one side table keyed by AST node
+(`pir/plan.psm`), and the walk, codegen and `prismio dump-ast --pir=plan` (`"take": true` on the
+member read or payload binder) all read it. The oracle neither re-derives liveness nor reads
+`--emit-pir`: `aif.py` applies the AIF rule alone (a taken read is no view of its object, so no
+E-VIEW lift), and `tools/aif_differential.py --plan` compares the two on identical take sites.
+The choice is therefore checked elsewhere, independently of the pass that makes it: `pir_verify`
+requires that after a `take`, on every path, neither the consumed local nor any view of it is used
+(`pir/verify_take.psm`), and `--pir-run` stops at a read of a dropped remainder or an emptied
+field. A violation is a compiler bug naming the function.
+
 ## 9 · Facts
 
 ### 9.1 · One sparse engine, many domains
@@ -720,9 +731,11 @@ What it does not model ends the run with `pir ineligible: <what>` (status 125) w
 foreign functions other than the console, `exit` and the argument vector, `std.sys.raw`'s
 compile-time intrinsics, uncovered functions, floats other than `F64`, integers wider than 64
 bits. An integer division by zero, `MIN / -1` and an over-wide shift answer what AArch64 answers.
-There are no drops yet: every object keeps its allocation site and a state that stays `live`; P2
-sets it at drop, delegate and leak nodes, checks it on each access, and lists the live objects at
-exit. `tools/pir_differential.py` is the harness.
+Every object keeps its allocation site and a state. The only drops built so far (P2) are of what a
+`take` leaves behind: a `take` empties its field, a `drop` marks the remainder `dropped`, and a
+read or write of either stops the run with both positions (status 126). Under `--pir=plan` the
+objects still `live` when the run ends are listed by site (nearly all of them, until P3 on places
+more drops); delegate and leak nodes do not exist yet. `tools/pir_differential.py` is the harness.
 
 What it is for:
 
@@ -926,6 +939,30 @@ table, and emission's wins (lifetime markers, alias scopes, result slots) are me
 | A local passed `inout` comes back as an extra call result | §7.2 (A8) |
 | Places are keyed by static type and every call clobbers every place; coarse, refined by signatures at P6 | §6.1 |
 | PIR is built **after** AIF, so its passes can read the analysis | §17 |
+
+### 20.2 · P2's first slice, as built
+
+`--pir=plan` moves a field or payload out of a dead local (`take`, A6). Off by default. A read takes
+when all of these hold, and otherwise stays a view:
+
+- the base is a struct or enum this function owns (not a parameter, not `own ?w`), defined in the
+  read's region, built here or by a function whose every result is built so (**fresh**), and **never
+  passed to a call**: a reference kept behind a raw pointer shows in no mode, and the compiler's own
+  AST nodes are held that way;
+- neither the base nor a view of it is used after the read, and no view of it was stored earlier;
+- the value goes straight to the return, a `push`, a stored element, field or global, or a struct
+  literal, on every path; a `String` only to the return, since a stored one is copied;
+- the field has a slot: not a plain-data struct stored inside its owner;
+- a base built by a literal on the way here is built in a region that encloses the read, and the
+  field is not assigned again (a stack literal's temporary has a second owner, a hidden binding,
+  which the take empties too);
+- the function is the program's own (a library function's code may not be this build's).
+
+In the analysis a taken read is no view of its object and reads through a location of its own; the
+flow questions codegen asks of a call result stop at that location (`aifcore/call_results.psm`).
+A move at a `let` that is only used later, and a drop anywhere but the remainder, are P3 onwards:
+`binder_rewrap_probe` (a binder of a parameter) goes to P6, `binder_return_probe` (a literal copied
+into a `String?`, A9) to a slice of its own.
 
 ## 21 · Alternatives considered and rejected
 

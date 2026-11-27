@@ -13,6 +13,7 @@ import ast.nodes
 import pir.types
 import pir.graph
 import pir.builder
+import pir.take
 
 private fn pirReturnsView(types: PirTypes, f: PirFunc) -> Bool {
     if (f.refusal.equals("") == false) { return true }
@@ -31,7 +32,7 @@ private fn pirReturnsView(types: PirTypes, f: PirFunc) -> Bool {
 }
 
 // Every function of `module`, built against the settled set.
-public fn pirBuildProgram(module: ASTNode, overflowChecks: Bool) -> PirProgram {
+public fn pirBuildProgram(module: ASTNode, overflowChecks: Bool, takes: Bool) -> PirProgram {
     let program = pirProgramNew(module, overflowChecks)
     let count = program.sources.length
 
@@ -79,6 +80,14 @@ public fn pirBuildProgram(module: ASTNode, overflowChecks: Bool) -> PirProgram {
                 queued[caller] = true
             }
         }
+    }
+    // The moves at last use, over the settled functions. A function that takes may now
+    // answer an owned value where its callers were built for a view, which only keeps
+    // them from taking.
+    if (takes) {
+        pirFindFresh(program)
+        let counted = pirTakesNew()
+        for i in 0..<program.funcs.length { pirTakeAtLastUse(program, program.funcs[i], counted) }
     }
     return program
 }

@@ -251,6 +251,7 @@ private fn pirLayNode(program: PirProgram, shapes: PirShapes, tables: PirTables,
         }
         PirOp.FIELD => { pirLayField(program, shapes, tables, f, code, node) }
         PirOp.FIELD_SET => { pirLayField(program, shapes, tables, f, code, node) }
+        PirOp.TAKE => { pirLayField(program, shapes, tables, f, code, node) }
         PirOp.STRUCT => { pirLayStruct(program, shapes, tables, f, code, node) }
         PirOp.GLOBAL => { pirLayGlobal(tables, f, code, node) }
         PirOp.GLOBAL_SET => { pirLayGlobal(tables, f, code, node) }

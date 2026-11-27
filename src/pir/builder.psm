@@ -41,7 +41,11 @@ public struct PirProgram {
     internal topNames: HashMap<String, Int>,
     // The functions whose result may view something they were passed or can reach.
     internal viewResults: HashMap<String, Int>,
-    internal overflowChecks: Bool
+    // The functions whose every result is an object they built that no call was handed
+    // (pir.take, which finds them).
+    internal freshResults: HashMap<String, Int>,
+    internal overflowChecks: Bool,
+    internal module: Ptr
 }
 
 // What one exit out of a loop carries, kept until the loop is complete: the locals and
@@ -102,7 +106,9 @@ public fn pirProgramNew(module: ASTNode, overflowChecks: Bool) -> PirProgram {
         structByName: HashMap<String, Int>(),
         topNames: HashMap<String, Int>(),
         viewResults: HashMap<String, Int>(),
-        overflowChecks: overflowChecks
+        freshResults: HashMap<String, Int>(),
+        overflowChecks: overflowChecks,
+        module: node_to_ptr(module)
     }
     pirIndexModule(program, module)
 

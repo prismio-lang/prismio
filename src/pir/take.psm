@@ -1,0 +1,594 @@
+// Move at last use (docs/PIR_PLAN.md §7.3, A6): which field reads and match payload
+// binders can take their value out of the local they read instead of viewing it.
+//
+// A read takes when its base is a struct or enum this function owns -- not a parameter,
+// not a view, not `own ?w` -- the base and every view derived from it are unused after the
+// read on every path, no view derived from it was stored anywhere, and the value read goes
+// straight into something that owns it: the return, a `push`, a stored element, field or
+// global, or a struct literal. The read then consumes the base and answers the value and
+// the remainder, and the remainder is dropped right after.
+//
+// What PIR decides here is only that moving is meaningful. Whether anything releases the
+// moved value is still the analysis's answer (src/aif/walk.psm treats a taken read as no
+// view), and the release of the local stays where codegen puts it: the slot is null.
+
+import std.collections.vec
+import std.string
+import ast.nodes
+import ast.types
+import pir.types
+import pir.graph
+import pir.builder
+
+public struct PirTakes {
+    public taken: Int,
+    // Reads whose value goes into an owner from an owned base, and why each was left a
+    // view, as reason texts and counts.
+    public declined: Vec<String>,
+    public counts: Vec<Int>
+}
+
+public fn pirTakesNew() -> PirTakes {
+    return PirTakes { taken: 0, declined: [], counts: [] }
+}
+
+private fn pirDecline(takes: PirTakes, reason: String) {
+    for i in 0..<takes.declined.length {
+        if (takes.declined[i].equals(reason)) {
+            takes.counts[i] = takes.counts[i] + 1
+            return
+        }
+    }
+    takes.declined.push(reason.clone())
+    takes.counts.push(1)
+}
+
+// Who uses each value, as linked lists over the operand column.
+internal struct PirUsers {
+    internal first: Vec<Int>,
+    internal next: Vec<Int>,
+    // The node each operand belongs to.
+    internal node: Vec<Int>
+}
+
+private fn pirUsersOf(f: PirFunc) -> PirUsers {
+    let users = PirUsers {
+        first: Vec<Int>.filled(f.valDef.length, -1),
+        next: Vec<Int>.filled(f.operands.length, -1),
+        node: Vec<Int>.filled(f.operands.length, -1)
+    }
+    for node in 0..<f.op.length {
+        for i in 0..<f.opCount[node] {
+            let at = f.opStart[node] + i
+            let value = f.operands[at]
+            users.node[at] = node
+            users.next[at] = users.first[value]
+            users.first[value] = at
+        }
+    }
+    return users
+}
+
+// The pairs of values that name one object: a value and the port it enters, the merge or
+// loop result it leaves by, the cast or wrap of it, and the `inout` result that hands it
+// back. Both directions.
+private fn pirSameObject(f: PirFunc) -> Vec<Vec<Int>> {
+    let mut same: Vec<Vec<Int>> = []
+    repeat(f.valDef.length) {
+        let others: Vec<Int> = []
+        same.push(others)
+    }
+    for node in 0..<f.op.length {
+        let op = f.op[node]
+        if (op == PirOp.BRANCH) {
+            let branch = f.nodeTarget[node]
+            for r in (branch + 1)..<f.regKind.length {
+                if (f.regParent[r] != branch) { continue }
+                for i in 0..<f.regPortCount[r] { pirJoin(same, pirOperandAt(f, node, i + 1), pirPortAt(f, r, i)) }
+            }
+        } else if (op == PirOp.LOOP) {
+            for i in 0..<f.opCount[node] {
+                pirJoin(same, pirOperandAt(f, node, i), pirPortAt(f, f.nodeTarget[node], i))
+            }
+        } else if (op == PirOp.EXIT) {
+            let port = f.nodePort[node]
+            let target = f.nodeTarget[node]
+            for i in 0..<f.opCount[node] {
+                if (port == PirPort.MERGE as Int or port == PirPort.BREAK as Int) {
+                    let owner = f.regNode[target]
+                    if (i < f.resCount[owner]) { pirJoin(same, pirOperandAt(f, node, i), pirResultAt(f, owner, i)) }
+                } else if (port == PirPort.NEXT as Int and i < f.regPortCount[target]) {
+                    pirJoin(same, pirOperandAt(f, node, i), pirPortAt(f, target, i))
+                }
+            }
+        } else if (op == PirOp.CAST or op == PirOp.WRAP or op == PirOp.UNWRAP or op == PirOp.EXPECT) {
+            if (f.opCount[node] == 1 and f.resCount[node] == 1) {
+                pirJoin(same, pirOperandAt(f, node, 0), pirResultAt(f, node, 0))
+            }
+        } else if (op == PirOp.CALL) {
+            for i in 0..<f.resCount[node] {
+                let result = pirResultAt(f, node, i)
+                let from = f.valFrom[result]
+                if (from >= 0) { pirJoin(same, pirOperandAt(f, node, from), result) }
+            }
+        }
+    }
+    return same
+}
+
+private fn pirJoin(inout same: Vec<Vec<Int>>, a: Int, b: Int) {
+    if (a < 0 or b < 0) { return }
+    same[a].push(b)
+    same[b].push(a)
+}
+
+private fn pirWithin(f: PirFunc, reg: Int, ancestor: Int) -> Bool {
+    let mut r = reg
+    while (r >= 0) {
+        if (r == ancestor) { return true }
+        r = f.regParent[r]
+    }
+    return false
+}
+
+// Every spine node control can reach after `from`, before it comes round to `from` again.
+// A value `from` reads that is used by one of these is alive after it. A loop's `next` is
+// not followed: a value from outside the loop is carried by the exit that names it.
+private fn pirNodesAfter(f: PirFunc, from: Int) -> Vec<Bool> {
+    let mut after: Vec<Bool> = Vec<Bool>.filled(f.op.length, false)
+    let home = f.nodeRegion[from]
+    let mut starts: Vec<Int> = [f.nodeNext[from]]
+    let mut at = 0
+    while (at < starts.length) {
+        let mut work: Vec<Int> = [starts[at]]
+        at = at + 1
+        while (work.length > 0) {
+            let mut node = work[work.length - 1]
+            work.truncate(work.length - 1)
+            while (node >= 0 and after[node] == false) {
+                after[node] = true
+                if (f.op[node] == PirOp.BRANCH or f.op[node] == PirOp.LOOP) {
+                    let owned = f.nodeTarget[node]
+                    if (f.op[node] == PirOp.LOOP) {
+                        work.push(f.regHead[owned])
+                    } else {
+                        for r in (owned + 1)..<f.regKind.length {
+                            if (f.regParent[r] == owned) { work.push(f.regHead[r]) }
+                        }
+                    }
+                } else if (f.op[node] == PirOp.EXIT) {
+                    let port = f.nodePort[node]
+                    let target = f.nodeTarget[node]
+                    // An exit that leaves a region holding `from` continues after its owner.
+                    if ((port == PirPort.MERGE as Int or port == PirPort.BREAK as Int)
+                            and pirWithin(f, home, target)) {
+                        let next = f.nodeNext[f.regNode[target]]
+                        if (next >= 0 and after[next] == false) { starts.push(next) }
+                    }
+                }
+                node = f.nodeNext[node]
+            }
+        }
+    }
+    return after
+}
+
+// Every spine node that may have run before `read` on a path that reaches it: those
+// earlier on its region's spine and its ancestors', with all they hold. A sibling arm is
+// on no such path.
+private fn pirNodesBefore(f: PirFunc, read: Int) -> Vec<Bool> {
+    let mut before: Vec<Bool> = Vec<Bool>.filled(f.op.length, false)
+    let mut reg = f.nodeRegion[read]
+    let mut until = read
+    while (reg >= 0) {
+        let mut node = f.regHead[reg]
+        while (node >= 0 and node != until) {
+            pirMarkWithin(f, before, node)
+            node = f.nodeNext[node]
+        }
+        until = f.regNode[reg]
+        if (until < 0) { break }
+        reg = f.nodeRegion[until]
+    }
+    return before
+}
+
+private fn pirMarkWithin(f: PirFunc, inout marked: Vec<Bool>, first: Int) {
+    let mut work: Vec<Int> = [first]
+    while (work.length > 0) {
+        let node = work[work.length - 1]
+        work.truncate(work.length - 1)
+        marked[node] = true
+        if (f.op[node] != PirOp.BRANCH and f.op[node] != PirOp.LOOP) { continue }
+        let owned = f.nodeTarget[node]
+        for r in owned..<f.regKind.length {
+            if (r != owned and f.regParent[r] != owned) { continue }
+            let mut inner = f.regHead[r]
+            while (inner >= 0) {
+                work.push(inner)
+                inner = f.nodeNext[inner]
+            }
+        }
+    }
+}
+
+// Whether the operand is kept by what it is given to.
+private fn pirStores(f: PirFunc, node: Int, index: Int) -> Bool {
+    match (f.op[node]) {
+        PirOp.PUSH => { return index == 1 }
+        PirOp.ELEM_SET => { return index == 2 }
+        PirOp.FIELD_SET => { return index == 1 }
+        PirOp.GLOBAL_SET => { return true }
+        PirOp.STRUCT => { return true }
+        PirOp.ARRAY => { return true }
+        PirOp.EXIT => { return f.nodePort[node] == PirPort.RETURN as Int }
+        _ => { }
+    }
+    return false
+}
+
+// Where the value `read` answers goes, through casts and wraps: the operand that stores
+// it, or -1 when it has more than one use or goes anywhere else. `chain` collects the
+// values on the way.
+private fn pirOwningSink(f: PirFunc, users: PirUsers, read: Int, inout chain: Vec<Int>) -> Int {
+    let mut value = pirResultAt(f, read, 0)
+    loop {
+        chain.push(value)
+        let use = users.first[value]
+        if (use < 0 or users.next[use] >= 0) { return -1 }
+        let node = users.node[use]
+        if (f.nodeRegion[node] != f.nodeRegion[read]) { return -1 }
+        let index = use - f.opStart[node]
+        let op = f.op[node]
+        if ((op == PirOp.CAST or op == PirOp.WRAP) and f.opCount[node] == 1 and f.resCount[node] == 1) {
+            value = pirResultAt(f, node, 0)
+            continue
+        }
+        if (pirStores(f, node, index) == false) { return -1 }
+        if (op == PirOp.EXIT and (index != 0 or f.hasResult == false)) { return -1 }
+        return use
+    }
+}
+
+// A String stored into a container or a struct is copied there when what is stored is
+// borrowed, so taking it would change what the store does; only the return takes one.
+private fn pirTypeDecline(types: PirTypes, valueType: Int, returned: Bool) -> String {
+    let mut kind = types.kind[valueType]
+    let mut of = valueType
+    if (kind == PirTypeKind.OPTIONAL and types.child[valueType] >= 0) {
+        of = types.child[valueType]
+        kind = types.kind[of]
+    }
+    match (kind) {
+        PirTypeKind.VEC => { return "" }
+        PirTypeKind.STRUCT => { return "" }
+        PirTypeKind.ENUM => { return "" }
+        PirTypeKind.STRING => {
+            if (returned) { return "" }
+            return "a String stored, which is copied there"
+        }
+        _ => { }
+    }
+    return "a value of a kind not taken: ".concat(pirTypeText(types, valueType))
+}
+
+// Whether the field is storage inside its owner (a plain-data struct): there is then no
+// slot to null, and nothing the owner's release would be spared. Codegen decides the layout
+// from the same declaration rule (fieldTypeFor, src/ir/module.psm).
+private fn pirFieldDecline(program: PirProgram, structName: String, field: String) -> String {
+    let index = program.structByName.getOr(structName.clone(), -1)
+    if (index < 0) { return "a field of a type with no declaration" }
+    let decl = ptr_to_node(program.declNodes[index])
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let member = ptr_to_node(p)
+        if (member.kind == NodeKind.STRUCT_FIELD and member.s1.equals(field) and nodeExists(member.child1)) {
+            let annotation = ptr_to_node(member.child1)
+            if (typeAnnIsPodIn(ptr_to_node(program.module), annotation, 0, true)) {
+                return "a field stored inside its owner"
+            }
+            return "".clone()
+        }
+        p = member.next
+    }
+    return "a field with no declaration"
+}
+
+// Whether every object `value` may name was built here, or by a function that only
+// answers such objects, and was handed to no call: nothing else can be holding it, by a
+// pointer either. A reference kept behind a raw pointer is what the compiler's own tables
+// do, and neither modes nor views show it.
+private fn pirIsFresh(program: PirProgram, f: PirFunc, users: PirUsers, same: Vec<Vec<Int>>, value: Int) -> Bool {
+    let mut seen: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut work: Vec<Int> = [value]
+    seen[value] = true
+    let mut at = 0
+    let mut built = false
+    while (at < work.length) {
+        let member = work[at]
+        at = at + 1
+        if (f.valMode[member] != PirMode.OWN or f.valWitness[member]) { return false }
+        let def = f.valDef[member]
+        if (def < 0) {
+            if (f.valRegion[member] == 0) { return false }
+        } else {
+            let op = f.op[def]
+            if (op == PirOp.STRUCT) {
+                built = true
+            } else if (op == PirOp.CALL) {
+                // An `inout` argument handed back is the same object; anything else
+                // answered is a new one only from a function that says so.
+                if (f.valFrom[member] < 0) {
+                    if (program.freshResults.contains(f.nodeName[def].clone()) == false) { return false }
+                    built = true
+                }
+            } else if (op != PirOp.BRANCH and op != PirOp.LOOP and op != PirOp.CAST and op != PirOp.WRAP
+                    and op != PirOp.UNWRAP and op != PirOp.EXPECT and op != PirOp.TAKE) {
+                return false
+            }
+        }
+        let mut use = users.first[member]
+        while (use >= 0) {
+            if (f.op[users.node[use]] == PirOp.CALL) { return false }
+            use = users.next[use]
+        }
+        for i in 0..<same[member].length {
+            let other = same[member][i]
+            if (seen[other]) { continue }
+            seen[other] = true
+            work.push(other)
+        }
+    }
+    return built
+}
+
+// The least fixed point of "every result of this function is fresh" (pirIsFresh).
+public fn pirFindFresh(program: PirProgram) {
+    let mut changed = true
+    while (changed) {
+        changed = false
+        for i in 0..<program.funcs.length {
+            let f = program.funcs[i]
+            if (f.refusal.equals("") == false or f.hasResult == false) { continue }
+            if (program.types.moveOnly[f.returnTypes[0]] == false) { continue }
+            if (program.freshResults.contains(f.name.clone())) { continue }
+            if (pirReturnsFresh(program, f) == false) { continue }
+            program.freshResults.insert(f.name.clone(), 1)
+            changed = true
+        }
+    }
+}
+
+private fn pirReturnsFresh(program: PirProgram, f: PirFunc) -> Bool {
+    let users = pirUsersOf(f)
+    let same = pirSameObject(f)
+    let mut returned = false
+    for node in 0..<f.op.length {
+        if (f.op[node] != PirOp.EXIT or f.nodePort[node] != PirPort.RETURN as Int) { continue }
+        if (f.opCount[node] == 0) { continue }
+        if (pirIsFresh(program, f, users, same, pirOperandAt(f, node, 0)) == false) { return false }
+        returned = true
+    }
+    return returned
+}
+
+// The struct literals the base of `read` may have been built by in this function.
+public fn pirTakeOrigins(f: PirFunc, read: Int) -> Vec<Int> {
+    let same = pirSameObject(f)
+    let base = pirOperandAt(f, read, 0)
+    let mut seen: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut work: Vec<Int> = [base]
+    let mut literals: Vec<Int> = []
+    seen[base] = true
+    let mut at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        let def = f.valDef[value]
+        if (def >= 0 and f.op[def] == PirOp.STRUCT) { literals.push(def) }
+        for i in 0..<same[value].length {
+            let other = same[value][i]
+            if (seen[other]) { continue }
+            seen[other] = true
+            work.push(other)
+        }
+    }
+    return literals
+}
+
+// A literal on the stack may keep a field's temporary in a hidden binding, which a take
+// has to empty: the binding must be made before the read on every path to it, and the
+// field not assigned again, which makes another such binding.
+private fn pirSpillDecline(f: PirFunc, users: PirUsers, same: Vec<Vec<Int>>, read: Int) -> String {
+    for literal in pirTakeOrigins(f, read) {
+        if (pirWithin(f, f.nodeRegion[read], f.nodeRegion[literal]) == false) {
+            return "the base may be built inside a branch or loop the read is outside"
+        }
+    }
+    let mut seen: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut work: Vec<Int> = [pirOperandAt(f, read, 0)]
+    seen[work[0]] = true
+    let mut at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        let mut use = users.first[value]
+        while (use >= 0) {
+            let node = users.node[use]
+            if (f.op[node] == PirOp.FIELD_SET and use == f.opStart[node]
+                    and f.nodeName[node].equals(f.nodeName[read])) {
+                return "the field is assigned after the base is built"
+            }
+            use = users.next[use]
+        }
+        for i in 0..<same[value].length {
+            let other = same[value][i]
+            if (seen[other]) { continue }
+            seen[other] = true
+            work.push(other)
+        }
+    }
+    return "".clone()
+}
+
+// Why the base of `read` cannot be moved out of: "" when it can.
+private fn pirBaseDecline(program: PirProgram, f: PirFunc, users: PirUsers, same: Vec<Vec<Int>>, read: Int) -> String {
+    let base = pirOperandAt(f, read, 0)
+    // The objects the base names, and the views read out of them.
+    let mut alias: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut derived: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut work: Vec<Int> = [base]
+    alias[base] = true
+    let mut at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        if (f.valDef[value] < 0 and f.valRegion[value] == 0) { return "the base may be a parameter" }
+        if (f.valMode[value] != PirMode.OWN or f.valWitness[value]) { return "the base may be borrowed" }
+        for i in 0..<same[value].length {
+            let other = same[value][i]
+            if (alias[other]) { continue }
+            alias[other] = true
+            work.push(other)
+        }
+    }
+    at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        if (derived[value]) {
+            for i in 0..<same[value].length {
+                let other = same[value][i]
+                if (alias[other] or derived[other]) { continue }
+                derived[other] = true
+                work.push(other)
+            }
+        }
+        let mut use = users.first[value]
+        while (use >= 0) {
+            let node = users.node[use]
+            use = users.next[use]
+            if (node == read) { continue }
+            for i in 0..<f.resCount[node] {
+                let result = pirResultAt(f, node, i)
+                if (alias[result] or derived[result]) { continue }
+                if (f.valMode[result] == PirMode.VIEW or f.valWitness[result]) {
+                    derived[result] = true
+                    work.push(result)
+                }
+            }
+        }
+    }
+
+    let after = pirNodesAfter(f, read)
+    let before = pirNodesBefore(f, read)
+    for value in 0..<f.valDef.length {
+        if (alias[value] == false and derived[value] == false) { continue }
+        let mut use = users.first[value]
+        while (use >= 0) {
+            let node = users.node[use]
+            let index = use - f.opStart[node]
+            use = users.next[use]
+            if (node == read) { continue }
+            if (after[node]) {
+                if (derived[value]) { return "a view of the base is used later" }
+                return "the base is used later"
+            }
+            if (derived[value] and before[node] and pirStores(f, node, index)) {
+                return "a view of the base was stored"
+            }
+            if (f.op[node] == PirOp.CALL) { return "the base or a view of it is passed to a call" }
+        }
+    }
+    return "".clone()
+}
+
+private fn pirTryTake(program: PirProgram, f: PirFunc, users: PirUsers, same: Vec<Vec<Int>>, read: Int, takes: PirTakes) {
+    if (f.resCount[read] != 1 or f.nodeRegion[read] < 0) { return }
+    let value = pirResultAt(f, read, 0)
+    if (f.valMode[value] != PirMode.VIEW) { return }
+    let base = pirOperandAt(f, read, 0)
+    // A read out of a borrowed value is an ordinary view and not a candidate.
+    if (f.valMode[base] != PirMode.OWN or f.valWitness[base]) { return }
+    let baseKind = program.types.kind[f.valType[base]]
+    if (baseKind != PirTypeKind.STRUCT and baseKind != PirTypeKind.ENUM) { return }
+
+    let mut chain: Vec<Int> = []
+    let store = pirOwningSink(f, users, read, chain)
+    if (store < 0) { return }
+    let to = users.node[store]
+    if (f.library) {
+        pirDecline(takes, "a library function, whose code is not this build's")
+        return
+    }
+    // Every path from the read reaches the store, or the value would be moved and lost.
+    let mut node = f.nodeNext[read]
+    while (node >= 0 and node != to) {
+        if (f.op[node] == PirOp.BRANCH or f.op[node] == PirOp.LOOP or f.op[node] == PirOp.EXIT) {
+            pirDecline(takes, "the value is not stored on every path")
+            return
+        }
+        node = f.nodeNext[node]
+    }
+    if (node != to) {
+        pirDecline(takes, "the value is not stored on every path")
+        return
+    }
+    if (f.valRegion[base] != f.nodeRegion[read]) {
+        pirDecline(takes, "the base belongs to an enclosing region")
+        return
+    }
+    let returned = f.op[to] == PirOp.EXIT
+    let kindReason = pirTypeDecline(program.types, f.valType[value], returned)
+    if (kindReason.equals("") == false) {
+        pirDecline(takes, kindReason)
+        return
+    }
+    let fieldReason = pirFieldDecline(program, pirTypeText(program.types, f.valType[base]), f.nodeName[read])
+    if (fieldReason.equals("") == false) {
+        pirDecline(takes, fieldReason)
+        return
+    }
+    if (pirIsFresh(program, f, users, same, base) == false) {
+        pirDecline(takes, "the base may be held somewhere else (not built fresh, or passed to a call)")
+        return
+    }
+    let spillReason = pirSpillDecline(f, users, same, read)
+    if (spillReason.equals("") == false) {
+        pirDecline(takes, spillReason)
+        return
+    }
+    let reason = pirBaseDecline(program, f, users, same, read)
+    if (reason.equals("") == false) {
+        pirDecline(takes, reason)
+        return
+    }
+
+    f.op[read] = PirOp.TAKE
+    f.operandUse[f.opStart[read]] = PirUse.CONSUME
+    for i in 0..<chain.length {
+        f.valMode[chain[i]] = PirMode.OWN
+        f.operandUse[users.first[chain[i]]] = PirUse.CONSUME
+    }
+    let rest = pirResultAdd(f, read, f.valType[base], PirMode.OWN)
+    let drop = pirNodeNew(f, PirOp.DROP, "", ptr_to_node(f.nodeAst[read]))
+    pirOperand(f, drop, rest, PirUse.CONSUME)
+    pirInsertAfter(f, read, drop)
+    takes.taken = takes.taken + 1
+}
+
+// Rewrites every read of `f` that can take. `takes` counts them.
+public fn pirTakeAtLastUse(program: PirProgram, f: PirFunc, takes: PirTakes) {
+    if (f.refusal.equals("") == false) { return }
+    let mut reads: Vec<Int> = []
+    for node in 0..<f.op.length {
+        if (f.op[node] == PirOp.FIELD) { reads.push(node) }
+    }
+    if (reads.length == 0) { return }
+    let same = pirSameObject(f)
+    for read in reads {
+        // A take adds operands, so the lists are rebuilt for the next read.
+        let users = pirUsersOf(f)
+        pirTryTake(program, f, users, same, read, takes)
+    }
+}

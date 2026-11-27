@@ -335,7 +335,7 @@ private fn pirSiteFunc(m: PirMachine, site: Int) -> Int {
     return low
 }
 
-private fn pirSiteText(program: PirProgram, m: PirMachine, site: Int) -> String {
+internal fn pirSiteText(program: PirProgram, m: PirMachine, site: Int) -> String {
     let func = pirSiteFunc(m, site)
     let node = site - m.siteBase[func]
     let at = ptr_to_node(program.funcs[func].nodeAst[node])
@@ -358,8 +358,35 @@ private fn pirReportHazards(program: PirProgram, heap: PirHeap, m: PirMachine) {
     }
 }
 
+// What `--verify` prints at exit, from objects: those never ended, by where they were
+// made. The first sites met are listed.
+private fn pirReportLeaks(program: PirProgram, heap: PirHeap, m: PirMachine) {
+    let seen = HashMap<Int, Int>()
+    let mut sites: Vec<Int> = []
+    let mut counts: Vec<Int> = []
+    let mut live = 0
+    for i in 1..<heap.objects.length {
+        let site = heap.objects[i].site
+        if (heap.objects[i].state != PirObjectState.LIVE or site < 0) { continue }
+        live = live + 1
+        let at = seen.getOr(site, -1)
+        if (at >= 0) {
+            counts[at] = counts[at] + 1
+        } else {
+            seen.insert(site, sites.length)
+            sites.push(site)
+            counts.push(1)
+        }
+    }
+    eprintln("pir leaks: ".concat(live.toString(), " object(s) from ", sites.length.toString(), " site(s) never ended"))
+    for i in 0..<sites.length {
+        if (i == 20) { break }
+        eprintln("pir leak: ".concat(counts[i].toString(), " from ", pirSiteText(program, m, sites[i])))
+    }
+}
+
 // Runs `main`, answering the status the process should exit with.
-public fn pirInterpret(program: PirProgram, module: ASTNode, argv0: String) -> Int {
+public fn pirInterpret(program: PirProgram, module: ASTNode, argv0: String, leaks: Bool) -> Int {
     let shapes = pirShapesNew(module)
     pirShapesClassify(shapes, program.types)
     let heap = pirHeapNew()
@@ -394,5 +421,6 @@ public fn pirInterpret(program: PirProgram, module: ASTNode, argv0: String) -> I
         pirExecute(program, shapes, heap, tables, m, entry)
     }
     pirReportHazards(program, heap, m)
+    if (leaks) { pirReportLeaks(program, heap, m) }
     return m.status
 }

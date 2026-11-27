@@ -56,7 +56,8 @@ def check(program, args, scratch, index):
     binary = work / program.stem
     result = {"program": str(program), "kind": "", "detail": "", "hazards": []}
 
-    status, _, err, _ = run([args.compiler, "build", str(program), "-o", str(binary)], work,
+    status, _, err, _ = run([args.compiler, "build", str(program), "-o", str(binary),
+                             *args.build_flag], work,
                             args.build_timeout, env)
     if status != 0 or not binary.exists():
         result["kind"] = "not built"
@@ -75,7 +76,8 @@ def check(program, args, scratch, index):
     pir_dir = work / "pir"
     pir_dir.mkdir()
     pir_status, pir_out, pir_err, pir_seconds = run(
-        [args.compiler, "build", str(program), "-o", str(binary), "--pir-run"], pir_dir,
+        [args.compiler, "build", str(program), "-o", str(binary), "--pir-run", *args.build_flag],
+        pir_dir,
         args.timeout, env)
     result["pir"] = {"status": pir_status, "seconds": round(pir_seconds, 3)}
     for line in pir_err.decode("utf-8", "replace").splitlines():
@@ -159,6 +161,8 @@ def main():
     parser.add_argument("--build-timeout", type=float, default=120)
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     parser.add_argument("--json", type=Path, help="write every result here")
+    parser.add_argument("--build-flag", action="append", default=[],
+                        help="passed to both builds, e.g. --build-flag=--pir=plan")
     parser.add_argument("--keep", type=Path, help="keep both outputs of each mismatch under here")
     args = parser.parse_args()
     args.compiler = str(Path(args.compiler).resolve())

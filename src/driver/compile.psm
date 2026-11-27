@@ -27,6 +27,7 @@ import build.BUILD_VERSION
 from lexer import { scanner, token, identifier_security }
 from driver import { imports, workload, prune }
 import pir.run
+import pir.plan
 import common.native
 import common.diag_codes
 import common.library_emission
@@ -60,6 +61,8 @@ public struct CompileOptions {
     public pirCoverage: Bool,
     // `--pir-run`: interpret the program over PIR instead of emitting it.
     public pirRun: Bool,
+    // `--pir=plan`: PIR's moves at last use reach the analysis and the emitted program.
+    public pirPlan: Bool,
     runDirectory: String
 }
 
@@ -78,6 +81,7 @@ public fn compileOptions() -> CompileOptions {
         emitPir: "".clone(),
         pirCoverage: false,
         pirRun: false,
+        pirPlan: false,
         runDirectory: "".clone()
     }
 }
@@ -207,9 +211,15 @@ private fn markEntryModule(file: Int, module: String) {
 // Emits the post-sema AST as JSON. Sema has to have run: the dump carries each
 // node's resolved type, and without it the `ty` field would be empty on every
 // node.
-public fn dumpAstCommand(path: String) -> Int {
+public fn dumpAstCommand(path: String, plan: Bool) -> Int {
     let merged = analyzedModule(path, true)
     if (diag_error_count() > 0) {
+        return 1
+    }
+
+    pirPlanReset()
+    if (plan and pirMakePlan(merged, false, false) == false) {
+        diag_finish()
         return 1
     }
 
@@ -281,9 +291,16 @@ private fn checkedDetail() -> String {
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
 public fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
-               budget: Int, why: String, layout: Bool, manifest: Bool) -> Int {
+               budget: Int, why: String, layout: Bool, manifest: Bool, plan: Bool) -> Int {
     let merged = analyzedModule(path, true)
     if (diag_error_count() > 0) {
+        return 1
+    }
+
+    // What `build --pir=plan` analyses, so that this command describes it.
+    pirPlanReset()
+    if (plan and pirMakePlan(merged, false, false) == false) {
+        diag_finish()
         return 1
     }
 
@@ -403,6 +420,17 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
 
     pruneUnreachableLibrary(mergedAst)
 
+    // The stage-A plan (docs/PIR_PLAN.md §20) is made before the analysis, which reads
+    // it: a read that moves its value out is no view of what it was read from.
+    pirPlanReset()
+    if (options.pirPlan) {
+        diag_progress("planning moves at last use")
+        if (pirMakePlan(mergedAst, options.overflowChecks, options.pirCoverage) == false) {
+            diag_finish()
+            return 1
+        }
+    }
+
     // AIF, between sema and codegen. It reports nothing here and writes nothing
     // back to the AST; codegen queries it per allocation site through
     // aif_tier_at. `prismio aif` runs the same engine and prints the manifest.
@@ -482,13 +510,13 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     // After the analysis, whose answers its leak estimate is measured against.
     if (options.pirRun) {
         let status = pirRunInterpreted(mergedAst, path, options.emitPir, options.pirCoverage,
-            options.overflowChecks, outputFile)
+            options.overflowChecks, outputFile, options.pirPlan)
         diag_finish()
         return status
     }
     if (options.pirCoverage or options.emitPir.equals("") == false) {
         diag_progress("building PIR")
-        if (pirRun(mergedAst, path, options.emitPir, options.pirCoverage, options.overflowChecks) == false) {
+        if (pirRun(mergedAst, path, options.emitPir, options.pirCoverage, options.overflowChecks, options.pirPlan) == false) {
             diag_finish()
             return 1
         }
@@ -545,6 +573,14 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
 
     diag_progress("generating IR")
     generateModule(mergedAst)
+    // The analysis believed every planned move happened. One codegen never reached would
+    // leave the value released both by its taker and by the local it was read from.
+    if (options.pirPlan and pirPlanMissed() > 0) {
+        diag_error_code(DIAG_DRIVER_PIR_PLAN_UNEMITTED, "PIR planned ".concat(pirPlanMissed().toString(),
+            " move(s) codegen did not emit (a compiler bug)"))
+        diag_finish()
+        return 1
+    }
 
     // `-o x.ll` with -O<n>: the IR is the output, so it is optimised as it is
     // written. Otherwise the level is applied later, to the module with the

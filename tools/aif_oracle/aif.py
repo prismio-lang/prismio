@@ -702,6 +702,7 @@ class Engine:
         self.m = model
         self.ffi_default = ffi_default
         self.literal_strings = 0
+        self.takes = 0
         self.extern_alloc = 0
         self.opaque_returns = 0
         self.static_returns = 0
@@ -860,6 +861,13 @@ class Engine:
                 # provenance fix; without the matching oracle rule, returning
                 # `lexer.tokens` left the lexer stack-local here while the
                 # compiler correctly raised it to Caller.
+                # `--pir=plan`: a read PIR moves out of its object (marked
+                # `take` in the dump; the choice is PIR's and pir_verify's to
+                # check, not re-derived here) is no view of it, so E-VIEW does
+                # not raise the object. It reads through a location of its own,
+                # as src/aif/walk.psm's aifTaken does.
+                if e.get('take'):
+                    return self.taken(field, fn, scope)
                 if self.m.is_ref(ty):
                     return vs_view_of(field, container)
                 return field
@@ -1117,6 +1125,14 @@ class Engine:
             key = ('var', fn, '%s#%d' % (name, ordinal))
         self.var_scope[key] = scope
         self.env.append((fn, name, key))
+
+    def taken(self, field, fn, scope):
+        name = 'take#%d' % self.takes
+        self.takes += 1
+        self.note_var_scope(fn, name, scope)
+        key = self.var_key(fn, name)
+        self.constraints.append(('bind', key, field))
+        return self.ref(key)
 
     def env_enter(self):
         self.env_marks.append(len(self.env))

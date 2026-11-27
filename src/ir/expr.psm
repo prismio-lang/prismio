@@ -26,6 +26,7 @@ import aifcore.ownership
 import aifcore.structure
 import common.builtin_names
 import common.lang_items
+import pir.plan
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
 // answer. Previously both operands were generated unconditionally and combined
@@ -552,7 +553,8 @@ private fn irMatchBindsName(stmt: ASTNode, boundName: String) -> Bool {
         if (arm.kind == NodeKind.MATCH_ARM and nodeExists(arm.child1)) {
             let mut binder = ptr_to_node(arm.child1).child2
             while (nodeExists(binder)) {
-                if (ptr_to_node(binder).s1.equals(boundName)) { return true }
+                // A binder the plan moves out of the scrutinee is no view of it.
+                if (ptr_to_node(binder).s1.equals(boundName) and pirPlanIsTake(binder) == false) { return true }
                 binder = ptr_to_node(binder).next
             }
         }
@@ -3305,15 +3307,16 @@ private fn scalarFromInlineBits(storeType: String, bits: String) -> String {
 // answered per node where one allocation site backs many calls -- every
 // `concat` in a program is one site -- and then whether a call hands over
 // what it returns.
-internal fn spillOwnedFieldTemporary(init: ASTNode, value: String) {
+// The hidden binding's slot, or "" when the value needed none.
+internal fn spillOwnedFieldTemporary(init: ASTNode, value: String) -> String {
     let mut kind = 0 - 1
-    if (nodeGetType(init).kind == TypeKind.ARRAY) { return }
+    if (nodeGetType(init).kind == TypeKind.ARRAY) { return "" }
     if (aif_frees_at_scope_node(node_to_ptr(init)) == 1) {
         kind = dropKindOf(init)
     } else if (irArgumentIsOwnedTemporary(init)) {
         kind = irOwnedTemporaryKind(init)
     }
-    if (kind < 0) { return }
+    if (kind < 0) { return "" }
 
     let declType = getExprType(init)
     let store = storageType(declType)
@@ -3326,6 +3329,7 @@ internal fn spillOwnedFieldTemporary(init: ASTNode, value: String) {
     ir_alloca(store, slot)
     ir_store(store, value, slot)
     ir_mark_droppable(name, kind)
+    return slot.clone()
 }
 
 // `onFrame` is true for a literal AIF placed on the stack (T0): the one kind of
@@ -3383,7 +3387,12 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
             let init = ptr_to_node(field.child1)
             let fieldVal = storeAsDeclared(generateExpression(init), storageType(getExprType(init)),
                                            fieldStorageType(ir_get_struct_field_type(structName, field.s1)))
-            if (onFrame) { spillOwnedFieldTemporary(init, fieldVal) }
+            if (onFrame) {
+                let spill = spillOwnedFieldTemporary(init, fieldVal)
+                if (spill.equals("") == false) {
+                    pirPlanSpill(node_to_ptr(expr), field.s1, spill, storageType(getExprType(init)))
+                }
+            }
             let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
             // CYCLES 3. A cyclic edge is an edge the collector *traverses*, so it
             // has to be one the count knows about -- trial deletion subtracts
@@ -3681,6 +3690,19 @@ private fn irCallResultIsScalar(call: ASTNode) -> Bool {
     return key.equals("void") or scalarInlineBytes(key) > 0
 }
 
+// A move at last use (`--pir=plan`, pir.plan): the value just loaded leaves its owner, whose
+// release must find nothing in the slot. Every release a slot can name takes null.
+internal fn irEmitTake(node: Ptr, fieldType: String, slot: String, structName: String, field: String) {
+    let fieldIndex = ir_get_struct_field_index(structName, field)
+    ir_struct_store_ptr(fieldType, "null", slot, structName, fieldIndex)
+    // A local on the stack may own the field's value a second time, through the hidden
+    // binding its literal gave the temporary.
+    for spill in pirPlanSpillsOf(node, field) {
+        ir_store(pirPlanSpillType(spill), "null", pirPlanSpillSlot(spill))
+    }
+    pirPlanEmitTake(node)
+}
+
 private fn generateMemberAccess(expr: ASTNode) -> String {
     let objectNode = ptr_to_node(expr.child1)
     if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
@@ -3764,9 +3786,12 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
     // and are not built -- see KNOWN_ISSUES.md.
     // A String field is a value, not storage reached by GEP, so it loads
     // like a scalar even though its key names a struct.
+    let taken = pirPlanIsTake(node_to_ptr(expr))
     if (isValueStructKey(fieldType)) {
-        return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
-                                                   structName, fieldIndex))
+        let value = ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
+                                                        structName, fieldIndex))
+        if (taken) { irEmitTake(node_to_ptr(expr), fieldType, ir_get_temp_name(slot), structName, expr.s1) }
+        return value
     }
     // An array field is storage too: its address is the array, and `s.data[i]`
     // indexes the struct's own bytes.
@@ -3782,6 +3807,7 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
         loadedId = ir_struct_load_ptr(fieldType, ir_get_temp_name(slot), structName, fieldIndex)
     }
     let loaded = ir_get_temp_name(loadedId)
+    if (taken) { irEmitTake(node_to_ptr(expr), fieldType, ir_get_temp_name(slot), structName, expr.s1) }
     // A scalar is a copy, so once it is loaded nothing points into the struct
     // and the temporary is released here -- `Config.default().retries` leaked
     // the Config. A reference field is a view into it and stays as it was: the

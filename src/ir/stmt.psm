@@ -14,6 +14,7 @@ import aifcore.call_results
 import aifcore.dispositions
 import aifcore.extents
 import aifcore.ownership
+import pir.plan
 
 // The value an arm's tag comparison tests, as sema left it on the arm.
 private fn matchArmTagText(arm: ASTNode) -> String {
@@ -176,6 +177,9 @@ private fn generatePayloadBinders(arm: ASTNode, structName: String, scrutVal: St
         ir_set_var_type(name.s1, fieldType)
         ir_alloca(storageType(fieldType), ir_get_var_slot(name.s1))
         ir_store(storageType(fieldType), payloadVal, ir_get_var_slot(name.s1))
+        if (pirPlanIsTake(binder)) {
+            irEmitTake(binder, fieldType, ir_get_temp_name(slot), structName, fieldName)
+        }
 
 
         index = index + 1

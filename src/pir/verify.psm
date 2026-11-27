@@ -14,6 +14,7 @@ import pir.types
 import pir.graph
 import pir.builder
 import pir.verify_state
+import pir.verify_take
 
 public struct PirReport {
     public findings: Vec<String>,
@@ -472,4 +473,5 @@ private fn pirVerifyFunc(program: PirProgram, f: PirFunc, report: PirReport) {
     pirVerifyProvenance(program, f, report)
     pirVerifyState(f, report)
     pirCountConsumers(f, report, positions)
+    pirVerifyTakes(f, report)
 }

@@ -2,10 +2,10 @@
 // object's index; 0 is no object. Contents carry a version that every write advances, and
 // a view remembers the version it was pinned to, which is what the hazard report reads.
 //
-// An object records where it was made and a state. Nothing ends an object yet -- PIR has
-// no drops until P2 -- so every one stays `LIVE`. P2 sets the state at a drop, delegate or
-// leak node, reports an access to an object that is no longer `LIVE`, and lists those
-// still `LIVE` when the run ends as the leak list, grouped by `site`.
+// An object records where it was made and a state. A `drop` node ends it -- the only drops
+// built so far are of what a `take` leaves behind -- and a field of it read or written
+// afterwards stops the run, as does a read of the field the take moved out. Under
+// `--pir=plan` the objects still `LIVE` when the run ends are listed, grouped by `site`.
 
 import std.collections.vec
 import std.collections.map
@@ -32,7 +32,10 @@ public struct PirObject {
     // A container's version, and a struct field's: written is what advances them.
     public version: Int,
     public fieldVersions: Vec<Int>,
-    public capacity: Int
+    public capacity: Int,
+    // The field a `take` moved out, -1 for none, and the node that took or dropped it.
+    public taken: Int,
+    public endedAt: Int
 }
 
 // A pin is what a view was read from: an object's contents (`slot` -1), one of its fields,
@@ -86,7 +89,9 @@ public fn pirObjectNew(heap: PirHeap, kind: PirObjectKind, type: Int, site: Int)
         bytes: bytes,
         version: 0,
         fieldVersions: fieldVersions,
-        capacity: 0
+        capacity: 0,
+        taken: -1,
+        endedAt: -1
     })
     return handle as I64
 }

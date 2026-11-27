@@ -1,0 +1,205 @@
+// Move at last use (`--pir=plan`, docs/PIR_PLAN.md §20 stage P2): a field or a match
+// payload read out of a local that is dead afterwards is moved out of it. The local's
+// release finds a null slot, and whoever the value went to releases it.
+//
+// Every shape here leaked before. The suite builds this with `--pir=plan --verify`,
+// holds it at 0 leaked and 0 violations, and it asserts the values: a balanced ledger
+// cannot see a read of memory that was released early.
+
+import std.io
+import std.string
+
+struct Bag { label: String, items: Vec<String> }
+struct Row { id: Int, name: String }
+struct Table { title: String, rows: Vec<Row> }
+struct Leaf { name: String, tags: Vec<String> }
+struct Branch { leaf: Leaf, note: String }
+struct Maybe { leaf: Leaf?, note: String }
+struct Chain { name: String, next: Chain? }
+
+enum Holder { Full(Vec<String>), Named(String), Empty }
+
+fn fail(what: String) -> Int {
+    print("FAIL: ")
+    println(what)
+    return 1
+}
+
+fn long(tag: String, i: Int) -> String {
+    return tag.concat("-long-enough-to-allocate-", i.toString())
+}
+
+fn words(i: Int) -> Vec<String> {
+    let mut v: Vec<String> = []
+    v.push(long("word", i))
+    return v
+}
+
+// A field returned out of a struct built here (RESEARCH_BUILD_LIST.md §2.2).
+fn itemsOf(i: Int) -> Vec<String> {
+    let mut v: Vec<String> = []
+    v.push(long("element", i))
+    let bag = Bag { label: long("label", i), items: v }
+    return bag.items
+}
+
+// The same field, pushed into a Vec that outlives the struct.
+fn keepInto(i: Int, inout keep: Vec<Vec<String>>) {
+    let mut v: Vec<String> = []
+    v.push(long("kept", i))
+    let bag = Bag { label: long("label", i), items: v }
+    keep.push(bag.items)
+}
+
+// In a loop: each pass moves out of its own struct.
+fn keepEach(i: Int, inout keep: Vec<Vec<String>>) {
+    for k in 0..<3 {
+        let bag = Bag { label: long("loop", k), items: words(i + k) }
+        keep.push(bag.items)
+    }
+}
+
+// Taken on one path only; the other releases the whole struct.
+fn either(i: Int) -> Vec<String> {
+    let bag = Bag { label: long("either", i), items: words(i) }
+    if (i % 2 == 0) { return bag.items }
+    return words(i + 1000)
+}
+
+fn labelOf(i: Int) -> String {
+    let bag = Bag { label: long("label", i), items: words(i) }
+    return bag.label
+}
+
+// Through a binding of the read.
+fn boundLabel(i: Int) -> String {
+    let bag = Bag { label: long("bound", i), items: words(i) }
+    let label = bag.label
+    return label
+}
+
+// A literal moved out: the caller's release of it must do nothing.
+fn literalLabel(i: Int) -> String {
+    let bag = Bag { label: "a literal label, longer than twelve bytes", items: words(i) }
+    return bag.label
+}
+
+fn rowsOf(i: Int) -> Vec<Row> {
+    let mut rows: Vec<Row> = []
+    rows.push(Row { id: i, name: long("row", i) })
+    let table = Table { title: long("table", i), rows: rows }
+    return table.rows
+}
+
+// A boxed struct field, an optional one, and a self-referring one.
+fn leafOf(i: Int) -> Leaf {
+    let leaf = Leaf { name: long("leaf", i), tags: words(i) }
+    let branch = Branch { leaf: leaf, note: long("note", i) }
+    return branch.leaf
+}
+
+fn maybeLeaf(i: Int) -> Leaf? {
+    let mut leaf: Leaf? = none
+    if (i % 2 == 0) { leaf = Leaf { name: long("maybe", i), tags: words(i) } }
+    let held = Maybe { leaf: leaf, note: long("note", i) }
+    return held.leaf
+}
+
+fn tailOf(i: Int) -> Chain? {
+    let tail = Chain { name: long("tail", i), next: none }
+    let head = Chain { name: long("head", i), next: tail }
+    return head.next
+}
+
+fn holder(i: Int) -> Holder {
+    if (i % 3 == 0) { return Holder.Full(words(i)) }
+    if (i % 3 == 1) { return Holder.Named(long("named", i)) }
+    return Holder.Empty
+}
+
+// A payload moved out of a scrutinee bound to a name, and of a temporary.
+fn unpack(i: Int) -> Vec<String> {
+    let h = holder(i)
+    match (h) {
+        Holder.Full(v) => { return v }
+        Holder.Named(name) => { return words(i + 1) }
+        Holder.Empty => { return words(i + 2) }
+    }
+}
+
+fn nameOf(i: Int) -> String {
+    match (holder(i)) {
+        Holder.Full(v) => { return "full".concat("") }
+        Holder.Named(name) => { return name }
+        Holder.Empty => { return "empty".concat("") }
+    }
+}
+
+fn gather(i: Int, inout out: Vec<Vec<String>>) {
+    match (holder(i)) {
+        Holder.Full(v) => { out.push(v) }
+        Holder.Named(name) => { }
+        Holder.Empty => { }
+    }
+}
+
+fn check(got: String, want: String) -> Int {
+    if (got.equals(want)) { return 0 }
+    return fail(got.concat(" is not ", want))
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let mut keep: Vec<Vec<String>> = []
+    for i in 0..<20 {
+        let items = itemsOf(i)
+        bad = bad + check(items[0], long("element", i))
+        keepInto(i, keep)
+        bad = bad + check(keep[keep.length - 1][0], long("kept", i))
+        keepEach(i, keep)
+        bad = bad + check(keep[keep.length - 1][0], long("word", i + 2))
+        let one = either(i)
+        if (i % 2 == 0) {
+            bad = bad + check(one[0], long("word", i))
+        } else {
+            bad = bad + check(one[0], long("word", i + 1000))
+        }
+        bad = bad + check(labelOf(i), long("label", i))
+        bad = bad + check(boundLabel(i), long("bound", i))
+        bad = bad + check(literalLabel(i), "a literal label, longer than twelve bytes")
+        let rows = rowsOf(i)
+        bad = bad + check(rows[0].name, long("row", i))
+        let leaf = leafOf(i)
+        bad = bad + check(leaf.name, long("leaf", i))
+        bad = bad + check(leaf.tags[0], long("word", i))
+        let maybe = maybeLeaf(i)
+        if (maybe != none) {
+            let there = maybe.expect("a leaf")
+            bad = bad + check(there.tags[0], long("word", i))
+        } else if (i % 2 == 0) {
+            bad = bad + fail("no leaf")
+        }
+        let tail = tailOf(i)
+        if (tail == none) { bad = bad + fail("no tail") }
+        let payload = unpack(i)
+        if (i % 3 == 0) {
+            bad = bad + check(payload[0], long("word", i))
+        } else if (i % 3 == 1) {
+            bad = bad + check(payload[0], long("word", i + 1))
+        } else {
+            bad = bad + check(payload[0], long("word", i + 2))
+        }
+        if (i % 3 == 0) {
+            bad = bad + check(nameOf(i), "full")
+        } else if (i % 3 == 1) {
+            bad = bad + check(nameOf(i), long("named", i))
+        } else {
+            bad = bad + check(nameOf(i), "empty")
+        }
+        gather(i, keep)
+    }
+    if (keep.length != 87) { bad = bad + fail("kept ".concat(keep.length.toString())) }
+    if (bad != 0) { return 1 }
+    println("PASS: move at last use")
+    return 0
+}

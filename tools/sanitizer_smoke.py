@@ -14,7 +14,8 @@ so linking them would report nothing.
 
 Without paths it runs the fixtures below and `tests/test_runner.py`'s ownership probes,
 each of which must exit 0. A path (a file, or a directory of `.psm` files) adds programs
-that are only checked for a sanitizer report or a signal.
+that are only checked for a sanitizer report or a signal. `--build-flag` passes a flag to every
+build (`--build-flag=--pir=plan`).
 
 LeakSanitizer is asked for on Linux, and only of the fixtures that are held leak-free.
 """
@@ -62,7 +63,7 @@ def llvm_tool(name: str) -> str:
 
 
 def run_program(tools, work: Path, index: int, source: Path, must_succeed: bool,
-                detect_leaks: bool) -> str:
+                detect_leaks: bool, flags: list) -> str:
     """The failure report for one program, or "" when it passed."""
     scratch = work / f"{index:04d}-{source.stem}"
     scratch.mkdir()
@@ -83,7 +84,7 @@ def run_program(tools, work: Path, index: int, source: Path, must_succeed: bool,
         link.append("-lm")
 
     steps = (
-        [str(tools["compiler"]), "build", str(source), "-o", str(ir)],
+        [str(tools["compiler"]), "build", str(source), "-o", str(ir), *flags],
         [tools["opt"], "-S", "-passes=forceattrs", "-force-attribute=sanitize_address",
          str(ir), "-o", str(instrumented)],
         link,
@@ -116,6 +117,8 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--paths-only", action="store_true",
                         help="run only the given paths, not the built-in programs")
+    parser.add_argument("--build-flag", action="append", default=[],
+                        help="passed to every `build`, e.g. --build-flag=--pir=plan")
     parser.add_argument("paths", nargs="*", type=Path)
     args = parser.parse_args()
 
@@ -147,7 +150,8 @@ def main() -> int:
 
         def one(item):
             index, (source, must_succeed, detect_leaks) = item
-            return source, run_program(tools, work, index, source, must_succeed, detect_leaks)
+            return source, run_program(tools, work, index, source, must_succeed, detect_leaks,
+                                       args.build_flag)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
             for source, report in pool.map(one, enumerate(programs)):

@@ -147,7 +147,7 @@ private fn pirCheckNode(f: PirFunc, report: PirReport, node: Int, sim: PirSim) {
         if (f.accOut[access] >= 0) { pirSimSet(sim, f.accPlace[access], f.accOut[access]) }
     }
     let op = f.op[node]
-    if (f.accCount[node] == 0 and (op == PirOp.FIELD or op == PirOp.ELEM or op == PirOp.LENGTH or op == PirOp.GLOBAL
+    if (f.accCount[node] == 0 and (op == PirOp.FIELD or op == PirOp.TAKE or op == PirOp.ELEM or op == PirOp.LENGTH or op == PirOp.GLOBAL
             or op == PirOp.FIELD_SET or op == PirOp.ELEM_SET or op == PirOp.PUSH or op == PirOp.GLOBAL_SET)) {
         pirFinding(f, report, node, "a memory access names no state version")
     }

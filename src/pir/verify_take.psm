@@ -1,0 +1,189 @@
+// The take-site rule (docs/PIR_PLAN.md §8.3): after a `take`, on every path, nothing uses
+// the local it consumed or any view of it. The analysis, codegen and the AIF oracle all read
+// the take sites PIR chose, so this is the check on that choice, and it is written apart from
+// the pass that makes it (pir.take): that one asks which nodes lie after a read, this one runs
+// the function forward carrying whether the taken object is gone.
+
+import std.collections.vec
+import std.string
+import pir.graph
+import pir.verify
+
+// What one take is checked against: the values naming the object it consumed or a view of it,
+// and the values whose definition makes that object anew (a loop's next iteration).
+private struct PirGone {
+    take: Int,
+    member: Vec<Bool>,
+    made: Vec<Bool>,
+    reported: Vec<Bool>,
+    // The exits reached, and whether the object was gone at each.
+    exits: Vec<Int>,
+    states: Vec<Bool>
+}
+
+// For each value, the values it is another name for (`renames`), or a view into (`views`).
+private struct PirSources {
+    renames: Vec<Vec<Int>>,
+    views: Vec<Vec<Int>>
+}
+
+private fn pirEmptyLists(count: Int) -> Vec<Vec<Int>> {
+    let mut lists: Vec<Vec<Int>> = []
+    repeat(count) {
+        let list: Vec<Int> = []
+        lists.push(list)
+    }
+    return lists
+}
+
+private fn pirSourcesOf(f: PirFunc) -> PirSources {
+    let mut renames = pirEmptyLists(f.valDef.length)
+    let mut views = pirEmptyLists(f.valDef.length)
+    for node in 0..<f.op.length {
+        let op = f.op[node]
+        if (op == PirOp.BRANCH) {
+            let branch = f.nodeTarget[node]
+            for r in (branch + 1)..<f.regKind.length {
+                if (f.regParent[r] != branch) { continue }
+                for i in 0..<f.regPortCount[r] { renames[pirPortAt(f, r, i)].push(pirOperandAt(f, node, i + 1)) }
+            }
+        } else if (op == PirOp.LOOP) {
+            for i in 0..<f.opCount[node] { renames[pirPortAt(f, f.nodeTarget[node], i)].push(pirOperandAt(f, node, i)) }
+        } else if (op == PirOp.EXIT) {
+            let port = f.nodePort[node]
+            let target = f.nodeTarget[node]
+            for i in 0..<f.opCount[node] {
+                if (port == PirPort.NEXT as Int and i < f.regPortCount[target]) {
+                    renames[pirPortAt(f, target, i)].push(pirOperandAt(f, node, i))
+                } else if ((port == PirPort.MERGE as Int or port == PirPort.BREAK as Int)
+                        and i < f.resCount[f.regNode[target]]) {
+                    renames[pirResultAt(f, f.regNode[target], i)].push(pirOperandAt(f, node, i))
+                }
+            }
+        } else if (op == PirOp.CAST or op == PirOp.WRAP or op == PirOp.UNWRAP or op == PirOp.EXPECT) {
+            if (f.opCount[node] == 1 and f.resCount[node] == 1) {
+                renames[pirResultAt(f, node, 0)].push(pirOperandAt(f, node, 0))
+            }
+        } else if (op != PirOp.TAKE) {
+            for r in 0..<f.resCount[node] {
+                let result = pirResultAt(f, node, r)
+                if (f.valFrom[result] >= 0) {
+                    renames[result].push(pirOperandAt(f, node, f.valFrom[result]))
+                } else if (f.valMode[result] == PirMode.VIEW or f.valWitness[result]) {
+                    for i in 0..<f.opCount[node] { views[result].push(pirOperandAt(f, node, i)) }
+                }
+            }
+        }
+    }
+    return PirSources { renames: renames, views: views }
+}
+
+private fn pirAnyMember(member: Vec<Bool>, values: Vec<Int>) -> Bool {
+    for value in values {
+        if (member[value]) { return true }
+    }
+    return false
+}
+
+private fn pirGoneFor(f: PirFunc, sources: PirSources, take: Int) -> PirGone {
+    // Back through renamings to every name the consumed object had.
+    let mut member: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let base = pirOperandAt(f, take, 0)
+    let mut work: Vec<Int> = [base]
+    member[base] = true
+    let mut at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        for i in 0..<sources.renames[value].length {
+            let from = sources.renames[value][i]
+            if (member[from]) { continue }
+            member[from] = true
+            work.push(from)
+        }
+    }
+    // Those with nothing behind them are where the object comes into being.
+    let mut made: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    for value in 0..<f.valDef.length {
+        if (member[value] and sources.renames[value].length == 0) { made[value] = true }
+    }
+    // Forward: other names for it, and views read out of any of them.
+    let mut changed = true
+    while (changed) {
+        changed = false
+        for value in 0..<f.valDef.length {
+            if (member[value]) { continue }
+            if (pirAnyMember(member, sources.renames[value]) or pirAnyMember(member, sources.views[value])) {
+                member[value] = true
+                changed = true
+            }
+        }
+    }
+    return PirGone { take: take, member: member, made: made,
+        reported: Vec<Bool>.filled(f.op.length, false), exits: [], states: [] }
+}
+
+// Whether the object is gone when control leaves by `port` for `target`, over the exits
+// reached since `first`; false when none is reached.
+private fn pirGoneAt(f: PirFunc, gone: PirGone, first: Int, target: Int, port: Int) -> Bool {
+    for i in first..<gone.exits.length {
+        let exit = gone.exits[i]
+        if (f.nodeTarget[exit] == target and f.nodePort[exit] == port and gone.states[i]) { return true }
+    }
+    return false
+}
+
+private fn pirGoneRegion(f: PirFunc, report: PirReport, gone: PirGone, reg: Int, entered: Bool) {
+    let mut dead = entered
+    let mut node = f.regHead[reg]
+    while (node >= 0) {
+        if (dead and gone.reported[node] == false) {
+            for i in 0..<f.opCount[node] {
+                if (gone.member[pirOperandAt(f, node, i)] == false) { continue }
+                gone.reported[node] = true
+                pirFinding(f, report, node, "a value is used after the take at line ".concat(
+                    f.nodeLine[gone.take].toString(), " consumed it, or what it is a view of"))
+                break
+            }
+        }
+        let op = f.op[node]
+        if (op == PirOp.EXIT) {
+            gone.exits.push(node)
+            gone.states.push(dead)
+        } else if (op == PirOp.BRANCH) {
+            let branch = f.nodeTarget[node]
+            let first = gone.exits.length
+            for r in (branch + 1)..<f.regKind.length {
+                if (f.regParent[r] == branch) { pirGoneRegion(f, report, gone, r, dead) }
+            }
+            dead = pirGoneAt(f, gone, first, branch, PirPort.MERGE as Int)
+        } else if (op == PirOp.LOOP) {
+            let body = f.nodeTarget[node]
+            let first = gone.exits.length
+            pirGoneRegion(f, report, gone, body, dead)
+            // One more round when an iteration can hand a gone object to the next.
+            if (dead == false and pirGoneAt(f, gone, first, body, PirPort.NEXT as Int)) {
+                pirGoneRegion(f, report, gone, body, true)
+            }
+            dead = pirGoneAt(f, gone, first, body, PirPort.BREAK as Int)
+        } else {
+            if (node == gone.take) { dead = true }
+            for r in 0..<f.resCount[node] {
+                if (gone.made[pirResultAt(f, node, r)]) { dead = false }
+            }
+        }
+        node = f.nodeNext[node]
+    }
+}
+
+internal fn pirVerifyTakes(f: PirFunc, report: PirReport) {
+    let mut takes: Vec<Int> = []
+    for node in 0..<f.op.length {
+        if (f.op[node] == PirOp.TAKE) { takes.push(node) }
+    }
+    if (takes.length == 0) { return }
+    let sources = pirSourcesOf(f)
+    for take in takes {
+        pirGoneRegion(f, report, pirGoneFor(f, sources, take), 0, false)
+    }
+}

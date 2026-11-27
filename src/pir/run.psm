@@ -10,6 +10,7 @@ import std.fs
 import ast.nodes
 import common.diagnostics
 import common.diag_codes
+import common.source_files
 import pir.graph
 import pir.builder
 import pir.summaries
@@ -17,21 +18,74 @@ import pir.leaks
 import pir.verify
 import pir.dump
 import pir.interp
+import pir.take
+import pir.plan
 
 // `emit` is "" for no dump, "-" for standard output, and otherwise the file to write.
 // False when the dump could not be written or the verifier found something, with the
 // diagnostics already raised.
-public fn pirRun(module: ASTNode, sourcePath: String, emit: String, coverage: Bool, overflowChecks: Bool) -> Bool {
-    let program = pirBuildProgram(module, overflowChecks)
+public fn pirRun(module: ASTNode, sourcePath: String, emit: String, coverage: Bool, overflowChecks: Bool, plan: Bool) -> Bool {
+    let program = pirBuildProgram(module, overflowChecks, plan)
     return pirReportProgram(program, sourcePath, emit, coverage)
 }
 
 // `--pir-run`: what `pirRun` does and then, if the verifier accepted it, the program run by
 // the interpreter. Answers the status to exit with.
-public fn pirRunInterpreted(module: ASTNode, sourcePath: String, emit: String, coverage: Bool, overflowChecks: Bool, argv0: String) -> Int {
-    let program = pirBuildProgram(module, overflowChecks)
+public fn pirRunInterpreted(module: ASTNode, sourcePath: String, emit: String, coverage: Bool, overflowChecks: Bool, argv0: String, plan: Bool) -> Int {
+    let program = pirBuildProgram(module, overflowChecks, plan)
     if (pirReportProgram(program, sourcePath, emit, coverage) == false) { return 1 }
-    return pirInterpret(program, module, argv0)
+    return pirInterpret(program, module, argv0, plan)
+}
+
+// `--pir=plan`: builds PIR with its moves at last use, verifies it, and writes each move
+// into the plan (pir.plan) the analysis and codegen read. `report` prints how many were
+// made and why the other candidates were left views.
+public fn pirMakePlan(module: ASTNode, overflowChecks: Bool, report: Bool) -> Bool {
+    let program = pirBuildProgram(module, overflowChecks, true)
+    let verified = pirVerifyProgram(program)
+    pirRaiseFindings(verified)
+    if (verified.findings.length > 0) { return false }
+
+    let declined = pirTakesNew()
+    for i in 0..<program.funcs.length {
+        if (program.funcs[i].refusal.equals("") == false) { continue }
+        for node in 0..<program.funcs[i].op.length {
+            if (program.funcs[i].op[node] != PirOp.TAKE) { continue }
+            let read = program.funcs[i].nodeAst[node]
+            pirPlanTake(read)
+            for literal in pirTakeOrigins(program.funcs[i], node) {
+                pirPlanOrigin(read, program.funcs[i].nodeAst[literal])
+            }
+        }
+        // Over the rewritten function the pass finds nothing new to take, only what it declines.
+        if (report) { pirTakeAtLastUse(program, program.funcs[i], declined) }
+    }
+    if (report) {
+        println("pir plan: ".concat(pirPlanTakes().toString(), " read(s) take"))
+        for i in 0..<declined.declined.length {
+            println("    declined ".concat(declined.declined[i], "\t", declined.counts[i].toString()))
+        }
+        pirPrintTaken(program)
+    }
+    return true
+}
+
+private fn pirRaiseFindings(report: PirReport) {
+    for finding in report.findings {
+        diag_error_code(DIAG_DRIVER_PIR_REJECTED, "PIR verification failed (a compiler bug): ".concat(finding))
+    }
+}
+
+private fn pirPrintTaken(program: PirProgram) {
+    for i in 0..<program.funcs.length {
+        if (program.funcs[i].refusal.equals("") == false) { continue }
+        for node in 0..<program.funcs[i].op.length {
+            if (program.funcs[i].op[node] != PirOp.TAKE) { continue }
+            println("    take ".concat(diag_file_path(program.funcs[i].file), ":",
+                program.funcs[i].nodeLine[node].toString(), " ", program.funcs[i].name, " ",
+                program.funcs[i].nodeName[node]))
+        }
+    }
 }
 
 private fn pirReportProgram(program: PirProgram, sourcePath: String, emit: String, coverage: Bool) -> Bool {
@@ -51,9 +105,7 @@ private fn pirReportProgram(program: PirProgram, sourcePath: String, emit: Strin
         pirPrintLeaks(pirEstimateLeaks(program))
     }
 
-    for finding in report.findings {
-        diag_error_code(DIAG_DRIVER_PIR_REJECTED, "PIR verification failed (a compiler bug): ".concat(finding))
-    }
+    pirRaiseFindings(report)
     return written and report.findings.length == 0
 }
 

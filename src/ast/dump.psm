@@ -18,6 +18,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import common.source_files
+import pir.plan
 
 import std.string
 import std.io
@@ -176,6 +177,10 @@ private fn dumpNode(ptr: Ptr) {
     } else {
         jsonFieldStr("ty", "")
     }
+
+    // Under `--pir=plan`, a field read or payload binder that moves its value out
+    // (pir.plan): the oracle's one input from PIR. Absent everywhere else.
+    if (pirPlanIsTake(node_to_ptr(n))) { print(",\"take\":true") }
 
     print(",\"c1\":")
     dumpChain(n.child1)

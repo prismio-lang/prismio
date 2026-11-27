@@ -44,7 +44,12 @@ public enum PirOp {
     CALL,
     BRANCH,
     LOOP,
-    EXIT
+    EXIT,
+    // A6: a read that moves the value out of an owned local that is dead afterwards. It
+    // consumes the local and answers the value and the remainder, the local without it.
+    TAKE,
+    // A value ended here. The only drops built so far are of remainders.
+    DROP
 }
 
 public enum PirMode { COPY, OWN, VIEW }
@@ -331,6 +336,22 @@ public fn pirPure(f: PirFunc, op: PirOp, name: String, operands: Vec<Int>, value
     let value = pirResult(f, node, valueType, PirMode.COPY, "")
     f.cons.insert(key, value)
     return value
+}
+
+// One more result of a node that is already complete: its results are copied to the end
+// of the column so that they stay contiguous.
+public fn pirResultAdd(f: PirFunc, node: Int, valueType: Int, mode: PirMode) -> Int {
+    let start = f.results.length
+    for i in 0..<f.resCount[node] { f.results.push(f.results[f.resStart[node] + i]) }
+    f.resStart[node] = start
+    return pirResult(f, node, valueType, mode, "")
+}
+
+// `node` put on the spine right after `after`, which is not its region's exit.
+public fn pirInsertAfter(f: PirFunc, after: Int, node: Int) {
+    f.nodeRegion[node] = f.nodeRegion[after]
+    f.nodeNext[node] = f.nodeNext[after]
+    f.nodeNext[after] = node
 }
 
 public fn pirOperandAt(f: PirFunc, node: Int, index: Int) -> Int {

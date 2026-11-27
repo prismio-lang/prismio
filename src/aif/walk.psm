@@ -16,6 +16,7 @@ import aifcore.layout_search
 import aifcore.nominals
 import aifcore.sites
 import aifcore.structure
+import pir.plan
 
 // ---------------------------------------------------------------------------
 // Abstract evaluation
@@ -203,6 +204,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
                     // access rather than to every read of the field everywhere.
                     let container = aifSitesOf(e.child1, fnId, scope)
                     let field = aifVsOfKey(aif_key_field(aifBaseType(objTy), e.s1))
+                    if (pirPlanIsTake(nodePtr)) { return aifTaken(field, ty, fnId, scope) }
                     if (aifIsRef(ty)) { aif_vs_view_of(field, container) }
                     return field
                 }
@@ -789,6 +791,9 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
                 let v = aifSitesOf(n.child2, fnId, scope)
                 aif_var_note_scope(fnId, n.s1, scope)
                 aif_con_bind(aif_key_var(fnId, n.s1), v)
+                if (pirPlanIsTake(n.child2) and aifIsString(aifNodeType(init))) {
+                    aif_key_holds_moved_string(aif_key_var(fnId, n.s1))
+                }
                 aif_con_live_in(v, scope, fnId)
                 aifApplyAnnotations(n, v)
             } else {
@@ -980,6 +985,19 @@ private fn aifArgRootedInGlobal(call: ASTNode, index: Int, fnId: Int) -> Bool {
 // read out of a container shares the container's lifetime, while a scalar is a
 // copy that has none of it. `arm.s2` is empty on any arm sema did not stamp with
 // a variant, which is every arm of a match that is not over a payload enum.
+// A read the plan moves out of its object (pir.plan): the value read is the field's,
+// through a location of its own, and no view of the object -- the object's slot is nulled,
+// so nothing has to keep it alive for the value's sake.
+private fn aifIsString(ty: String) -> Bool {
+    return ty.equals("String") or ty.equals("String?")
+}
+
+private fn aifTaken(field: Int, ty: String, fnId: Int, scope: Int) -> Int {
+    let key = aif_key_take(fnId, scope, aifIsString(ty))
+    aif_con_bind(key, field)
+    return aifVsOfKey(key)
+}
+
 private fn aifBindPayloadArm(arm: ASTNode, scrutType: String, scrutinee: Int,
                              fnId: Int, scope: Int) {
     if (arm.s2.equals("")) { return }
@@ -992,9 +1010,17 @@ private fn aifBindPayloadArm(arm: ASTNode, scrutType: String, scrutinee: Int,
     while (nodeExists(binderPtr)) {
         let binder = ptr_to_node(binderPtr)
         let field = aifVsOfKey(aif_key_field(scrutType, enumPayloadField(arm.s2, index)))
-        if (aifIsRef(aifNodeType(binder))) { aif_vs_view_of(field, scrutinee) }
+        let mut bound = field
+        if (pirPlanIsTake(binderPtr)) {
+            bound = aifTaken(field, aifNodeType(binder), fnId, scope)
+        } else if (aifIsRef(aifNodeType(binder))) {
+            aif_vs_view_of(field, scrutinee)
+        }
         aif_var_note_scope(fnId, binder.s1, scope)
-        aif_con_bind(aif_key_var(fnId, binder.s1), field)
+        aif_con_bind(aif_key_var(fnId, binder.s1), bound)
+        if (pirPlanIsTake(binderPtr) and aifIsString(aifNodeType(binder))) {
+            aif_key_holds_moved_string(aif_key_var(fnId, binder.s1))
+        }
         index = index + 1
         binderPtr = binder.next
     }

@@ -60,6 +60,12 @@ private let mut elemFull: Vec<Int>
 
 private let mut keysOpened = false
 
+// The keys that hold what a taken read moved out (pir.plan); the keys, those and the
+// bindings of them, that hold a String so moved; and how many reads were taken.
+internal let mut takeKeys = -1
+internal let mut stringTakeKeys = -1
+private let mut takeCount = 0
+
 // A zero-filled global `Vec` or `HashMap` is not an empty one.
 internal fn keysOpen() {
     if (keysOpened) { return }
@@ -78,6 +84,9 @@ internal fn keysOpen() {
     elemBase = []
     elemFull = []
     paramConsuming = bitsNew()
+    takeKeys = bitsNew()
+    stringTakeKeys = bitsNew()
+    takeCount = 0
 }
 
 // Interned names stay across a reset. Nothing outside this module holds an id across one.
@@ -196,6 +205,27 @@ public fn aif_var_scope(fnId: Int, name: String) -> Int {
     let key = aif_key_var(fnId, name)
     if (key < varScope.length) { return varScope[key] }
     return -1
+}
+
+// A taken read's own location, bound to what it read: the value leaves the field there,
+// so a holder question asked of where the value goes stops at it (callFnResultHeld). A
+// spelling no source name can have.
+public fn aif_key_take(fnId: Int, scope: Int, isString: Bool) -> Int {
+    keysOpen()
+    let name = "take#".concat(takeCount.toString())
+    takeCount = takeCount + 1
+    aif_var_note_scope(fnId, name, scope)
+    let key = aif_key_var(fnId, name)
+    bitsSet(takeKeys, key)
+    if (isString) { bitsSet(stringTakeKeys, key) }
+    return key
+}
+
+// A binding a String moved out of a field was bound to: returning the binding returns
+// that value (callFnResultHeld's question, and retPartialBuild's).
+public fn aif_key_holds_moved_string(key: Int) {
+    keysOpen()
+    bitsSet(stringTakeKeys, key)
 }
 
 public fn aif_key_field(type: String, fld: String) -> Int {

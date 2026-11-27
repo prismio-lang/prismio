@@ -85,6 +85,8 @@ private fn pirOpText(op: PirOp) -> String {
         PirOp.BRANCH => { return "branch" }
         PirOp.LOOP => { return "loop" }
         PirOp.EXIT => { return "exit" }
+        PirOp.TAKE => { return "take" }
+        PirOp.DROP => { return "drop" }
     }
 }
 

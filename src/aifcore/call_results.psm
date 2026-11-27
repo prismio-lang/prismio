@@ -268,6 +268,9 @@ private fn retPartialBuild() {
                 and vsUntracked[conB[i]] != 0 and vsHazard[conB[i]] == 0 and vsViews[conB[i]].length == 0) {
             continue
         }
+        // A String moved out of a field (pir.plan) may be a literal the field held: its pair is tagged borrowed too, and
+        // the caller's release of it is a no-op. Only a value no release can recognise makes the return partial.
+        if (vsIsTamedStringTake(conB[i])) { continue }
         // Some sites is not all of them. `return v` for a payload binder resolves to every site stored into that payload field
         // anywhere, while the Option in hand holds a literal. `keyMayReturnUntracked` follows literals through stores, binds and
         // arguments; asking it of the return is the question "no site at all" was standing in for.
@@ -277,6 +280,18 @@ private fn retPartialBuild() {
         }
         retPartial[f] = 1
     }
+}
+
+// Whether every location `vs` reads is a String moved out of a field that holds nothing but owned Strings and literals.
+private fn vsIsTamedStringTake(vs: Int) -> Bool {
+    if (vs < 0 or vs >= vsCount or vsHazard[vs] != 0 or vsViews[vs].length != 0) { return false }
+    if (vsItems[vs].length == 0) { return false }
+    for i in 0..<vsItems[vs].length {
+        let item = vsItems[vs][i]
+        if (item % 2 == 0) { return false }
+        if (bitsTest(stringTakeKeys, item / 2) == false or keyMayBeUntracked(item / 2)) { return false }
+    }
+    return true
 }
 
 // 1 when some `return` in `f` yields a value with no site behind it, so the caller must not take ownership of what `f` hands back.
@@ -603,6 +618,10 @@ private fn flowBuild() {
     }
     while (work.length > 0) {
         let k = work.pop() ?? 0
+        // Not back through a move out of a field (pir.plan): where the value goes after it was taken is no
+        // second holder of what was stored there, since taking empties the slot -- and the hidden binding a
+        // frame literal gave it (irEmitTake).
+        if (bitsTest(takeKeys, k)) { continue }
         for i in 0..<flowPred[k].length {
             let p = flowPred[k][i]
             if (flowReaches[p] != 0) { continue }
@@ -612,6 +631,20 @@ private fn flowBuild() {
     }
 
     paramReturnsBuild()
+}
+
+// Whether `k` is a field the values in `cone` leave only by being moved out of it (pir.plan): the object they were
+// read from is nulled, so the field holds them no longer. What else flows into the field is still asked about.
+private fn fieldIsOnlyTaken(k: Int, cone: Int) -> Bool {
+    if (keyKind[k] != AIF_KEY_FIELD) { return false }
+    let mut taken = false
+    for i in 0..<flowSucc[k].length {
+        let t = flowSucc[k][i]
+        if (keyMark[t] != cone) { continue }
+        if (bitsTest(takeKeys, t) == false) { return false }
+        taken = true
+    }
+    return taken
 }
 
 // Whether anything `f` returns may also be held by a field or a container by the time it returns: read out of one, or stored into one and
@@ -651,7 +684,7 @@ private fn callFnResultHeld(f: Int) -> Bool {
     while (m < members.length and held == false) {
         let k = members[m]
         m = m + 1
-        if (flowHolder[k] != 0) {
+        if (flowHolder[k] != 0 and fieldIsOnlyTaken(k, cone) == false) {
             held = true
             break
         }
@@ -659,6 +692,8 @@ private fn callFnResultHeld(f: Int) -> Bool {
         for i in 0..<flowSucc[k].length {
             let t = flowSucc[k][i]
             if (keyMark[t] == cone or keyIsRet(t)) { continue }
+            // A move out of a field is not a second holder of what came back.
+            if (bitsTest(takeKeys, t)) { continue }
             if (flowReaches[t] != 0) {
                 held = true
                 break

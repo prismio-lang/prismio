@@ -1,0 +1,103 @@
+// The stage-A plan (docs/PIR_PLAN.md §20): what PIR decided about one AST node, for the
+// walk, codegen and the AST dump to read. Empty unless `--pir=plan` ran the pre-pass, and
+// then every answer below is "no" everywhere it was not asked for.
+//
+// A taken read is a field read, or a match payload binder, that moves the value out of a
+// local that is dead afterwards (A6): the slot is loaded and nulled, the reader owns the
+// value, and the local's release finds nothing there.
+
+import std.collections.map
+import std.collections.vec
+import std.string
+import std.sys
+import ast.nodes
+
+private let mut pirTaken: HashMap<U64, Int>
+private let mut pirTakenCount = 0
+// Which of them codegen emitted: a planned take it never reached would leave the analysis
+// believing a value moved that the program still releases twice.
+private let mut pirEmitted: HashMap<U64, Int>
+private let mut pirEmittedCount = 0
+// For each take, the struct literals its local may have been built by.
+private let mut pirOriginRead: Vec<U64>
+private let mut pirOriginLiteral: Vec<U64>
+// The hidden bindings codegen gave a frame literal's temporaries (spillOwnedFieldTemporary):
+// each holds the value itself and releases it, so a take must empty it too.
+private let mut pirSpillLiteral: Vec<U64>
+private let mut pirSpillField: Vec<String>
+private let mut pirSpillSlot: Vec<String>
+private let mut pirSpillType: Vec<String>
+
+public fn pirPlanReset() {
+    pirTaken = HashMap<U64, Int>()
+    pirTakenCount = 0
+    pirEmitted = HashMap<U64, Int>()
+    pirEmittedCount = 0
+    pirOriginRead = []
+    pirOriginLiteral = []
+    pirSpillLiteral = []
+    pirSpillField = []
+    pirSpillSlot = []
+    pirSpillType = []
+}
+
+public fn pirPlanTake(node: Ptr) {
+    if (pirTakenCount == 0) { pirTaken = HashMap<U64, Int>() }
+    let key = addressOf(node) as U64
+    if (pirTaken.contains(key)) { return }
+    pirTaken.insert(key, 1)
+    pirTakenCount = pirTakenCount + 1
+}
+
+// Whether the read at `node` moves its value out.
+public fn pirPlanIsTake(node: Ptr) -> Bool {
+    if (pirTakenCount == 0) { return false }
+    return pirTaken.contains(addressOf(node) as U64)
+}
+
+public fn pirPlanOrigin(read: Ptr, literal: Ptr) {
+    pirOriginRead.push(addressOf(read) as U64)
+    pirOriginLiteral.push(addressOf(literal) as U64)
+}
+
+public fn pirPlanSpill(literal: Ptr, field: String, slot: String, storeType: String) {
+    if (pirTakenCount == 0) { return }
+    pirSpillLiteral.push(addressOf(literal) as U64)
+    pirSpillField.push(field.clone())
+    pirSpillSlot.push(slot.clone())
+    pirSpillType.push(storeType.clone())
+}
+
+// The hidden bindings a take of `field` at `read` must empty, as indices to ask
+// pirPlanSpillSlot and pirPlanSpillType about.
+public fn pirPlanSpillsOf(read: Ptr, field: String) -> Vec<Int> {
+    let mut found: Vec<Int> = []
+    let key = addressOf(read) as U64
+    for i in 0..<pirOriginRead.length {
+        if (pirOriginRead[i] != key) { continue }
+        for j in 0..<pirSpillLiteral.length {
+            if (pirSpillLiteral[j] == pirOriginLiteral[i] and pirSpillField[j].equals(field)) { found.push(j) }
+        }
+    }
+    return found
+}
+
+public fn pirPlanSpillSlot(index: Int) -> String { return pirSpillSlot[index].clone() }
+
+public fn pirPlanSpillType(index: Int) -> String { return pirSpillType[index].clone() }
+
+public fn pirPlanEmitTake(node: Ptr) {
+    let key = addressOf(node) as U64
+    if (pirEmitted.contains(key)) { return }
+    pirEmitted.insert(key, 1)
+    pirEmittedCount = pirEmittedCount + 1
+}
+
+// How many planned takes codegen never emitted.
+public fn pirPlanMissed() -> Int {
+    return pirTakenCount - pirEmittedCount
+}
+
+public fn pirPlanTakes() -> Int {
+    return pirTakenCount
+}

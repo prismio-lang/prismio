@@ -304,6 +304,20 @@ private fn pirElement(heap: PirHeap, m: PirMachine, handle: I64, index: I64, ino
     return true
 }
 
+// Whether `object`, or its field `field` (-1 for the object itself), has ended; the run
+// stops there, since the compiled program would read released or nulled memory.
+private fn pirEnded(program: PirProgram, heap: PirHeap, m: PirMachine, f: PirFunc, node: Int, object: Int, field: Int) -> Bool {
+    let mut what = "a dropped value is used"
+    if (heap.objects[object].state == PirObjectState.LIVE) {
+        if (field < 0 or heap.objects[object].taken != field) { return false }
+        what = "a field that was moved out is read"
+    }
+    let at = ptr_to_node(f.nodeAst[node])
+    pirFail(m, 126, "pir violation: ".concat(what, " at ", diag_file_path(at.file), ":", at.line.toString(),
+        " (ended at ", pirSiteText(program, m, heap.objects[object].endedAt), ")"))
+    return true
+}
+
 private fn pirCheckOperand(heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int, index: Int, site: Int) {
     pirPinCheck(heap, m.pins[base + pirOperandAt(f, node, index)], site)
 }
@@ -384,6 +398,7 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
                 pirBroken(m, f, node, "field read of no object")
                 return
             }
+            if (pirEnded(program, heap, m, f, node, object, detail)) { return }
             let value = heap.objects[object].slots[detail]
             let result = pirResultAt(f, node, 0)
             let parent = m.pins[base + pirOperandAt(f, node, 0)]
@@ -401,6 +416,31 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
             let parent = m.pins[base + pirOperandAt(f, node, 0)]
             let pin = pirReadPin(shapes, program, heap, code, step, f, result, found[0], -1, parent, site)
             pirSet(m, f, base, node, value, pin)
+        }
+        PirOp.TAKE => {
+            pirCheckOperand(heap, m, f, base, node, 0, site)
+            let object = pirOperandWord(m, f, base, node, 0) as Int
+            if (object == 0 or detail >= heap.objects[object].slots.length) {
+                pirBroken(m, f, node, "take from no object")
+                return
+            }
+            if (pirEnded(program, heap, m, f, node, object, detail)) { return }
+            // The slot is nulled, as the compiled take nulls it; the remainder is the object.
+            let value = heap.objects[object].slots[detail]
+            heap.objects[object].slots[detail] = 0 as I64
+            heap.objects[object].taken = detail
+            heap.objects[object].endedAt = site
+            pirBumpField(heap, object, detail)
+            pirSet(m, f, base, node, value, 0)
+            let rest = pirResultAt(f, node, 1)
+            m.regs[base + rest] = object as I64
+            m.pins[base + rest] = 0
+        }
+        PirOp.DROP => {
+            let object = pirOperandWord(m, f, base, node, 0) as Int
+            if (pirEnded(program, heap, m, f, node, object, -1)) { return }
+            heap.objects[object].state = PirObjectState.DROPPED
+            heap.objects[object].endedAt = site
         }
         PirOp.LENGTH => {
             pirCheckOperand(heap, m, f, base, node, 0, site)
@@ -421,6 +461,7 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
                 pirBroken(m, f, node, "field write of no object")
                 return
             }
+            if (pirEnded(program, heap, m, f, node, object, -1)) { return }
             let type = f.valType[pirOperandAt(f, node, 1)]
             let stored = pirStored(program, shapes, heap, type, pirOperandWord(m, f, base, node, 1), site)
             let displaced = heap.objects[object].slots[detail]
