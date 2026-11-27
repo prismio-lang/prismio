@@ -1,0 +1,120 @@
+// What `--emit-pir` and `--pir-coverage` ask for: build PIR for a checked module, verify
+// it, and report. Nothing here runs without one of the two flags, and nothing it does
+// reaches the AST, the analysis or the emitted program.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import std.io
+import std.fs
+import ast.nodes
+import common.diagnostics
+import common.diag_codes
+import pir.graph
+import pir.builder
+import pir.verify
+import pir.dump
+
+// `emit` is "" for no dump, "-" for standard output, and otherwise the file to write.
+// False when the dump could not be written or the verifier found something, with the
+// diagnostics already raised.
+public fn pirRun(module: ASTNode, sourcePath: String, emit: String, coverage: Bool) -> Bool {
+    let program = pirBuildProgram(module)
+    let report = pirVerifyProgram(program)
+
+    let mut written = true
+    if (emit.equals("-")) {
+        print(pirDumpProgram(program))
+    } else if (emit.equals("") == false) {
+        written = writeFile(emit, pirDumpProgram(program))
+        if (written == false) {
+            diag_error_code(DIAG_DRIVER_PIR_UNWRITABLE, "cannot write PIR to ".concat(diagQuote(emit)))
+        }
+    }
+    if (coverage) { pirPrintCoverage(program, report, sourcePath) }
+
+    for finding in report.findings {
+        diag_error_code(DIAG_DRIVER_PIR_REJECTED, "PIR verification failed (a compiler bug): ".concat(finding))
+    }
+    return written and report.findings.length == 0
+}
+
+private fn pirRatio(covered: Int, total: Int) -> String {
+    return covered.toString().concat("/", total.toString())
+}
+
+private fn pirPrintCoverage(program: PirProgram, report: PirReport, sourcePath: String) {
+    let mut ownCovered = 0
+    let mut libraryCovered = 0
+    let mut nodes = 0
+    let mut values = 0
+    for i in 0..<program.funcs.length {
+        if (program.funcs[i].library) {
+            libraryCovered = libraryCovered + 1
+        } else {
+            ownCovered = ownCovered + 1
+        }
+        nodes = nodes + program.funcs[i].op.length
+        values = values + program.funcs[i].valDef.length
+    }
+    let mut ownRefused = 0
+    for library in program.refusedLibrary {
+        if (library == false) { ownRefused = ownRefused + 1 }
+    }
+    let libraryRefused = program.refusedLibrary.length - ownRefused
+    let covered = ownCovered + libraryCovered
+    let total = covered + program.refusedName.length
+
+    println("pir coverage: ".concat(sourcePath))
+    println("  functions ".concat(pirRatio(covered, total), " covered (program ",
+        pirRatio(ownCovered, ownCovered + ownRefused), ", library ",
+        pirRatio(libraryCovered, libraryCovered + libraryRefused), ")"))
+    println("  nodes ".concat(nodes.toString(), ", values ", values.toString(),
+        ", types ", program.types.kind.length.toString()))
+    println("  verifier findings ".concat(report.findings.length.toString()))
+    println("  A1 (reported, not enforced): owned values ".concat(report.owned.toString(),
+        ", no consumer ", report.unconsumed.toString(),
+        ", one ", report.consumedOnce.toString(),
+        ", more ", report.consumedMore.toString(),
+        "; read after consume ", report.readAfterConsume.toString()))
+    pirPrintRefusals(program)
+}
+
+// The refusal reasons, most frequent first and then by name, each with the first
+// function that met it.
+private fn pirPrintRefusals(program: PirProgram) {
+    let mut reasons: Vec<String> = []
+    let mut counts: Vec<Int> = []
+    let mut own: Vec<Int> = []
+    let mut first: Vec<Int> = []
+    let seen = HashMap<String, Int>()
+    for i in 0..<program.refusedReason.length {
+        let mut at = seen.getOr(program.refusedReason[i].clone(), -1)
+        if (at < 0) {
+            at = reasons.length
+            seen.insert(program.refusedReason[i].clone(), at)
+            reasons.push(program.refusedReason[i].clone())
+            counts.push(0)
+            own.push(0)
+            first.push(i)
+        }
+        counts[at] = counts[at] + 1
+        if (program.refusedLibrary[i] == false) { own[at] = own[at] + 1 }
+    }
+    if (reasons.length == 0) { return }
+    println("  refused (reason, functions, of which program; first met in):")
+    let mut printed: Vec<Bool> = Vec<Bool>.filled(reasons.length, false)
+    repeat(reasons.length) {
+        let mut best = -1
+        for i in 0..<reasons.length {
+            if (printed[i]) { continue }
+            if (best < 0 or counts[i] > counts[best]
+                    or (counts[i] == counts[best] and reasons[i].compare(reasons[best]) < 0)) {
+                best = i
+            }
+        }
+        printed[best] = true
+        println("    ".concat(reasons[best], "\t", counts[best].toString(), "\t", own[best].toString(),
+            "\t", program.refusedName[first[best]]))
+    }
+}

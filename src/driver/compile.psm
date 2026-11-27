@@ -26,6 +26,7 @@ import index.command
 import build.BUILD_VERSION
 from lexer import { scanner, token, identifier_security }
 from driver import { imports, workload, prune }
+import pir.run
 import common.native
 import common.diag_codes
 import common.library_emission
@@ -53,6 +54,10 @@ public struct CompileOptions {
     public installedRuntime: Bool,
     // No result line: the caller reports what the compile was for (a PLIB section).
     public quiet: Bool,
+    // `--emit-pir`: "" for none, "-" for standard output, otherwise the file.
+    public emitPir: String,
+    // `--pir-coverage`: report how much of the program PIR can build.
+    public pirCoverage: Bool,
     runDirectory: String
 }
 
@@ -68,6 +73,8 @@ public fn compileOptions() -> CompileOptions {
         strictFloat: false,
         installedRuntime: true,
         quiet: false,
+        emitPir: "".clone(),
+        pirCoverage: false,
         runDirectory: "".clone()
     }
 }
@@ -392,6 +399,15 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     }
 
     pruneUnreachableLibrary(mergedAst)
+
+    // PIR (docs/PIR_PLAN.md) runs only when it was asked for, and only reads the tree.
+    if (options.pirCoverage or options.emitPir.equals("") == false) {
+        diag_progress("building PIR")
+        if (pirRun(mergedAst, path, options.emitPir, options.pirCoverage) == false) {
+            diag_finish()
+            return 1
+        }
+    }
 
     // AIF, between sema and codegen. It reports nothing here and writes nothing
     // back to the AST; codegen queries it per allocation site through

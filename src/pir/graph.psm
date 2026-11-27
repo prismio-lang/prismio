@@ -1,0 +1,237 @@
+// PIR's node set (docs/PIR_PLAN.md §3-§7, §16.1): one function as flat columns indexed
+// by Int ids -- nodes, values, regions -- and the only code that appends to them.
+//
+// Ids are handed out in builder order, which is source order. Effects are on a region's
+// spine, a linked list so that a later pass can insert a drop between two entries; pure
+// nodes have no region and are hash-consed per function.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+
+public enum PirOp {
+    CONST,
+    ENUM_CONST,
+    UNARY,
+    BINARY,
+    CAST,
+    // A value passed into a slot of its optional type: `T` as `T?`.
+    WRAP,
+    FIELD,
+    CALL,
+    BRANCH,
+    EXIT
+}
+
+public enum PirMode { COPY, OWN, VIEW }
+
+// What a node does with an operand. A consume ends an owned value (A1); an inout
+// takes it and, for a local, gives the written value back as a result (A8).
+public enum PirUse { BORROW, CONSUME, INOUT }
+
+public enum PirRegionKind { FN, BRANCH, ARM }
+
+// The port an exit names: the function's return, a branch's merge, or no port at all.
+public enum PirPort { RETURN, MERGE, FAIL, UNREACHABLE }
+
+public struct PirFunc {
+    public name: String,
+    public file: Int,
+    public line: Int,
+    // From the standard library, rather than the program being built.
+    public library: Bool,
+
+    // Nodes. `region` is -1 for a pure node. Operands are contiguous; results are too,
+    // but a branch's are appended once both arms are built.
+    public op: Vec<PirOp>,
+    public nodeFlags: Vec<Int>,
+    public nodeRegion: Vec<Int>,
+    public nodeNext: Vec<Int>,
+    public nodeName: Vec<String>,
+    public opStart: Vec<Int>,
+    public opCount: Vec<Int>,
+    public resStart: Vec<Int>,
+    public resCount: Vec<Int>,
+    // An exit's target region, or a branch node's own region; -1 otherwise.
+    public nodeTarget: Vec<Int>,
+    // The exit port (PirPort as Int) of an EXIT; -1 otherwise.
+    public nodePort: Vec<Int>,
+    public nodeLine: Vec<Int>,
+    public nodeCol: Vec<Int>,
+    // The AST node a PIR node came from: the key a plan side table will use. Opaque here.
+    public nodeAst: Vec<Ptr>,
+    // The allocation site (§8.1). Filled by the heap model, not in P0.
+    public nodeSite: Vec<Int>,
+
+    public operands: Vec<Int>,
+    public operandUse: Vec<PirUse>,
+    public results: Vec<Int>,
+
+    // Values. `def` is -1 for a region's input port; `region` is -1 for a pure value.
+    public valDef: Vec<Int>,
+    public valRegion: Vec<Int>,
+    public valType: Vec<Int>,
+    public valMode: Vec<PirMode>,
+    public valName: Vec<String>,
+    // The storage class (§7.1). Filled by AIF over PIR, not in P0.
+    public valStorage: Vec<Int>,
+
+    // Regions. Region 0 is the function. `node` is the branch node that owns a BRANCH
+    // or ARM region.
+    public regKind: Vec<PirRegionKind>,
+    public regParent: Vec<Int>,
+    public regNode: Vec<Int>,
+    public regHead: Vec<Int>,
+    public regTail: Vec<Int>,
+    public regPortStart: Vec<Int>,
+    public regPortCount: Vec<Int>,
+    public ports: Vec<Int>,
+
+    // The return port: the result, if any, then each `inout` parameter's final value.
+    public returnTypes: Vec<Int>,
+    public returnMode: PirMode,
+    public hasResult: Bool,
+
+    // Places and state versions (§6). Empty until places are built.
+    public placeObject: Vec<Int>,
+    public placePath: Vec<Int>,
+    public stateOf: Vec<Int>,
+    public statePrev: Vec<Int>,
+
+    // The pure graph's interning table.
+    cons: HashMap<String, Int>
+}
+
+public fn pirFuncNew(name: String, file: Int, line: Int, library: Bool) -> PirFunc {
+    return PirFunc {
+        name: name.clone(),
+        file: file,
+        line: line,
+        library: library,
+        op: [], nodeFlags: [], nodeRegion: [], nodeNext: [], nodeName: [],
+        opStart: [], opCount: [], resStart: [], resCount: [],
+        nodeTarget: [], nodePort: [], nodeLine: [], nodeCol: [], nodeAst: [], nodeSite: [],
+        operands: [], operandUse: [], results: [],
+        valDef: [], valRegion: [], valType: [], valMode: [], valName: [], valStorage: [],
+        regKind: [], regParent: [], regNode: [], regHead: [], regTail: [],
+        regPortStart: [], regPortCount: [], ports: [],
+        returnTypes: [], returnMode: PirMode.COPY, hasResult: false,
+        placeObject: [], placePath: [], stateOf: [], statePrev: [],
+        cons: HashMap<String, Int>()
+    }
+}
+
+public fn pirRegionNew(f: PirFunc, kind: PirRegionKind, parent: Int, node: Int) -> Int {
+    let id = f.regKind.length
+    f.regKind.push(kind)
+    f.regParent.push(parent)
+    f.regNode.push(node)
+    f.regHead.push(-1)
+    f.regTail.push(-1)
+    f.regPortStart.push(f.ports.length)
+    f.regPortCount.push(0)
+    return id
+}
+
+// A node with no operands and no results yet, off the spine. Operands are added with
+// pirOperand before any other node is created.
+public fn pirNodeNew(f: PirFunc, op: PirOp, name: String, ast: ASTNode) -> Int {
+    let id = f.op.length
+    f.op.push(op)
+    f.nodeFlags.push(0)
+    f.nodeRegion.push(-1)
+    f.nodeNext.push(-1)
+    f.nodeName.push(name.clone())
+    f.opStart.push(f.operands.length)
+    f.opCount.push(0)
+    f.resStart.push(f.results.length)
+    f.resCount.push(0)
+    f.nodeTarget.push(-1)
+    f.nodePort.push(-1)
+    f.nodeLine.push(ast.line)
+    f.nodeCol.push(ast.col)
+    f.nodeAst.push(node_to_ptr(ast))
+    f.nodeSite.push(-1)
+    return id
+}
+
+public fn pirOperand(f: PirFunc, node: Int, value: Int, use: PirUse) {
+    f.operands.push(value)
+    f.operandUse.push(use)
+    f.opCount[node] = f.opCount[node] + 1
+}
+
+public fn pirAppend(f: PirFunc, reg: Int, node: Int) {
+    f.nodeRegion[node] = reg
+    let tail = f.regTail[reg]
+    if (tail < 0) {
+        f.regHead[reg] = node
+    } else {
+        f.nodeNext[tail] = node
+    }
+    f.regTail[reg] = node
+}
+
+private fn pirValueNew(f: PirFunc, def: Int, reg: Int, valueType: Int, mode: PirMode, name: String) -> Int {
+    let id = f.valDef.length
+    f.valDef.push(def)
+    f.valRegion.push(reg)
+    f.valType.push(valueType)
+    f.valMode.push(mode)
+    f.valName.push(name.clone())
+    f.valStorage.push(-1)
+    return id
+}
+
+// A result of `node`, in the region the node is on (-1 while it is floating).
+public fn pirResult(f: PirFunc, node: Int, valueType: Int, mode: PirMode, name: String) -> Int {
+    if (f.resCount[node] == 0) { f.resStart[node] = f.results.length }
+    let id = pirValueNew(f, node, f.nodeRegion[node], valueType, mode, name)
+    f.results.push(id)
+    f.resCount[node] = f.resCount[node] + 1
+    return id
+}
+
+// An input port of `region`. A region's ports are added before the next region's.
+public fn pirPortNew(f: PirFunc, reg: Int, valueType: Int, mode: PirMode, name: String) -> Int {
+    if (f.regPortCount[reg] == 0) { f.regPortStart[reg] = f.ports.length }
+    let id = pirValueNew(f, -1, reg, valueType, mode, name)
+    f.ports.push(id)
+    f.regPortCount[reg] = f.regPortCount[reg] + 1
+    return id
+}
+
+// The value of a pure node: one node per (op, name, operands, type). Every operand must
+// be a copy value, which is what makes sharing one node between uses sound.
+public fn pirPure(f: PirFunc, op: PirOp, name: String, operands: Vec<Int>, valueType: Int, ast: ASTNode) -> Int {
+    let mut key = (op as Int).toString().concat(":", valueType.toString(), ":", operands.length.toString())
+    for operand in operands { key = key.concat(",", operand.toString()) }
+    key = key.concat(":", name)
+    let found = f.cons.getOr(key, -1)
+    if (found >= 0) { return found }
+
+    let node = pirNodeNew(f, op, name, ast)
+    for operand in operands { pirOperand(f, node, operand, PirUse.BORROW) }
+    let value = pirResult(f, node, valueType, PirMode.COPY, "")
+    f.cons.insert(key, value)
+    return value
+}
+
+public fn pirOperandAt(f: PirFunc, node: Int, index: Int) -> Int {
+    return f.operands[f.opStart[node] + index]
+}
+
+public fn pirResultAt(f: PirFunc, node: Int, index: Int) -> Int {
+    return f.results[f.resStart[node] + index]
+}
+
+public fn pirPortAt(f: PirFunc, reg: Int, index: Int) -> Int {
+    return f.ports[f.regPortStart[reg] + index]
+}
+
+public fn pirModeText(mode: PirMode) -> String {
+    if (mode == PirMode.OWN) { return "own" }
+    if (mode == PirMode.VIEW) { return "view" }
+    return "copy"
+}

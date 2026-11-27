@@ -1,0 +1,147 @@
+// The canonical PIR-H dump `--emit-pir` writes (docs/PIR_PLAN.md §15): ids in builder
+// order, one node per line, regions indented, a type and a mode on every definition.
+// It is read as a fixpoint across two compiler generations, so nothing here may depend
+// on an address or on the order of a hash table.
+
+import std.collections.vec
+import std.string
+import pir.types
+import pir.graph
+import pir.builder
+
+public fn pirDumpProgram(program: PirProgram) -> String {
+    let mut out = StringBuilder.new()
+    for i in 0..<program.funcs.length {
+        if (i > 0) { out.appendLine("") }
+        pirDumpFunc(program.types, program.funcs[i], out)
+    }
+    return out.toString()
+}
+
+private fn pirValueText(id: Int) -> String { return "%".concat(id.toString()) }
+
+// `%4: own String`, with the source name where the value is a local's.
+private fn pirDefinition(types: PirTypes, f: PirFunc, value: Int) -> String {
+    let mut text = pirValueText(value)
+    if (f.valName[value].equals("") == false) { text = text.concat(" %", f.valName[value]) }
+    return text.concat(": ", pirModeText(f.valMode[value]), " ", pirTypeText(types, f.valType[value]))
+}
+
+private fn pirOperandList(f: PirFunc, node: Int, from: Int) -> String {
+    let mut text = ""
+    for i in from..<f.opCount[node] {
+        if (i > from) { text = text.concat(", ") }
+        let use = f.operandUse[f.opStart[node] + i]
+        if (use == PirUse.CONSUME) { text = text.concat("move ") }
+        if (use == PirUse.INOUT) { text = text.concat("inout ") }
+        text = text.concat(pirValueText(pirOperandAt(f, node, i)))
+    }
+    return text
+}
+
+private fn pirOpText(op: PirOp) -> String {
+    match (op) {
+        PirOp.CONST => { return "const" }
+        PirOp.ENUM_CONST => { return "enum" }
+        PirOp.UNARY => { return "unary" }
+        PirOp.BINARY => { return "binary" }
+        PirOp.CAST => { return "cast" }
+        PirOp.WRAP => { return "wrap" }
+        PirOp.FIELD => { return "field" }
+        PirOp.CALL => { return "call" }
+        PirOp.BRANCH => { return "branch" }
+        PirOp.EXIT => { return "exit" }
+    }
+}
+
+// One computing node: its definitions, its operation and its operands.
+private fn pirNodeText(types: PirTypes, f: PirFunc, node: Int) -> String {
+    let mut text = ""
+    for i in 0..<f.resCount[node] {
+        if (i > 0) { text = text.concat(", ") }
+        text = text.concat(pirDefinition(types, f, pirResultAt(f, node, i)))
+    }
+    if (f.resCount[node] > 0) { text = text.concat(" = ") }
+    text = text.concat(pirOpText(f.op[node]))
+    if (f.nodeName[node].equals("") == false) { text = text.concat(" ", f.nodeName[node]) }
+    if (f.opCount[node] > 0) { text = text.concat(" (", pirOperandList(f, node, 0), ")") }
+    return text
+}
+
+private fn pirExitText(f: PirFunc, node: Int) -> String {
+    let port = f.nodePort[node]
+    if (port == PirPort.FAIL as Int) { return "exit fail" }
+    if (port == PirPort.UNREACHABLE as Int) { return "exit unreachable" }
+    let mut target = "@fn.return"
+    if (port == PirPort.MERGE as Int) { target = "@r".concat(f.nodeTarget[node].toString(), ".merge") }
+    return "exit ".concat(target, "(", pirOperandList(f, node, 0), ")")
+}
+
+private fn pirDumpRegion(types: PirTypes, f: PirFunc, reg: Int, indent: String, inout out: StringBuilder) {
+    let mut node = f.regHead[reg]
+    while (node >= 0) {
+        if (f.op[node] == PirOp.EXIT) {
+            out.appendLine(indent.concat(pirExitText(f, node)))
+        } else if (f.op[node] == PirOp.BRANCH) {
+            pirDumpBranch(types, f, node, indent, out)
+        } else {
+            out.appendLine(indent.concat(pirNodeText(types, f, node)))
+        }
+        node = f.nodeNext[node]
+    }
+}
+
+private fn pirDumpBranch(types: PirTypes, f: PirFunc, node: Int, indent: String, inout out: StringBuilder) {
+    let reg = f.nodeTarget[node]
+    let mut head = ""
+    for i in 0..<f.resCount[node] {
+        if (i > 0) { head = head.concat(", ") }
+        head = head.concat(pirDefinition(types, f, pirResultAt(f, node, i)))
+    }
+    if (f.resCount[node] > 0) { head = head.concat(" = ") }
+    head = head.concat("branch ", pirValueText(pirOperandAt(f, node, 0)))
+    if (f.opCount[node] > 1) { head = head.concat(" (", pirOperandList(f, node, 1), ")") }
+    out.appendLine(indent.concat(head, " @r", reg.toString(), " {"))
+
+    let deeper = indent.concat("    ")
+    let mut arm = 0
+    for r in (reg + 1)..<f.regKind.length {
+        if (f.regParent[r] != reg) { continue }
+        let mut label = "false"
+        if (arm == 0) { label = "true" }
+        let mut ports = ""
+        for i in 0..<f.regPortCount[r] {
+            if (i > 0) { ports = ports.concat(", ") }
+            ports = ports.concat(pirDefinition(types, f, pirPortAt(f, r, i)))
+        }
+        out.appendLine(indent.concat("  ", label, "(", ports, "):"))
+        pirDumpRegion(types, f, r, deeper, out)
+        arm = arm + 1
+    }
+    out.appendLine(indent.concat("}"))
+}
+
+private fn pirDumpFunc(types: PirTypes, f: PirFunc, inout out: StringBuilder) {
+    let mut signature = "fn ".concat(f.name, "(")
+    for i in 0..<f.regPortCount[0] {
+        if (i > 0) { signature = signature.concat(", ") }
+        signature = signature.concat(pirDefinition(types, f, pirPortAt(f, 0, i)))
+    }
+    signature = signature.concat(")")
+    for i in 0..<f.returnTypes.length {
+        if (i == 0) {
+            signature = signature.concat(" -> ")
+        } else {
+            signature = signature.concat(", ")
+        }
+        if (i > 0 or f.hasResult == false) { signature = signature.concat("inout ") }
+        signature = signature.concat(pirTypeText(types, f.returnTypes[i]))
+    }
+    out.appendLine(signature.concat(" {"))
+    // The pure graph, in id order. It has no place on a spine until lowering schedules it.
+    for node in 0..<f.op.length {
+        if (f.nodeRegion[node] < 0) { out.appendLine("  pure ".concat(pirNodeText(types, f, node))) }
+    }
+    pirDumpRegion(types, f, 0, "  ", out)
+    out.appendLine("}")
+}

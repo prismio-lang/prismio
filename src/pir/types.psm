@@ -1,0 +1,143 @@
+// PIR's type table (docs/PIR_PLAN.md §11): sema's TypeInfo interned into ids, so no
+// pass after the builder reads a punned Ptr. One table serves a whole program; ids are
+// handed out in the order the builder first meets each type.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import ast.types
+
+public enum PirTypeKind {
+    INVALID, VOID, INT, FLOAT, BOOL, CHAR, STRING, PTR, STRUCT, ENUM,
+    VEC, ARRAY, SLICE, DATAVIEW, DATAELEMENT, OPTIONAL, NONE, DYN, TASK, CHANNEL, FUNCTION
+}
+
+public struct PirTypes {
+    public kind: Vec<PirTypeKind>,
+    // The type's own name where it has one: a struct, an enum, a sized number.
+    public name: Vec<String>,
+    // The element, pointee, payload or result type, or -1.
+    public child: Vec<Int>,
+    // An array's length (0 when not known), or a typed pointer's capabilities.
+    public count: Vec<Int>,
+    // Sema's answer to "is a value of this type owned" (typeIsMoveOnly).
+    public moveOnly: Vec<Bool>,
+    ids: HashMap<String, Int>
+}
+
+public fn pirTypesNew() -> PirTypes {
+    return PirTypes {
+        kind: [],
+        name: [],
+        child: [],
+        count: [],
+        moveOnly: [],
+        ids: HashMap<String, Int>()
+    }
+}
+
+public fn pirTypeIntern(types: PirTypes, t: TypeInfo) -> Int {
+    let mut child = -1
+    if (nodeExists(t.child)) { child = pirTypeIntern(types, ptr_to_type(t.child)) }
+
+    let mut kind = PirTypeKind.INVALID
+    let mut name = ""
+    let mut count = 0
+    match (t.kind) {
+        TypeKind.VOID => { kind = PirTypeKind.VOID }
+        TypeKind.INT => {
+            kind = PirTypeKind.INT
+            name = t.name.clone()
+        }
+        TypeKind.FLOAT => {
+            kind = PirTypeKind.FLOAT
+            name = t.name.clone()
+        }
+        TypeKind.BOOL => { kind = PirTypeKind.BOOL }
+        TypeKind.CHAR => { kind = PirTypeKind.CHAR }
+        TypeKind.STRING => { kind = PirTypeKind.STRING }
+        TypeKind.PTR => {
+            if (typeIsTask(t)) {
+                kind = PirTypeKind.TASK
+            } else if (typeIsChannel(t)) {
+                kind = PirTypeKind.CHANNEL
+            } else {
+                // `Ptr`, `Ptr<mut T>`, and a named handle are told apart by their spelling.
+                kind = PirTypeKind.PTR
+                name = t.name.clone()
+                count = t.length
+            }
+        }
+        TypeKind.STRUCT => {
+            kind = PirTypeKind.STRUCT
+            if (t.name.startsWith("dyn$")) { kind = PirTypeKind.DYN }
+            name = t.name.clone()
+        }
+        TypeKind.ENUM => {
+            kind = PirTypeKind.ENUM
+            name = t.name.clone()
+        }
+        TypeKind.LIST => { kind = PirTypeKind.VEC }
+        TypeKind.ARRAY => {
+            kind = PirTypeKind.ARRAY
+            count = t.length
+        }
+        TypeKind.SLICE => { kind = PirTypeKind.SLICE }
+        TypeKind.DATAVIEW => { kind = PirTypeKind.DATAVIEW }
+        TypeKind.DATAELEMENT => { kind = PirTypeKind.DATAELEMENT }
+        TypeKind.OPTIONAL => {
+            kind = PirTypeKind.OPTIONAL
+            if (child < 0) { kind = PirTypeKind.NONE }
+        }
+        TypeKind.FUNCTION => {
+            kind = PirTypeKind.FUNCTION
+            name = t.name.clone()
+        }
+        _ => { }
+    }
+
+    let key = (kind as Int).toString().concat(":", child.toString(), ":", count.toString(), ":", name)
+    let found = types.ids.getOr(key, -1)
+    if (found >= 0) { return found }
+
+    let id = types.kind.length
+    types.kind.push(kind)
+    types.name.push(name.clone())
+    types.child.push(child)
+    types.count.push(count)
+    types.moveOnly.push(typeIsMoveOnly(t))
+    types.ids.insert(key, id)
+    return id
+}
+
+public fn pirTypeIsValid(types: PirTypes, id: Int) -> Bool {
+    return id >= 0 and types.kind[id] != PirTypeKind.INVALID
+}
+
+// The canonical spelling of a type in a dump and in a verifier finding.
+public fn pirTypeText(types: PirTypes, id: Int) -> String {
+    if (id < 0) { return "<no type>" }
+    let child = types.child[id]
+    match (types.kind[id]) {
+        PirTypeKind.VOID => { return "Void" }
+        PirTypeKind.BOOL => { return "Bool" }
+        PirTypeKind.CHAR => { return "Char" }
+        PirTypeKind.STRING => { return "String" }
+        PirTypeKind.NONE => { return "none" }
+        PirTypeKind.VEC => { return "Vec<".concat(pirTypeText(types, child), ">") }
+        PirTypeKind.SLICE => { return "Slice<".concat(pirTypeText(types, child), ">") }
+        PirTypeKind.DATAVIEW => { return "DataView<".concat(pirTypeText(types, child), ">") }
+        PirTypeKind.DATAELEMENT => { return "DataElement<".concat(pirTypeText(types, child), ">") }
+        PirTypeKind.OPTIONAL => { return pirTypeText(types, child).concat("?") }
+        PirTypeKind.TASK => { return "Future<".concat(pirTypeText(types, child), ">") }
+        PirTypeKind.CHANNEL => { return "Channel<".concat(pirTypeText(types, child), ">") }
+        PirTypeKind.ARRAY => {
+            let element = pirTypeText(types, child)
+            return "[".concat(element, "; ", types.count[id].toString(), "]")
+        }
+        PirTypeKind.INVALID => { return "Invalid" }
+        _ => { }
+    }
+    return types.name[id].clone()
+}

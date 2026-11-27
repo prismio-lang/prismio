@@ -213,3 +213,6 @@ public const DIAG_AIF_REGION_INERT = "P5007"
 // --- the diagnostics module's own ---------------------------------------------
 
 public const DIAG_COMMON_TOO_MANY_ERRORS = "P0001"
+public const DIAG_DRIVER_PIR_UNWRITABLE = "P1139"
+public const DIAG_DRIVER_PIR_REJECTED = "P1140"
+public const DIAG_CLI_EMIT_PIR_NEEDS_PATH = "P1141"
