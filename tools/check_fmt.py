@@ -109,6 +109,7 @@ def check_damaged(compiler, files, count, seed):
 POSITIONS = (
     (re.compile(rb"(\$[A-Za-z]+)_\d+_\d+"), rb"\1_L_C"),
     (re.compile(rb"(@prismio_step_check\([^\n]*, i32 )\d+\)"), rb"\1L)"),
+    (re.compile(rb"(@prismio_division_trap\([^\n]*, i32 )\d+\)"), rb"\1L)"),
 )
 
 

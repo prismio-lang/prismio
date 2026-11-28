@@ -35,6 +35,11 @@ __attribute__((weak)) void prismio_overflow_trap(const char* op, const char* fil
     prismio_panic_hook("integer overflow", op, file, line, 0);
 }
 
+// A `/` or `%` by zero.
+__attribute__((weak, noreturn)) void prismio_division_trap(const char* file, int line) {
+    prismio_panic_hook("division by zero", "", file, line, 0);
+}
+
 // A range `for` whose computed step was zero or negative.
 __attribute__((weak)) void prismio_step_check(int step, const char* file, int line) {
     if (step > 0) return;

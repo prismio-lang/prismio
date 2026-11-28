@@ -228,6 +228,7 @@ private fn pirBinaryNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, 
     let mut x = a
     let mut y = b
     // A shift amount keeps its own type; everything else is the left operand's.
+    if (op == PIR_SHL or op == PIR_SHR) { y = pirShiftAmount(b, shapes.signed[right], bits) }
     if (leftClass == PirClass.CHAR and op >= PIR_LT) {
         x = pirNormalize(a, 8, true)
         y = pirNormalize(b, 8, true)
@@ -243,7 +244,27 @@ private fn pirBinaryNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, 
             return
         }
     }
+    if (op == PIR_DIV or op == PIR_REM) {
+        if (y == (0 as I64)) {
+            pirFail(m, 1, "runtime error: division by zero at ".concat(pirPlace(f, node)))
+            return
+        }
+        let at = ptr_to_node(f.nodeAst[node])
+        if (op == PIR_DIV and signed and program.overflowChecks and fileFromLibraryRoot(at.file) == false
+                and x == pirSmallest(bits) and y == (-1 as I64)) {
+            pirFail(m, 1, "runtime error: integer overflow in `/` at ".concat(pirPlace(f, node),
+                "\nnote: Int is signed 32-bit and wraps in release builds; ",
+                "this check is on because the program was built with --overflow-checks"))
+            return
+        }
+    }
     pirSet(m, f, base, node, pirIntBinary(op, x, y, bits, signed), 0)
+}
+
+// `file:line` of the source a node came from, as the compiled program's failures name it.
+private fn pirPlace(f: PirFunc, node: Int) -> String {
+    let at = ptr_to_node(f.nodeAst[node])
+    return diag_file_path(at.file).concat(":", at.line.toString())
 }
 
 private fn pirUnaryNode(program: PirProgram, shapes: PirShapes, m: PirMachine, f: PirFunc, base: Int, node: Int, op: Int) {

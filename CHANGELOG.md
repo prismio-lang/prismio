@@ -288,6 +288,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **Integer division and shifts have one defined answer, and the IR never asks LLVM an undefined question.** Before, a
+  division by zero answered 0 or died with SIGTRAP depending on the shape, `Int.MIN / -1` died with SIGTRAP, and a shift
+  by the width or more answered 0 or the amount modulo 32 depending on whether LLVM could see it. Now: `/ 0` and `% 0` stop
+  the program with `runtime error: division by zero at file:line`; `MIN / -1` wraps to `MIN` and `MIN % -1` is 0 (under
+  `--overflow-checks` the quotient is an overflow failure); a shift is by the amount modulo the width, Euclidean, so
+  `-1` is `width - 1`, at every width including `Int<24>`. A literal zero divisor (`P4113`) and a literal shift amount
+  outside `0..<width` (`P4114`) are compile errors; in a generic instance only a negative literal amount is, so `x << 40`
+  valid for `I64` still builds for `Int`. The PIR interpreter follows the same rules. Cost: a compare and branch for a
+  divisor not proved nonzero, a compare and two selects for a signed divisor not proved clear of -1, and one `and` for a
+  run-time shift amount (folded into the instruction on 32 and 64 bits). No check for a literal divisor, for an unsigned
+  type beyond the zero one, or where the loop facts bound the divisor. `tests/test_409_integer_edges`,
+  `test_410_divide_by_zero`, `neg_437`-`neg_439`.
+
 - **A program that names `F32` no longer compiles the `F16`, `BF16` and `F128` formatters, and `as F32` in the
   compiler's own source links.** `std.core.number` formatted every narrow float with one generic, `floatText<T>`, and
   library pruning keeps every instance of a generic: any program merging the module carried all four, and the `F128`

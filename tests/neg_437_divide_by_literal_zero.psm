@@ -1,0 +1,10 @@
+// expect-error: P4113
+// expect-error: operator `/` divides by zero
+// expect-error: operator `%` divides by zero
+
+fn main() -> Int {
+    let a = 7 / 0
+    let mut b = 9 as U8
+    b %= 0
+    return a + (b as Int)
+}

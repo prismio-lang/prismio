@@ -70,8 +70,9 @@ index: on the freestanding suite every check in a hot loop is proved away
 because the interval walk (`src/ir/nowrap.psm`) reasons about `U32` and the other narrow
 integers, comparisons, loop invariants and array contents.
 
-**1.4 Division by zero is a raw `sdiv`.** No guard and no runtime call. On x86 that
-is a #DE fault; the kernel's handler owns the result. Fine, and worth stating.
+**1.4 Division by zero was a raw `sdiv`** (no guard and no runtime call). Since 0.3 a
+divisor that is not proved nonzero is checked, and a zero one calls `prismio_division_trap`,
+whose weak default in `runtime/freestanding/panic.c` reaches `prismio_panic_hook`.
 
 **1.5 The entry point is hosted.** Every program is emitted as
 `main(i32 argc, ptr argv)` storing both into the globals `prismio_argc` and

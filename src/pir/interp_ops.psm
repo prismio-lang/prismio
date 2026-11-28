@@ -138,11 +138,8 @@ public fn pirOverflows(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> Bool
     return ((a * b) as U64) / (a as U64) != (b as U64)
 }
 
+// `b` is not 0: the caller stops the program for that.
 private fn pirDivide(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> I64 {
-    if (b == (0 as I64)) {
-        if (op == PIR_DIV) { return 0 as I64 }
-        return a
-    }
     if (signed) {
         if (b == (-1 as I64)) {
             if (op == PIR_DIV) { return pirNormalize((0 as I64) - a, bits, true) }
@@ -155,6 +152,20 @@ private fn pirDivide(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> I64 {
     return ((a as U64) % (b as U64)) as I64
 }
 
+// A shift amount modulo the width of the shifted value, a negative one counting down
+// from the width. `b` is the amount's word, widened by its own signedness.
+public fn pirShiftAmount(b: I64, amountSigned: Bool, bits: Int) -> I64 {
+    if (amountSigned == false) { return ((b as U64) % (bits as U64)) as I64 }
+    let rest = b % (bits as I64)
+    if (rest < (0 as I64)) { return rest + (bits as I64) }
+    return rest
+}
+
+// The smallest value of a signed type `bits` wide, as a word.
+public fn pirSmallest(bits: Int) -> I64 {
+    return pirNormalize((1 as I64) << ((bits - 1) as I64), bits, true)
+}
+
 // An operator on two integers (or Bools, Chars, enums) of one width.
 public fn pirIntBinary(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> I64 {
     if (op == PIR_ADD) { return pirNormalize(a + b, bits, signed) }
@@ -165,9 +176,8 @@ public fn pirIntBinary(op: Int, a: I64, b: I64, bits: Int, signed: Bool) -> I64 
     if (op == PIR_OR) { return a | b }
     if (op == PIR_XOR) { return pirNormalize(a ^ b, bits, signed) }
     if (op == PIR_SHL or op == PIR_SHR) {
-        // A shift is by the amount modulo the register it runs in.
-        let mut amount = b & (31 as I64)
-        if (bits > 32) { amount = b & (63 as I64) }
+        // pirShiftAmount has reduced it already.
+        let amount = b
         if (op == PIR_SHL) { return pirNormalize(a << amount, bits, signed) }
         if (signed) { return a >> amount }
         return ((a as U64) >> (amount as U64)) as I64

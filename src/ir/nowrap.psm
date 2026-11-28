@@ -1720,7 +1720,13 @@ private fn nowrapRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode, m: Int) ->
 private fn nowrapMarkRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode) {
     if (w.mode != NOWRAP_MARK) { return }
     if (e.s1.equals("%") == false and e.s1.equals("/") == false) { return }
-    if (nowrapIsSignedDivision(e) == false or nowrapInterval(w, f, e.child1) == false) { return }
+    if (nowrapIsSignedDivision(e) == false) { return }
+    // A divisor the facts put at 1 or above, or at -2 or below, is neither of the two
+    // that need a check. A form below, which says more, takes its place.
+    if (nowrapInterval(w, f, e.child2) and (w.lo >= 1 as I64 or w.hi <= -2 as I64)) {
+        ir_rem_form_mark(node_to_ptr(e), w.pass, REM_SAFE_DIVISOR)
+    }
+    if (nowrapInterval(w, f, e.child1) == false) { return }
     let aLo = w.lo
     let aHi = w.hi
     let m = remainderDivisor(e)

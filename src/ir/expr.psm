@@ -4768,16 +4768,10 @@ private fn generateBinary(expr: ASTNode) -> String {
     let leftNode = ptr_to_node(expr.child1)
     let opType = getExprType(leftNode)
 
-    // A shift amount is an integer of its own type (sema), and LLVM wants it in the
-    // shifted value's. `x >> n` with `x: U64` and `n: Int` used to reach the
-    // verifier as an `lshr i64` by an `i32`; the amount is resized as an integer
-    // is, so an `Int<128>` shifted by an `Int` is well formed too.
+    // A shift is by the amount modulo the width, and the amount, an integer of its
+    // own type (sema), is wanted in the shifted value's: ir_shift_amount does both.
     if (op.equals("<<") or op.equals(">>")) {
-        let rightNode = ptr_to_node(expr.child2)
-        if (nodeHasType(leftNode) and nodeHasType(rightNode)
-                and getExprType(rightNode).equals(opType) == false) {
-            rightVal = integerResize(rightVal, nodeGetType(rightNode), nodeGetType(leftNode))
-        }
+        rightVal = generateShiftAmount(rightVal, ptr_to_node(expr.child2), opType)
     }
     let mut isUnsigned = false
     if (nodeHasType(leftNode)) {
@@ -4849,31 +4843,20 @@ private fn generateBinary(expr: ASTNode) -> String {
         }
         if (op.equals("==")) { tempId = ir_icmp_eq(opType, leftVal, rightVal) }
         if (op.equals("!=")) { tempId = ir_icmp_ne(opType, leftVal, rightVal) }
+        if (op.equals("/") or op.equals("%")) {
+            tempId = generateDivision(expr, opType, leftVal, rightVal, isUnsigned)
+        }
         if (isUnsigned) {
-            if (op.equals("/")) { tempId = ir_udiv(opType, leftVal, rightVal) }
             if (op.equals("<")) { tempId = ir_icmp_ult(opType, leftVal, rightVal) }
             if (op.equals("<=")) { tempId = ir_icmp_ule(opType, leftVal, rightVal) }
             if (op.equals(">")) { tempId = ir_icmp_ugt(opType, leftVal, rightVal) }
             if (op.equals(">=")) { tempId = ir_icmp_uge(opType, leftVal, rightVal) }
         } else {
-            if (op.equals("/")) {
-                if (nowrapRemainderForm(expr) == REM_UNSIGNED) { tempId = ir_udiv(opType, leftVal, rightVal) }
-                else { tempId = ir_sdiv(opType, leftVal, rightVal) }
-            }
             if (op.equals("<")) { tempId = ir_icmp_slt(opType, leftVal, rightVal) }
             if (op.equals("<=")) { tempId = ir_icmp_sle(opType, leftVal, rightVal) }
             if (op.equals(">")) { tempId = ir_icmp_sgt(opType, leftVal, rightVal) }
             if (op.equals(">=")) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
         }
-    }
-    if (op.equals("%") and floatKeyValid(opType) == false) {
-        let form = nowrapRemainderForm(expr)
-        if (isUnsigned or form == REM_UNSIGNED) { tempId = ir_urem(opType, leftVal, rightVal) }
-        else if (form == REM_MERSENNE or form == REM_MERSENNE_SIGNED) {
-            tempId = mersenneRemainder(form, opType, leftVal, rightVal, mersenneBits(remainderDivisor(expr)))
-        }
-        else if (form != REM_KEEP) { tempId = reducedRemainder(form, opType, leftVal, rightVal) }
-        else { tempId = ir_srem(opType, leftVal, rightVal) }
     }
 
     if (op.equals("&")) { tempId = ir_and(opType, leftVal, rightVal) }
@@ -4899,6 +4882,64 @@ private fn generateBinary(expr: ASTNode) -> String {
         generateDiscardedCallRelease(ptr_to_node(expr.child2), rightVal)
     }
     return result
+}
+
+// `/` or `%` on integers. A `%` the facts reduced to a step or a mask, and a signed
+// division they put at zero or above over a positive divisor, are what ir/nowrap.psm
+// proved. Anything else is checked for the two cases the instruction leaves undefined,
+// less the ones the divisor rules out: a zero divisor stops the program, and the smallest
+// value divided by -1 wraps (an overflow failure under --overflow-checks).
+private fn generateDivision(expr: ASTNode, opType: String, leftVal: String, rightVal: String,
+                            isUnsigned: Bool) -> Int {
+    let isRem = expr.s1.equals("%")
+    if (isUnsigned == false) {
+        let form = nowrapRemainderForm(expr)
+        if (form == REM_UNSIGNED) {
+            if (isRem) { return ir_urem(opType, leftVal, rightVal) }
+            return ir_udiv(opType, leftVal, rightVal)
+        }
+        if (form == REM_MERSENNE or form == REM_MERSENNE_SIGNED) {
+            return mersenneRemainder(form, opType, leftVal, rightVal, mersenneBits(remainderDivisor(expr)))
+        }
+        if (form == REM_SAFE_DIVISOR) {
+            if (isRem) { return ir_srem(opType, leftVal, rightVal) }
+            return ir_sdiv(opType, leftVal, rightVal)
+        }
+        if (form != REM_KEEP) { return reducedRemainder(form, opType, leftVal, rightVal) }
+    }
+    let divisor = ptr_to_node(expr.child2)
+    let mut checkZero = 1
+    if (isNonzeroLiteral(divisor)) { checkZero = 0 }
+    let mut guardMin = 1
+    if (isUnsigned or (isNonzeroLiteral(divisor) and divisor.s1.equals("-1") == false)) {
+        guardMin = 0
+    }
+    // Never inside the standard library, which is written against wrapping arithmetic.
+    let mut trapMin = 0
+    if (ir_overflow_checks() == 1 and fileFromLibraryRoot(expr.file) == false) { trapMin = 1 }
+    let mut rem = 0
+    if (isRem) { rem = 1 }
+    let mut unsigned = 0
+    if (isUnsigned) { unsigned = 1 }
+    let file = diag_file_path(expr.file)
+    return ir_int_division(opType, leftVal, rightVal, rem, unsigned, checkZero, guardMin,
+                           trapMin, file, expr.line)
+}
+
+// A written integer other than zero, `-1` included.
+private fn isNonzeroLiteral(node: ASTNode) -> Bool {
+    if (node.kind != NodeKind.LITERAL_EXPR or node.i1 != TokenType.NUMBER_LITERAL as Int) { return false }
+    let mut at = 0
+    if (node.s1.startsWith("-")) { at = 1 }
+    return (typeIntLiteralMagnitude(node.s1, at) ?? (0 as U64)) != (0 as U64)
+}
+
+private fn generateShiftAmount(amount: String, node: ASTNode, opType: String) -> String {
+    let mut unsigned = 0
+    if (nodeHasType(node) and typeIntIsUnsigned(nodeGetType(node))) { unsigned = 1 }
+    let mut amountType = getExprType(node)
+    if (amountType.equals("")) { amountType = opType.clone() }
+    return ir_get_temp_name(ir_shift_amount(amount, amountType, unsigned, opType))
 }
 
 // A `%` by the literal `m` whose dividend ir/residues.psm placed in one step of the

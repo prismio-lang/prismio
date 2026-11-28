@@ -78,6 +78,12 @@ public extern fn ir_sub_nsw(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_add_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
 public extern fn ir_sub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
 public extern fn ir_mul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+// `/` and `%` as the language defines them: `checkZero`, `guardMin` and `trapMin` are 1 for
+// each case the frontend cannot rule out. ir_sdiv and its kin are the bare instructions.
+public extern fn ir_int_division(type: String, lhs: String, rhs: String, isRem: Int, isUnsigned: Int,
+                                 checkZero: Int, guardMin: Int, trapMin: Int, file: String, line: Int) -> Int
+// A shift amount reduced modulo the width of `type`, and in that type.
+public extern fn ir_shift_amount(amount: String, amountType: String, amountUnsigned: Int, type: String) -> Int
 public extern fn ir_uadd_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
 public extern fn ir_usub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
 public extern fn ir_umul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int

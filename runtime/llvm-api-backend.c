@@ -4559,10 +4559,132 @@ static int g_overflow_checks;
 
 void ir_set_overflow_checks(int on) { g_overflow_checks = on ? 1 : 0; }
 int ir_overflow_checks(void) { return g_overflow_checks; }
+// The plain instructions, for a divisor already known to be neither zero nor, in a
+// signed division of the smallest value, -1: LLVM leaves both undefined. A division
+// the program wrote goes through ir_int_division, which makes sure of it.
 BINOP(ir_sdiv, LLVMBuildSDiv)
 BINOP(ir_udiv, LLVMBuildUDiv)
 BINOP(ir_srem, LLVMBuildSRem)
 BINOP(ir_urem, LLVMBuildURem)
+
+// The failing arm of a division by zero: out of line, cold and never returning, so the
+// checked path is one compare and a branch with nothing to join.
+static void division_zero_check(LLVMValueRef divisor, const char *file, int line) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMValueRef nonzero = LLVMBuildICmp(g_builder, LLVMIntNE, divisor,
+                                         LLVMConstNull(LLVMTypeOf(divisor)), "");
+    int ok = ir_get_label();
+    int fail = ir_get_label();
+    LLVMBuildCondBr(g_builder, nonzero, block_for(ok), block_for(fail));
+    LLVMPositionBuilderAtEnd(g_builder, block_for(fail));
+    LLVMTypeRef params[2] = {ptr, i32};
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 2, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "prismio_division_trap");
+    if (!fn) {
+        fn = LLVMAddFunction(g_module, "prismio_division_trap", fnty);
+        const char *attrs[2] = {"noreturn", "cold"};
+        for (int i = 0; i < 2; i++) {
+            unsigned kind = LLVMGetEnumAttributeKindForName(attrs[i], strlen(attrs[i]));
+            LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+                                    LLVMCreateEnumAttribute(g_ctx, kind, 0));
+        }
+    }
+    LLVMValueRef args[2] = {
+        LLVMBuildGlobalStringPtr(g_builder, file ? file : "", ""),
+        LLVMConstInt(i32, (unsigned long long)line, 0),
+    };
+    LLVMBuildCall2(g_builder, fnty, fn, args, 2, "");
+    LLVMBuildUnreachable(g_builder);
+    LLVMPositionBuilderAtEnd(g_builder, block_for(ok));
+}
+
+// `a / b` and `a % b` as the language defines them. A zero divisor stops the program.
+// The smallest value divided by -1 wraps to itself and leaves no remainder, so a
+// divisor of -1 is swapped for 1 ahead of the instruction and the quotient negated
+// instead: the remainder by 1 is already the 0 that is wanted. `check_zero` and
+// `guard_min` are 0 where the frontend has proved the case cannot arise, and
+// `trap_min` makes that quotient an overflow failure under --overflow-checks.
+int ir_int_division(const char *type, const char *lhs, const char *rhs, int is_rem,
+                    int is_unsigned, int check_zero, int guard_min, int trap_min,
+                    const char *file, int line) {
+    if (block_done()) return intern_value(LLVMGetUndef(type_from_key(type)));
+    LLVMValueRef a = resolve_value(lhs, type);
+    LLVMValueRef b = resolve_value(rhs, type);
+    LLVMTypeRef ity = LLVMTypeOf(a);
+    if (check_zero) division_zero_check(b, file, line);
+    if (is_unsigned) {
+        return intern_value(is_rem ? LLVMBuildURem(g_builder, a, b, "")
+                                   : LLVMBuildUDiv(g_builder, a, b, ""));
+    }
+    if (!guard_min) {
+        return intern_value(is_rem ? LLVMBuildSRem(g_builder, a, b, "")
+                                   : LLVMBuildSDiv(g_builder, a, b, ""));
+    }
+    LLVMValueRef minus_one = LLVMBuildICmp(g_builder, LLVMIntEQ, b,
+                                           LLVMConstAllOnes(ity), "");
+    if (trap_min && !is_rem) {
+        // The one quotient that does not fit, found by the checked negation of it.
+        int minus = ir_get_label();
+        int join = ir_get_label();
+        LLVMBuildCondBr(g_builder, minus_one, block_for(minus), block_for(join));
+        LLVMPositionBuilderAtEnd(g_builder, block_for(minus));
+        ir_checked_binop("llvm.ssub.with.overflow", type, "0", lhs, "/", file, line);
+        LLVMBuildBr(g_builder, block_for(join));
+        LLVMPositionBuilderAtEnd(g_builder, block_for(join));
+    }
+    LLVMValueRef safe = LLVMBuildSelect(g_builder, minus_one,
+                                        LLVMConstInt(ity, 1, 0), b, "");
+    if (is_rem) return intern_value(LLVMBuildSRem(g_builder, a, safe, ""));
+    LLVMValueRef quotient = LLVMBuildSDiv(g_builder, a, safe, "");
+    LLVMValueRef negated = LLVMBuildSub(g_builder, LLVMConstNull(ity), a, "");
+    return intern_value(LLVMBuildSelect(g_builder, minus_one, negated, quotient, ""));
+}
+
+// A shift amount as the language defines it: modulo the width of the shifted value, so
+// that a negative amount counts from the width down and no shift is by the width or more,
+// which LLVM leaves undefined. The amount is an integer of its own type and is reduced
+// before it is resized, except where the width is a power of two and the low bits are the
+// same either way. AArch64 and x86-64 mask a 32 or 64 bit shift themselves, so for those
+// the `and` folds into the instruction.
+int ir_shift_amount(const char *amount, const char *amount_type, int amount_unsigned,
+                    const char *type) {
+    if (block_done()) return intern_value(LLVMGetUndef(type_from_key(type)));
+    LLVMTypeRef ity = type_from_key(type);
+    LLVMValueRef n = resolve_value(amount, amount_type);
+    unsigned width = LLVMGetIntTypeWidth(ity);
+    unsigned from = LLVMGetIntTypeWidth(LLVMTypeOf(n));
+    if ((width & (width - 1u)) == 0) {
+        if (from < width) {
+            n = amount_unsigned ? LLVMBuildZExt(g_builder, n, ity, "")
+                                : LLVMBuildSExt(g_builder, n, ity, "");
+        } else if (from > width) {
+            n = LLVMBuildTrunc(g_builder, n, ity, "");
+        }
+        return intern_value(LLVMBuildAnd(g_builder, n,
+                                         LLVMConstInt(ity, width - 1u, 0), ""));
+    }
+    if (from < 32) {
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+        n = amount_unsigned ? LLVMBuildZExt(g_builder, n, i32, "")
+                            : LLVMBuildSExt(g_builder, n, i32, "");
+        from = 32;
+    }
+    LLVMValueRef modulus = LLVMConstInt(LLVMTypeOf(n), width, 0);
+    LLVMValueRef rest;
+    if (amount_unsigned) {
+        rest = LLVMBuildURem(g_builder, n, modulus, "");
+    } else {
+        rest = LLVMBuildSRem(g_builder, n, modulus, "");
+        LLVMValueRef below = LLVMBuildICmp(g_builder, LLVMIntSLT, rest,
+                                           LLVMConstNull(LLVMTypeOf(n)), "");
+        LLVMValueRef lifted = LLVMBuildAdd(g_builder, rest, modulus, "");
+        rest = LLVMBuildSelect(g_builder, below, lifted, rest, "");
+    }
+    if (from < width) rest = LLVMBuildZExt(g_builder, rest, ity, "");
+    else if (from > width) rest = LLVMBuildTrunc(g_builder, rest, ity, "");
+    return intern_value(rest);
+}
 
 // `contract` on a float add, subtract or multiply -- (1 << 5) is
 // LLVMFastMathAllowContract, spelled as a number because the fallback header

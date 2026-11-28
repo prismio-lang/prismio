@@ -1,0 +1,8 @@
+// expect-error: P4114
+// expect-error: a shift of Int by -1 is outside 0..<32
+
+fn shifted<T>(value: T) -> T { return value << -1 }
+
+fn main() -> Int {
+    return shifted(1)
+}

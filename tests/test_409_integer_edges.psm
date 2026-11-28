@@ -1,0 +1,303 @@
+// Integer edge cases, every width: the smallest value divided by -1 wraps to itself and
+// leaves no remainder, and a shift is by the amount modulo the width, a negative amount
+// counting down from it. Each case is run on values the compiler cannot see through
+// (`seen` reads the argument count, 0 here) and in the written form. A zero divisor is
+// test_410; the written forms the compiler refuses are neg_437 to neg_439.
+
+import std.io
+import std.process
+
+fn seen() -> Int { return process.args.count - 1 }
+
+fn fail(message: String) -> Int {
+    println("FAIL", message)
+    return 1
+}
+
+fn checkI8() -> Int {
+    let zero = seen() as I8
+    let one = zero + 1
+    let n = seen()
+    let minusOne = zero - 1
+    let mut smallest = one << 7
+    if (smallest / minusOne != smallest) { return fail("I8 MIN / -1") }
+    if (smallest % minusOne != zero) { return fail("I8 MIN % -1") }
+    if (smallest / -1 != smallest or smallest % -1 != zero) { return fail("I8 MIN / written -1") }
+    if ((7 as I8) / minusOne != zero - 7 or (7 as I8) % minusOne != zero) { return fail("I8 7 / -1") }
+    if ((zero - 7) / (one + 1) != zero - 3 or (zero - 7) % (one + 1) != zero - 1) { return fail("I8 -7 / 2") }
+    smallest /= minusOne
+    if (smallest != one << 7) { return fail("I8 /=") }
+    if ((100 as I8) / (one * 7) != 14 or (100 as I8) % (one * 7) != 2) { return fail("I8 100 / 7") }
+    if (one << (n + 8) != one) { return fail("I8 shift by the width") }
+    if (one << (n + 11) != (8 as I8)) { return fail("I8 shift past the width") }
+    if (one << (n - 1) != one << 7) { return fail("I8 shift by -1") }
+    if (one << (n - 8) != one) { return fail("I8 shift by minus the width") }
+    if ((8 as I8) >> (n + 11) != one) { return fail("I8 right shift past the width") }
+    if ((one << 7) >> (n - 1) != minusOne) { return fail("I8 right shift by -1") }
+    if (one << ((n + 9) as I64) != (2 as I8)) { return fail("I8 shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as I8)) { return fail("I8 shift by a U8") }
+    return 0
+}
+
+fn checkI16() -> Int {
+    let zero = seen() as I16
+    let one = zero + 1
+    let n = seen()
+    let minusOne = zero - 1
+    let mut smallest = one << 15
+    if (smallest / minusOne != smallest) { return fail("I16 MIN / -1") }
+    if (smallest % minusOne != zero) { return fail("I16 MIN % -1") }
+    if (smallest / -1 != smallest or smallest % -1 != zero) { return fail("I16 MIN / written -1") }
+    if ((7 as I16) / minusOne != zero - 7 or (7 as I16) % minusOne != zero) { return fail("I16 7 / -1") }
+    if ((zero - 7) / (one + 1) != zero - 3 or (zero - 7) % (one + 1) != zero - 1) { return fail("I16 -7 / 2") }
+    smallest /= minusOne
+    if (smallest != one << 15) { return fail("I16 /=") }
+    if ((100 as I16) / (one * 7) != 14 or (100 as I16) % (one * 7) != 2) { return fail("I16 100 / 7") }
+    if (one << (n + 16) != one) { return fail("I16 shift by the width") }
+    if (one << (n + 19) != (8 as I16)) { return fail("I16 shift past the width") }
+    if (one << (n - 1) != one << 15) { return fail("I16 shift by -1") }
+    if (one << (n - 16) != one) { return fail("I16 shift by minus the width") }
+    if ((8 as I16) >> (n + 19) != one) { return fail("I16 right shift past the width") }
+    if ((one << 15) >> (n - 1) != minusOne) { return fail("I16 right shift by -1") }
+    if (one << ((n + 17) as I64) != (2 as I16)) { return fail("I16 shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as I16)) { return fail("I16 shift by a U8") }
+    return 0
+}
+
+fn checkInt() -> Int {
+    let zero = seen() as Int
+    let one = zero + 1
+    let n = seen()
+    let minusOne = zero - 1
+    let mut smallest = one << 31
+    if (smallest / minusOne != smallest) { return fail("Int MIN / -1") }
+    if (smallest % minusOne != zero) { return fail("Int MIN % -1") }
+    if (smallest / -1 != smallest or smallest % -1 != zero) { return fail("Int MIN / written -1") }
+    if ((7 as Int) / minusOne != zero - 7 or (7 as Int) % minusOne != zero) { return fail("Int 7 / -1") }
+    if ((zero - 7) / (one + 1) != zero - 3 or (zero - 7) % (one + 1) != zero - 1) { return fail("Int -7 / 2") }
+    smallest /= minusOne
+    if (smallest != one << 31) { return fail("Int /=") }
+    if ((100 as Int) / (one * 7) != 14 or (100 as Int) % (one * 7) != 2) { return fail("Int 100 / 7") }
+    if (one << (n + 32) != one) { return fail("Int shift by the width") }
+    if (one << (n + 35) != (8 as Int)) { return fail("Int shift past the width") }
+    if (one << (n - 1) != one << 31) { return fail("Int shift by -1") }
+    if (one << (n - 32) != one) { return fail("Int shift by minus the width") }
+    if ((8 as Int) >> (n + 35) != one) { return fail("Int right shift past the width") }
+    if ((one << 31) >> (n - 1) != minusOne) { return fail("Int right shift by -1") }
+    if (one << ((n + 33) as I64) != (2 as Int)) { return fail("Int shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as Int)) { return fail("Int shift by a U8") }
+    return 0
+}
+
+fn checkI64() -> Int {
+    let zero = seen() as I64
+    let one = zero + 1
+    let n = seen()
+    let minusOne = zero - 1
+    let mut smallest = one << 63
+    if (smallest / minusOne != smallest) { return fail("I64 MIN / -1") }
+    if (smallest % minusOne != zero) { return fail("I64 MIN % -1") }
+    if (smallest / -1 != smallest or smallest % -1 != zero) { return fail("I64 MIN / written -1") }
+    if ((7 as I64) / minusOne != zero - 7 or (7 as I64) % minusOne != zero) { return fail("I64 7 / -1") }
+    if ((zero - 7) / (one + 1) != zero - 3 or (zero - 7) % (one + 1) != zero - 1) { return fail("I64 -7 / 2") }
+    smallest /= minusOne
+    if (smallest != one << 63) { return fail("I64 /=") }
+    if ((100 as I64) / (one * 7) != 14 or (100 as I64) % (one * 7) != 2) { return fail("I64 100 / 7") }
+    if (one << (n + 64) != one) { return fail("I64 shift by the width") }
+    if (one << (n + 67) != (8 as I64)) { return fail("I64 shift past the width") }
+    if (one << (n - 1) != one << 63) { return fail("I64 shift by -1") }
+    if (one << (n - 64) != one) { return fail("I64 shift by minus the width") }
+    if ((8 as I64) >> (n + 67) != one) { return fail("I64 right shift past the width") }
+    if ((one << 63) >> (n - 1) != minusOne) { return fail("I64 right shift by -1") }
+    if (one << ((n + 65) as I64) != (2 as I64)) { return fail("I64 shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as I64)) { return fail("I64 shift by a U8") }
+    return 0
+}
+
+fn checkInt128() -> Int {
+    let zero = seen() as Int<128>
+    let one = zero + 1
+    let n = seen()
+    let minusOne = zero - 1
+    let mut smallest = one << 127
+    if (smallest / minusOne != smallest) { return fail("Int<128> MIN / -1") }
+    if (smallest % minusOne != zero) { return fail("Int<128> MIN % -1") }
+    if (smallest / -1 != smallest or smallest % -1 != zero) { return fail("Int<128> MIN / written -1") }
+    if ((7 as Int<128>) / minusOne != zero - 7 or (7 as Int<128>) % minusOne != zero) { return fail("Int<128> 7 / -1") }
+    if ((zero - 7) / (one + 1) != zero - 3 or (zero - 7) % (one + 1) != zero - 1) { return fail("Int<128> -7 / 2") }
+    smallest /= minusOne
+    if (smallest != one << 127) { return fail("Int<128> /=") }
+    if ((100 as Int<128>) / (one * 7) != 14 or (100 as Int<128>) % (one * 7) != 2) { return fail("Int<128> 100 / 7") }
+    if (one << (n + 128) != one) { return fail("Int<128> shift by the width") }
+    if (one << (n + 131) != (8 as Int<128>)) { return fail("Int<128> shift past the width") }
+    if (one << (n - 1) != one << 127) { return fail("Int<128> shift by -1") }
+    if (one << (n - 128) != one) { return fail("Int<128> shift by minus the width") }
+    if ((8 as Int<128>) >> (n + 131) != one) { return fail("Int<128> right shift past the width") }
+    if ((one << 127) >> (n - 1) != minusOne) { return fail("Int<128> right shift by -1") }
+    if (one << ((n + 129) as I64) != (2 as Int<128>)) { return fail("Int<128> shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as Int<128>)) { return fail("Int<128> shift by a U8") }
+    return 0
+}
+
+fn checkInt24() -> Int {
+    let zero = seen() as Int<24>
+    let one = zero + 1
+    let n = seen()
+    let minusOne = zero - 1
+    let mut smallest = one << 23
+    if (smallest / minusOne != smallest) { return fail("Int<24> MIN / -1") }
+    if (smallest % minusOne != zero) { return fail("Int<24> MIN % -1") }
+    if (smallest / -1 != smallest or smallest % -1 != zero) { return fail("Int<24> MIN / written -1") }
+    if ((7 as Int<24>) / minusOne != zero - 7 or (7 as Int<24>) % minusOne != zero) { return fail("Int<24> 7 / -1") }
+    if ((zero - 7) / (one + 1) != zero - 3 or (zero - 7) % (one + 1) != zero - 1) { return fail("Int<24> -7 / 2") }
+    smallest /= minusOne
+    if (smallest != one << 23) { return fail("Int<24> /=") }
+    if ((100 as Int<24>) / (one * 7) != 14 or (100 as Int<24>) % (one * 7) != 2) { return fail("Int<24> 100 / 7") }
+    if (one << (n + 24) != one) { return fail("Int<24> shift by the width") }
+    if (one << (n + 27) != (8 as Int<24>)) { return fail("Int<24> shift past the width") }
+    if (one << (n - 1) != one << 23) { return fail("Int<24> shift by -1") }
+    if (one << (n - 24) != one) { return fail("Int<24> shift by minus the width") }
+    if ((8 as Int<24>) >> (n + 27) != one) { return fail("Int<24> right shift past the width") }
+    if ((one << 23) >> (n - 1) != minusOne) { return fail("Int<24> right shift by -1") }
+    if (one << ((n + 25) as I64) != (2 as Int<24>)) { return fail("Int<24> shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as Int<24>)) { return fail("Int<24> shift by a U8") }
+    return 0
+}
+
+fn checkU8() -> Int {
+    let zero = seen() as U8
+    let one = zero + 1
+    let n = seen()
+    if ((100 as U8) / (one * 7) != 14 or (100 as U8) % (one * 7) != 2) { return fail("U8 100 / 7") }
+    if (one << (n + 8) != one) { return fail("U8 shift by the width") }
+    if (one << (n + 11) != (8 as U8)) { return fail("U8 shift past the width") }
+    if (one << (n - 1) != one << 7) { return fail("U8 shift by -1") }
+    if (one << (n - 8) != one) { return fail("U8 shift by minus the width") }
+    if ((8 as U8) >> (n + 11) != one) { return fail("U8 right shift past the width") }
+    if ((one << 7) >> (n - 1) != one) { return fail("U8 right shift by -1") }
+    if (one << ((n + 9) as I64) != (2 as U8)) { return fail("U8 shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as U8)) { return fail("U8 shift by a U8") }
+    return 0
+}
+
+fn checkU16() -> Int {
+    let zero = seen() as U16
+    let one = zero + 1
+    let n = seen()
+    if ((100 as U16) / (one * 7) != 14 or (100 as U16) % (one * 7) != 2) { return fail("U16 100 / 7") }
+    if (one << (n + 16) != one) { return fail("U16 shift by the width") }
+    if (one << (n + 19) != (8 as U16)) { return fail("U16 shift past the width") }
+    if (one << (n - 1) != one << 15) { return fail("U16 shift by -1") }
+    if (one << (n - 16) != one) { return fail("U16 shift by minus the width") }
+    if ((8 as U16) >> (n + 19) != one) { return fail("U16 right shift past the width") }
+    if ((one << 15) >> (n - 1) != one) { return fail("U16 right shift by -1") }
+    if (one << ((n + 17) as I64) != (2 as U16)) { return fail("U16 shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as U16)) { return fail("U16 shift by a U8") }
+    return 0
+}
+
+fn checkU32() -> Int {
+    let zero = seen() as U32
+    let one = zero + 1
+    let n = seen()
+    if ((100 as U32) / (one * 7) != 14 or (100 as U32) % (one * 7) != 2) { return fail("U32 100 / 7") }
+    if (one << (n + 32) != one) { return fail("U32 shift by the width") }
+    if (one << (n + 35) != (8 as U32)) { return fail("U32 shift past the width") }
+    if (one << (n - 1) != one << 31) { return fail("U32 shift by -1") }
+    if (one << (n - 32) != one) { return fail("U32 shift by minus the width") }
+    if ((8 as U32) >> (n + 35) != one) { return fail("U32 right shift past the width") }
+    if ((one << 31) >> (n - 1) != one) { return fail("U32 right shift by -1") }
+    if (one << ((n + 33) as I64) != (2 as U32)) { return fail("U32 shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as U32)) { return fail("U32 shift by a U8") }
+    return 0
+}
+
+fn checkU64() -> Int {
+    let zero = seen() as U64
+    let one = zero + 1
+    let n = seen()
+    if ((100 as U64) / (one * 7) != 14 or (100 as U64) % (one * 7) != 2) { return fail("U64 100 / 7") }
+    if (one << (n + 64) != one) { return fail("U64 shift by the width") }
+    if (one << (n + 67) != (8 as U64)) { return fail("U64 shift past the width") }
+    if (one << (n - 1) != one << 63) { return fail("U64 shift by -1") }
+    if (one << (n - 64) != one) { return fail("U64 shift by minus the width") }
+    if ((8 as U64) >> (n + 67) != one) { return fail("U64 right shift past the width") }
+    if ((one << 63) >> (n - 1) != one) { return fail("U64 right shift by -1") }
+    if (one << ((n + 65) as I64) != (2 as U64)) { return fail("U64 shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as U64)) { return fail("U64 shift by a U8") }
+    return 0
+}
+
+fn checkUInt128() -> Int {
+    let zero = seen() as UInt<128>
+    let one = zero + 1
+    let n = seen()
+    if ((100 as UInt<128>) / (one * 7) != 14 or (100 as UInt<128>) % (one * 7) != 2) { return fail("UInt<128> 100 / 7") }
+    if (one << (n + 128) != one) { return fail("UInt<128> shift by the width") }
+    if (one << (n + 131) != (8 as UInt<128>)) { return fail("UInt<128> shift past the width") }
+    if (one << (n - 1) != one << 127) { return fail("UInt<128> shift by -1") }
+    if (one << (n - 128) != one) { return fail("UInt<128> shift by minus the width") }
+    if ((8 as UInt<128>) >> (n + 131) != one) { return fail("UInt<128> right shift past the width") }
+    if ((one << 127) >> (n - 1) != one) { return fail("UInt<128> right shift by -1") }
+    if (one << ((n + 129) as I64) != (2 as UInt<128>)) { return fail("UInt<128> shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as UInt<128>)) { return fail("UInt<128> shift by a U8") }
+    return 0
+}
+
+fn checkUInt12() -> Int {
+    let zero = seen() as UInt<12>
+    let one = zero + 1
+    let n = seen()
+    if ((100 as UInt<12>) / (one * 7) != 14 or (100 as UInt<12>) % (one * 7) != 2) { return fail("UInt<12> 100 / 7") }
+    if (one << (n + 12) != one) { return fail("UInt<12> shift by the width") }
+    if (one << (n + 15) != (8 as UInt<12>)) { return fail("UInt<12> shift past the width") }
+    if (one << (n - 1) != one << 11) { return fail("UInt<12> shift by -1") }
+    if (one << (n - 12) != one) { return fail("UInt<12> shift by minus the width") }
+    if ((8 as UInt<12>) >> (n + 15) != one) { return fail("UInt<12> right shift past the width") }
+    if ((one << 11) >> (n - 1) != one) { return fail("UInt<12> right shift by -1") }
+    if (one << ((n + 13) as I64) != (2 as UInt<12>)) { return fail("UInt<12> shift by an I64") }
+    if (one << ((n + 3) as U8) != (8 as UInt<12>)) { return fail("UInt<12> shift by a U8") }
+    return 0
+}
+
+// A U8 amount of 255 on an Int is 31, and an I8 of -1 is too.
+fn checkAmounts() -> Int {
+    let n = seen()
+    if ((1 as Int) << ((n + 255) as U8) != (1 as Int) << 31) { return fail("U8 255") }
+    if ((1 as Int) << ((n - 1) as I8) != (1 as Int) << 31) { return fail("I8 -1") }
+    // 2^32 + 1: reduced before it is cut to the shifted value's width.
+    if (1 << ((n as I64) + 4294967297) != 2) { return fail("I64 amount above 2^32") }
+    if ((1 as Int<24>) << ((n as I64) + 4294967297) != (1 as Int<24>) << 17) { return fail("I64 amount, odd width") }
+    let letter = 'A'
+    if (letter << (n + 8) != letter) { return fail("Char shift") }
+    return 0
+}
+
+// Written amounts that are in range for an I64 only: in the I32 copy they are masked.
+fn forty<T>(value: T) -> T { return value << 40 }
+
+fn checkGeneric() -> Int {
+    let n = seen()
+    if (forty((n as I64) + 1) != 1099511627776) { return fail("generic I64") }
+    if (forty(n + 1) != 256) { return fail("generic Int") }
+    return 0
+}
+
+fn main() -> Int {
+    if (checkI8() != 0) { return 1 }
+    if (checkI16() != 0) { return 1 }
+    if (checkInt() != 0) { return 1 }
+    if (checkI64() != 0) { return 1 }
+    if (checkInt128() != 0) { return 1 }
+    if (checkInt24() != 0) { return 1 }
+    if (checkU8() != 0) { return 1 }
+    if (checkU16() != 0) { return 1 }
+    if (checkU32() != 0) { return 1 }
+    if (checkU64() != 0) { return 1 }
+    if (checkUInt128() != 0) { return 1 }
+    if (checkUInt12() != 0) { return 1 }
+    if (checkAmounts() != 0) { return 1 }
+    if (checkGeneric() != 0) { return 1 }
+    println("ok")
+    return 0
+}

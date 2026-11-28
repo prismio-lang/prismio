@@ -200,6 +200,8 @@ public const DIAG_SEMA_PRODUCE_NEEDS_RELEASE = "P4109"
 public const DIAG_SEMA_STRING_CONTRACT_ON_NON_STRING = "P4110"
 public const DIAG_SEMA_EXTERN_GLOBAL_TYPE = "P4111"
 public const DIAG_SEMA_FOREIGN_PRODUCE_SELF_RELEASED = "P4112"
+public const DIAG_SEMA_DIVISION_BY_ZERO = "P4113"
+public const DIAG_SEMA_SHIFT_OUT_OF_RANGE = "P4114"
 // --- P5xxx: the memory analysis (AIF) --------------------------------------
 
 public const DIAG_AIF_PROFILE_MATCHED_NOTHING = "P5001"

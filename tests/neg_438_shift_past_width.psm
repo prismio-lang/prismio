@@ -1,0 +1,11 @@
+// expect-error: P4114
+// expect-error: a shift of Int by 32 is outside 0..<32
+// expect-error: a shift of U8 by 8 is outside 0..<8
+// expect-error: a shift of I64 by 64 is outside 0..<64
+
+fn main() -> Int {
+    let a = 1 << 32
+    let b = (200 as U8) >> 8
+    let c = (1 as I64) << 64
+    return a + (b as Int) + (c as Int)
+}

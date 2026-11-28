@@ -1416,6 +1416,41 @@ private fn semaCoalesceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return semaExpr(module, expr)
 }
 
+// A written 0 under `/` or `%` on integers: the division cannot be carried out, and
+// says so now rather than when it is reached. A divisor that only turns out to be 0
+// stops the program there.
+private fn semaRefuseZeroDivisor(op: String, leftT: TypeInfo, divisor: ASTNode) {
+    if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM) { return }
+    if (semaIsIntLiteral(divisor) == false) { return }
+    let mut at = 0
+    if (divisor.s1.startsWith("-")) { at = 1 }
+    if ((typeIntLiteralMagnitude(divisor.s1, at) ?? (1 as U64)) == (0 as U64)) {
+        diag_error_at_code(DIAG_SEMA_DIVISION_BY_ZERO, divisor.file, divisor.line, divisor.col, divisor.len,
+            "operator ".concat(diagQuote(op), " divides by zero"))
+    }
+}
+
+// A written shift amount outside 0..<width, for a shifted type that is what it was
+// written as. A run-time amount is taken modulo the width, and so is a written one in a
+// generic function's copy: `x << 40` is right for an `I64` and has to build for an `I32`
+// too. A negative amount is a mistake at every width.
+private fn semaRefuseShiftAmount(leftT: TypeInfo, amount: ASTNode) {
+    if (semaIsIntLiteral(amount) == false) { return }
+    if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.CHAR) { return }
+    let mut width = 8
+    if (leftT.kind == TypeKind.INT) { width = typeIntBits(leftT) }
+    let negative = amount.s1.startsWith("-")
+    let mut at = 0
+    if (negative) { at = 1 }
+    let magnitude = typeIntLiteralMagnitude(amount.s1, at) ?? (0 as U64)
+    if (negative and magnitude == (0 as U64)) { return }
+    if (negative == false and magnitude < (width as U64)) { return }
+    if (negative == false and nodeExists(closureEnclosingGenerics)) { return }
+    diag_error_at_code(DIAG_SEMA_SHIFT_OUT_OF_RANGE, amount.file, amount.line, amount.col, amount.len,
+        "a shift of ".concat(typeDisplay(leftT), " by ", amount.s1, " is outside 0..<", width.toString()))
+    diag_note("a shift amount known only when the program runs is taken modulo the width")
+}
+
 private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (expr.s1.equals("??")) { return semaCoalesceExpr(module, expr) }
 
@@ -1492,6 +1527,7 @@ private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                                                      " requires numeric operands"))
         }
         semaExpectAssignable(rightNode, "operator ".concat(diagQuote(op)), leftT, rightT)
+        if (op.equals("/")) { semaRefuseZeroDivisor(op, leftT, rightNode) }
         nodeSetType(expr, leftT)
         return leftT
     }
@@ -1508,6 +1544,7 @@ private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             semaErrorAt(leftNode, "operator `%` requires integer or Float operands")
         }
         semaExpectAssignable(rightNode, "operator `%`", leftT, rightT)
+        semaRefuseZeroDivisor(op, leftT, rightNode)
         nodeSetType(expr, leftT)
         return leftT
     }
@@ -1534,6 +1571,7 @@ private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             semaErrorAt(rightNode, "the shift amount of ".concat(diagQuote(op),
                                                                  " must be an integer"))
         }
+        semaRefuseShiftAmount(leftT, rightNode)
         nodeSetType(expr, leftT)
         return leftT
     }

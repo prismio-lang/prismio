@@ -45,6 +45,8 @@ const REM_UNSIGNED = 5
 // A divisor `2^k - 1` and a dividend within 2^(2k - 1) of zero; see mersenneForm.
 const REM_MERSENNE = 6
 const REM_MERSENNE_SIGNED = 7
+// A divisor the facts put clear of 0 and -1: a plain `srem` or `sdiv`, with no check.
+const REM_SAFE_DIVISOR = 8
 
 // The form a remainder by `m` takes on a dividend in [lo, hi].
 internal fn remainderForm(lo: I64, hi: I64, m: Int) -> Int {

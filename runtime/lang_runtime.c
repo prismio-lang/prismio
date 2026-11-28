@@ -3541,6 +3541,13 @@ void prismio_overflow_trap(const char* op, const char* file, int line) {
     exit(1);
 }
 
+// A `/` or `%` whose divisor was zero. Not returning, like the overflow trap above.
+void prismio_division_trap(const char* file, int line) {
+    fprintf(stderr, "runtime error: division by zero at %s:%d\n",
+            (file && *file) ? file : "<unknown>", line);
+    exit(1);
+}
+
 // A range `for`'s computed step, checked once where the loop is entered. The
 // range decides the direction and the step is only its size, so zero or less
 // has no meaning; sema refuses a literal one, and this is the rest.

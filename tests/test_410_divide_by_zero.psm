@@ -1,0 +1,49 @@
+// expect-trap: div => runtime error: division by zero
+// expect-trap: rem => runtime error: division by zero
+// expect-trap: unsigned => runtime error: division by zero
+// expect-trap: narrow => runtime error: division by zero
+// expect-trap: wide => runtime error: division by zero
+// expect-trap: compound => runtime error: division by zero
+// expect-trap: constant => runtime error: division by zero
+// expect-trap: loop => runtime error: division by zero
+// A divisor that is zero when the program runs stops it, for `/` and `%`, signed and
+// unsigned, at every width. With no argument every divisor is nonzero and each case
+// answers its value.
+
+import std.io
+import std.process
+
+const NOTHING: Int = 0
+
+fn quotient(a: Int, b: Int) -> Int { return a / b }
+fn remainder(a: Int, b: Int) -> Int { return a % b }
+
+fn main() -> Int {
+    let mut name = "".clone()
+    if (process.args.count > 1) { name = process.args[1].clone() }
+    let mut zeroed = 1
+    if (name.equals("div")) { println(quotient(7, 0 * process.args.count)) }
+    if (name.equals("rem")) { println(remainder(7, process.args.count - 2)) }
+    if (name.equals("unsigned")) { println((7 as U64) / ((process.args.count - 2) as U64)) }
+    if (name.equals("narrow")) { println((7 as I8) % ((process.args.count - 2) as I8)) }
+    if (name.equals("wide")) { println((7 as Int<128>) / ((process.args.count - 2) as Int<128>)) }
+    if (name.equals("compound")) {
+        let mut x = 7
+        x /= process.args.count - 2
+        println(x)
+    }
+    if (name.equals("constant")) { println(7 / NOTHING) }
+    if (name.equals("loop")) {
+        let mut sum = 0
+        for i in 0..<10 { sum += 100 / (5 - i) }
+        println(sum)
+    }
+    if (name.length > 0) { zeroed = 0 }
+    if (zeroed == 0) {
+        println("FAIL", name, "did not stop")
+        return 1
+    }
+    if (quotient(7, 2) != 3 or remainder(7, 2) != 1) { println("FAIL value") return 1 }
+    if ((7 as U64) / (2 as U64) != 3 or (7 as I8) % (2 as I8) != 1) { println("FAIL narrow value") return 1 }
+    return 0
+}
