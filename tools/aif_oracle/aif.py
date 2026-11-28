@@ -718,6 +718,8 @@ class Engine:
         # element is neither: list_push is a call, so nothing about it is a move,
         # and two pushes of one value are two owners the language never noticed.
         self.container_of = defaultdict(set)
+        # Sites some container stores through a view (A-CONTAIN).
+        self.view_stored = set()
         # SPEC 8.4. key -> {collection sites that values bound to this key are
         # views of}. Provenance has to ride the points-to graph and not the
         # value set alone, because a view is nearly always bound to a name
@@ -956,7 +958,13 @@ class Engine:
                     # The callee stores this argument into another argument, so
                     # it escapes exactly as far as that container does.
                     holder = argvals[c[1]] if c[1] < len(argvals) else VS_EMPTY
-                    self.constraints.append(('retain_in', av, holder))
+                    # A String pushed or inserted into a List<String> is copied by
+                    # codegen when it is an element read, so that store keeps no
+                    # second holder of the block it read. Mirrors `copiesString`.
+                    holder_ty = e['c2'][c[1]]['ty'] if c[1] < len(e['c2']) else ''
+                    copies = (plain in ('list_push', 'list_insert') and i != c[1]
+                              and elem_key(holder_ty) == elem_key('List<String>'))
+                    self.constraints.append(('retain_in', av, holder, copies))
                     # SPEC 5.2.1 obligation 2, container form. `list_push(dest, x)`
                     # on a `dest` this function did not allocate is the counter-
                     # example the summary exists to catch, and it is recorded on
@@ -965,7 +973,6 @@ class Engine:
                     self.owner_uses.append((fn, holder))
                     # ...and the container's element field now points at it, so a
                     # later read gets the element back rather than the container.
-                    holder_ty = e['c2'][c[1]]['ty'] if c[1] < len(e['c2']) else ''
                     self.constraints.append(('bind', elem_key(holder_ty), av))
                     # A container reached through a global is held for the life of the
                     # program, and a global is never allocated here, so the holder's
@@ -1662,7 +1669,7 @@ class Engine:
                 elif kind == 'retain_in':
                     # E-STORE / A-STORE against a container reached through a
                     # call rather than a field assignment.
-                    _, val, holder = c
+                    _, val, holder, copies = c
                     hs = self.resolve(holder)
                     for s in self.resolve(val):
                         for h in hs:
@@ -1691,6 +1698,9 @@ class Engine:
                     # A String is exempt -- storing a view copies it.
                     if hs and self.resolve_views(val):
                         for s in self.resolve(val):
+                            if not copies and s not in self.view_stored:
+                                self.view_stored.add(s)
+                                changed = self.moved(s)
                             if self.m.sites[s].kind != 'string' and self.A[s] < SHARED:
                                 self.A[s] = SHARED
                                 changed = self.moved(s)
@@ -1799,13 +1809,14 @@ class Engine:
                         and self.A[s_id] < SHARED):
                     self.A[s_id] = SHARED
                     changed = self.moved(s_id)
-                # A-CONTAIN: two containers holding one value is sharing, whatever
-                # the type. A-COPY exempts move-only values because a second
-                # *binding* is a move, so the earlier one is provably dead -- and
-                # that argument does not reach a container, because list_push is a
-                # call and a call is not a move. Once a container teardown releases
-                # its elements, two owners is the double free.
-                if (len(self.container_of[s_id]) >= 2
+                # A-CONTAIN: two containers holding one value is sharing. One site
+                # is a *function's* allocation, not one value, so a move-only site
+                # never stored as a view is exempt: storing a binding twice is "use
+                # of moved value" and a parameter cannot be retained, so two holders
+                # are two values. An element read pushed is one value held twice.
+                # Mirrors the engine's rule in src/aifcore/solver.psm.
+                if ((not self.m.is_move_only(site.type) or s_id in self.view_stored)
+                        and len(self.container_of[s_id]) >= 2
                         and self.A[s_id] < SHARED):
                     self.A[s_id] = SHARED
                     changed = self.moved(s_id)

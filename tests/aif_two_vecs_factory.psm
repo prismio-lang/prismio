@@ -1,0 +1,16 @@
+// One function's allocation feeding two containers is not one value held twice:
+// each call makes its own `State`, so the site stays owned (T2). The engine and
+// its oracle disagreed here until 2026-11-28; tools/aif_differential.py compares
+// them on this source.
+
+struct State { world: Int }
+
+fn copyState(w: Int) -> State { return State { world: w } }
+
+fn main() -> Int {
+    let mut first: Vec<State> = []
+    let mut second: Vec<State> = []
+    first.push(copyState(1))
+    second.push(copyState(2))
+    return first[0].world + second[0].world - 3
+}

@@ -286,6 +286,12 @@ def main():
         # with the oracle's `foreign` handling removed, this source reports
         # `T0: compiler=0 oracle=2`.
         sources.append(Path("tests/test_96_channels.psm"))
+        # A-CONTAIN, both ways: one function's fresh struct in two Vecs is two
+        # values (the engine and the oracle once disagreed, and no source above
+        # reaches it), and an element read pushed again is one value held twice.
+        sources.append(Path("tests/aif_two_vecs_factory.psm"))
+        sources.append(Path("tests/test_302_struct_in_two_vecs.psm"))
+        sources.append(Path("tests/test_256_string_view_pushed_twice.psm"))
 
     dumps = {}
     failures = []

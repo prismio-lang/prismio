@@ -273,6 +273,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **The AIF engine and its oracle agree about two containers holding one site again.** The engine counts a move-only value in two
+  containers as shared only when some container stores it through a view (since the `graph_churn` work); the oracle still counted
+  every site, so one factory feeding two `Vec`s read T2 in the engine and T3 in the oracle. The oracle now applies the engine's
+  condition. `tools/aif_differential.py` compares three more sources (`tests/aif_two_vecs_factory.psm`, `test_302`, `test_256`) and
+  agrees on all 22, with `--plan` too.
+
 - **A misspelled import was accepted silently.** `import std.nothing`, `import std.io.nothing` and `import util.nothing` (for a module `util` that declares no `nothing`) checked clean, as selections of a name nothing declared. They are `P1137` now.
 - **`${}` needed `import std.fmt.display`, and the error did not say so.** Interpolation needs no import. A lang item marked on a trait's or an `impl`'s member is found in the library index, so `P1125` names the module.
 - **A method of one module hid the same method of another from the prelude.** With `std.string` read, `v.contains(x)` on a `Vec` could not bring in `std.collections.vec`.
