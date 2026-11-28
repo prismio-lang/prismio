@@ -17,7 +17,8 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   use. Off by default: with the plan off the emitted program is unchanged, and with it four of the earlier programs of `tests/` and
   the probes move (`test_205`, `test_273`, `test_399`, `field_out_of_dying_struct`), taking them from 3,635 to 785 leaked blocks under
   `--verify`, 0 violations. `test_406` (910 -> 0) and `test_407` (386 -> 146, the shapes that must be declined) are in the `pir_plan`
-  check. Building the compiler with the plan on costs 10.5% more instructions than with it off.
+  check. Building the compiler with the plan on costs 8.8% more instructions than with it off (10.5% before the view
+  fixed point rebuilt each caller once a round instead of once per view it calls: 1,775 -> 1,375 rebuilds, same PIR).
 
 - **`&x`, `&mut x`, `*p` and `p[i]`: a pointer to a program's own variable** (`src/sema/references.psm`). `&x` is a `Ptr<T>` and
   `&mut x` a `Ptr<mut T>`, of a local, a global, a field, or an element of an array or `Vec`; `*p` is `p.load()`, `*p = v` and `*p += v`

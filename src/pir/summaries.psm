@@ -63,16 +63,22 @@ public fn pirBuildProgram(module: ASTNode, overflowChecks: Bool, takes: Bool) ->
 
     let mut at = 0
     while (at < queue.length) {
-        let found = queue[at]
-        at = at + 1
-        let symbol = program.funcs[found].name.clone()
-        program.viewResults.insert(symbol.clone(), 1)
-        let mut entry = first.getOr(symbol, -1)
-        while (entry >= 0) {
-            let caller = callerOf[entry]
-            entry = nextCaller[entry]
+        // One round per distance from the first views: a caller of several is rebuilt once.
+        let mut stale: Vec<Bool> = Vec<Bool>.filled(count, false)
+        let end = queue.length
+        while (at < end) {
+            let symbol = program.funcs[queue[at]].name.clone()
+            at = at + 1
+            program.viewResults.insert(symbol.clone(), 1)
+            let mut entry = first.getOr(symbol, -1)
+            while (entry >= 0) {
+                stale[callerOf[entry]] = true
+                entry = nextCaller[entry]
+            }
+        }
+        for caller in 0..<count {
             // A function not covered stays so, and is in the set already.
-            if (program.funcs[caller].refusal.equals("") == false) { continue }
+            if (stale[caller] == false or program.funcs[caller].refusal.equals("") == false) { continue }
             let rebuilt = pirBuildFunction(program, caller)
             let views = pirReturnsView(program.types, rebuilt)
             program.funcs[caller] = rebuilt
