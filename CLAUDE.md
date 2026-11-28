@@ -89,7 +89,8 @@ Four hazards, each of which has cost a session:
 
 ## Tests
 
-The test engine is `tools/testkit/` (design and measured numbers: `docs/TEST_ORCHESTRATION_PLAN.md`).
+The test engine is `tools/testkit/` (how to use it: the developer docs' testing overview; design and
+measured numbers, removed from the tree: `git show 3df157c:docs/TEST_ORCHESTRATION_PLAN.md`).
 `tests/test_runner.py` is a compatibility shim; do not add tests to it.
 
 Pick the profile by what the change is, and say which one ran:

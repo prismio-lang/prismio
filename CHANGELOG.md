@@ -309,7 +309,7 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Repository
 
-- **The tests run through one engine (`tools/testkit/`, `docs/TEST_ORCHESTRATION_PLAN.md`).** `prismio suite
+- **The tests run through one engine (`tools/testkit/`; design record: `git show 3df157c:docs/TEST_ORCHESTRATION_PLAN.md`).** `prismio suite
   [profile]` (`smoke`, `dev` by default, `full`, `verify`, `gate`, `release`) runs fixtures and harness tests on one
   resource-aware pool and, in `smoke` and `dev`, skips what a cache key proves unchanged. On a 10-core M-series host
   `full` takes 198 s against the old runner's 429 s (849 tests; `PRISMIO_TEST_JOBS=1`: 805 s), an unchanged `dev` run

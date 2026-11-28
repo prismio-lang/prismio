@@ -6,7 +6,7 @@
 //     dir <path>       a directory whose modules were listed: a file added to it changes the answer
 //     absent <path>    a file or directory looked for and not found: creating it changes the answer
 //
-// The test orchestrator keys a cached result on these (docs/TEST_ORCHESTRATION_PLAN.md, K1).
+// The test orchestrator keys a cached result on these (the design record, K1; see tools/testkit/__init__.py).
 
 import std.collections.vec
 import std.fs

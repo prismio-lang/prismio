@@ -1,5 +1,5 @@
 """The test engine's own tests: each cache key must tell two different inputs apart
-(docs/TEST_ORCHESTRATION_PLAN.md, section 5, rule 5). A key that cannot has proved nothing."""
+(the design record, section 5, rule 5; see tools/testkit/__init__.py). A key that cannot has proved nothing."""
 import json
 import os
 import subprocess

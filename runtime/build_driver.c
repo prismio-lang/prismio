@@ -2564,7 +2564,7 @@ static char* driver_link_command(const char* program_obj, const char* exe_file) 
 }
 
 // `--emit-link-key=<file>`: one hash over everything this build hands the linker, so that two
-// builds with equal keys link the same program (docs/TEST_ORCHESTRATION_PLAN.md, K3).
+// builds with equal keys link the same program (the design record, K3; see tools/testkit/__init__.py).
 static char* g_link_key_path = NULL;
 
 void compiler_set_link_key(const char* path) {

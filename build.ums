@@ -146,7 +146,7 @@ commands {
         run("tools/bootstrap.py", "--seed", "--out", "build/seedcheck")
     }
 
-    // The test engine (tools/testkit; docs/TEST_ORCHESTRATION_PLAN.md), through
+    // The test engine (tools/testkit; design record in its __init__.py), through
     // tools/run_suite.py. It tests a *copy* of the project host's toolchain, and its first
     // argument is a profile: `prismio suite` is `dev` (every test, skipping what a cache key
     // proves unchanged), `prismio suite smoke` a cross-section, `prismio suite full`

@@ -1,4 +1,4 @@
-"""One record for every check the engine can run (docs/TEST_ORCHESTRATION_PLAN.md, section 4)."""
+"""One record for every check the engine can run (the design record, section 4; see tools/testkit/__init__.py)."""
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional

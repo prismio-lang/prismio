@@ -1,4 +1,4 @@
-"""The profiles (docs/TEST_ORCHESTRATION_PLAN.md, section 8).
+"""The profiles (the design record, section 8; see tools/testkit/__init__.py).
 
 A profile says which tests, whether a recorded pass may be used, what is prepared first and
 which checks run beside the tests. `full` and everything after it record results and never use

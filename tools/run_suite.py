@@ -3,7 +3,7 @@
 
     python3 tools/run_suite.py [profile] [patterns] [--compiler PATH] [options]
 
-The engine is tools/testkit (docs/TEST_ORCHESTRATION_PLAN.md); this name stays because
+The engine is tools/testkit (the design record, see tools/testkit/__init__.py); this name stays because
 scripts, CI and the documentation call it. Every argument is forwarded, so
 `prismio suite -k foo --list` works, and the profile defaults to `dev`. The compiler defaults
 to the project host, falling back to the packaged toolchain, and what is tested is always a

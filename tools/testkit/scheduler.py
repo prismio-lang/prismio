@@ -1,4 +1,4 @@
-"""One resource-aware pool for everything (docs/TEST_ORCHESTRATION_PLAN.md, section 6).
+"""One resource-aware pool for everything (the design record, section 6; see tools/testkit/__init__.py).
 
 A test starts when its cpu tokens and memory fit and nothing holds a lock it wants. The queue
 is ordered and the first test that fits starts, except that nothing overtakes a test waiting

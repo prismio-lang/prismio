@@ -1,4 +1,4 @@
-"""The three cache keys (docs/TEST_ORCHESTRATION_PLAN.md, sections 3 and 5).
+"""The three cache keys (the design record, sections 3 and 5; see tools/testkit/__init__.py).
 
     K1  the inputs     the source closure, the compiler and its library, the machine
     K2  the artifact   the emitted IR, the libraries merged into it, the backend

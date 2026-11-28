@@ -297,8 +297,8 @@ Names, or parts of names, select tests (`prismio suite test_92_field_view_proven
 `prismio suite -k lsp`); `prismio suite --list` lists them. A filtered run says on its last
 line that it was filtered; an unfiltered `prismio gate` remains the final check before a push.
 Profiles, the result cache and how to add a test are described in
-[docs/TEST_ORCHESTRATION_PLAN.md](docs/TEST_ORCHESTRATION_PLAN.md) and on the developer docs'
-testing page.
+the developer docs' testing
+page; the design record, removed from the tree, is `git show 3df157c:docs/TEST_ORCHESTRATION_PLAN.md`.
 
 The repository's dependency-free formatting and lint entry points are:
 

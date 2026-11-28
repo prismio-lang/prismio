@@ -1,4 +1,4 @@
-"""The `bootstrap` suite's harness tests (docs/TEST_ORCHESTRATION_PLAN.md, section 4)."""
+"""The `bootstrap` suite's harness tests (the design record, section 4; see tools/testkit/__init__.py)."""
 import os
 import shutil
 import subprocess
