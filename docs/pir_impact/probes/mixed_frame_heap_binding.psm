@@ -1,0 +1,9 @@
+// RESEARCH_ROUND3.md §1: a binding that holds a frame value and heap values.
+// Baseline 2026-11-22: 50 allocated, 0 released, 50 leaked. Target: 0.
+struct Cmd { id: Int, weight: Int }
+fn make_out(i: Int) -> Cmd { return Cmd { id: i, weight: i * 2 } }
+fn main() -> Int {
+    let mut keep = Cmd { id: 0, weight: 0 }
+    for i in 0..<50 { keep = make_out(i) }
+    return keep.id - 49
+}

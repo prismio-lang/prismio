@@ -1,0 +1,30 @@
+// RESEARCH_BUILD_LIST.md §2.2: a field taken out of a dying local struct.
+// Baseline 2026-11-22: 907 allocated, 7 released, 900 leaked. Target: 0.
+import std.string
+
+struct Bag { label: String, items: Vec<String> }
+
+fn itemsOf(i: Int) -> Vec<String> {
+    let mut v: Vec<String> = []
+    v.push("an-element-longer-than-twelve-".concat(i.toString()))
+    let bag = Bag { label: "a-label-longer-than-twelve-".concat(i.toString()), items: v }
+    return bag.items
+}
+
+fn keepInto(i: Int, inout keep: Vec<Vec<String>>) {
+    let mut v: Vec<String> = []
+    v.push("an-element-longer-than-twelve-".concat(i.toString()))
+    let bag = Bag { label: "a-label-longer-than-twelve-".concat(i.toString()), items: v }
+    keep.push(bag.items)
+}
+
+fn main() -> Int {
+    let mut total = 0
+    let mut keep: Vec<Vec<String>> = []
+    for i in 0..<100 {
+        let xs = itemsOf(i)
+        total = total + xs.length
+        keepInto(i, keep)
+    }
+    return (total + keep.length) % 256
+}

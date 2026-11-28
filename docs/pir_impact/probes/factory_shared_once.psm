@@ -1,0 +1,20 @@
+// RESEARCH_BUILD_LIST.md §2.1: one shared element makes a whole factory leak.
+// Baseline 2026-11-22: 410 allocated, 210 released, 200 leaked. Target: 0.
+import std.string
+
+struct Item { name: String, qty: Int }
+
+fn makeItem(i: Int) -> Item {
+    return Item { name: "an-item-name-longer-than-twelve-".concat(i.toString()), qty: i }
+}
+
+fn main() -> Int {
+    let mut all: Vec<Item> = []
+    for i in 0..<200 { all.push(makeItem(i)) }
+    let mut total = 0
+    for i in 0..<all.length { total = total + all[i].name.length + all[i].qty }
+    let mut fav: Vec<Item> = []
+    fav.push(all[3])
+    total = total + fav.length
+    return total % 256
+}

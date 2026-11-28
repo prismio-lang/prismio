@@ -1,0 +1,11 @@
+// KNOWN_ISSUES: an owned temporary on the right of `or` (PIR_PLAN §15). Target: 0 leaked.
+fn main() -> Int {
+    let mut hits = 0
+    for i in 0..<100 {
+        let mut v: Vec<Int> = []
+        v.push(i + 5)
+        v.push(3)
+        if (i < 0 or v.sorted()[0] > 1) { hits = hits + 1 }
+    }
+    return hits % 256
+}

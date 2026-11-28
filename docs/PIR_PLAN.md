@@ -1,11 +1,11 @@
 # PIR: Prismio's middle IR, a layered hybrid
 
-**Status:** design, revised 2026-11-27; stages P0, P0b and P1 are built (§20), and what they
-decided is recorded in §20.1. The first version of this plan
-(2026-11-22) proposed a pure affine RVSDG. This revision keeps its goals, its measured motivation
-and its migration discipline, and changes the structure: PIR is now **several representations
-layered on one node set**, each taken from the IR family that is best at one of Prismio's problems.
-The 2026-11-22 text was never committed; what still holds of it is folded in below.
+**Status:** stages P0–P3 are built and ship in 0.3 (§20); `--pir=plan` is opt-in there. What 0.3
+measured is §20.4, and **where the next release cycle starts is §20.5**. The design was revised
+2026-11-27: the first version (2026-11-22) proposed a pure affine RVSDG. This revision keeps its
+goals, its measured motivation and its migration discipline, and changes the structure: PIR is now
+**several representations layered on one node set**, each taken from the IR family that is best at
+one of Prismio's problems.
 
 **PIR** (Prismio Intermediate Representation) sits between the checked AST and LLVM IR. It is
 written in Prismio, in `src/pir/`, deterministic by construction, and it is the place where
@@ -988,6 +988,85 @@ allocation site behind it (nothing to release), and a container whose element re
 returned under another name (the engine's per-name `ret_key`), a field read off a temporary in an arm, and a temporary `Vec` literal
 in an arm.
 
+### 20.4 · What 0.3 measured
+
+PIR in 0.3 is P0–P3: the builder and verifier, the interpreter (`--pir-run`) with its differential
+(`tools/pir_differential.py`), the sanitizer gate, `take` at last use and exit-edge drops behind
+`--pir=plan`. With the plan off the compiler's output is what it was without PIR; the benchmark IR is
+byte-identical with the plan off and on.
+
+| Measure | Before PIR (`c6d7432`) | 0.3 |
+|---|---:|---:|
+| `tests/` + the PIR probes, leaked blocks under `--verify` | 3,635 (with the 0.3 fixtures) | **785** with `--pir=plan`, 0 violations |
+| `field_out_of_dying_struct` / `test_273` / `test_205` / `test_399` | 900 / 300 / 10 / 1,640 | 0 / 0 / 0 / 0 (plan) |
+| PIR coverage of `src/main.psm` | — | 4,373 / 4,383 functions; std 985 / 985 |
+| Interpreter differential over `tests/` | — | 329 / 330 (`test_287`, known) |
+| Compile cost of `src/main.psm`, plan on | — | +12% wall, **+8.8% instructions**, +16% RSS (the bar is +5%) |
+
+Bugs PIR surfaced, each reproduced outside PIR and fixed in 0.3:
+
+| Bug | Found by | Fixed in |
+|---|---|---|
+| A view of a plain-struct `Vec` element dangled after the Vec grew (use-after-free in safe code, invisible to `--verify`) | the aliasing probes for P0's `inout` model | `8563989` (SPEC §8.4: Vec and index, resolved at each read) |
+| Division by zero gave 0, `Int.MIN / -1` trapped, shifts by the width or more were undefined | the interpreter having to pick a meaning | `d62db5d`, `28e840c` |
+| `as F32` in `src/` broke the bootstrap link | interpreter work | `bd44f5f` |
+| The AIF oracle lagged the engine (T2 against T3 on one factory site) | the AIF differential failing on PIR's code | `e42f134` (the oracle was wrong) |
+| A value handed back by a pass-through function and stored twice was freed twice | checking the engine's rule while settling the drift | `ddf2ed1` |
+| A plain struct moved out of a field or payload had two owners (wrong values, bad frees) | P3's check of the view rules | `33e421c` (P4116; `Copy` types are copied) |
+
+The leak ledger is `python3 docs/pir_impact/audit.py --compiler <c> --out <file>.json`, over
+`tests/` and `docs/pir_impact/probes/`.
+
+### 20.5 · Continuing in 0.4: where to start
+
+0.4 carries P4–P8; P9 (emission) and P10 (distribution) are likely 0.5. Each stage is built in its
+own session on `main`, and its numbers are checked by someone other than its implementer: the ledger
+(`audit.py`, plan off and on), the interpreter differential, the AIF differential, the sanitizer gate,
+`prismio verify`, and the benchmark IR. **Take a fresh baseline with `audit.py` at the start of the
+cycle**: the 0.3 safety fixes moved 18 programs' IR after the numbers above. Benchmark A/Bs compare
+against the 0.3 tag, not `c6d7432`.
+
+In order:
+
+1. **Bring `--pir=plan` under +5% compile instructions, then turn it on by default** (a measured
+   change, gated like any codegen change). The PIR build alone (138 ms) is over budget, so tuning the
+   passes cannot do it; build PIR for fewer functions:
+   - pick candidates from the AST (a field read of a local built here, a `let` of a call that a
+     `return` may carry, a call on the right of `and`/`or`) and build only those; "may answer a view"
+     then becomes a summary computed over the call graph from sema, which also removes the view
+     fixed point (71 ms);
+   - verify only the functions the plan changed (22 ms);
+   - free the PIR program before AIF and codegen (+235 MiB, probably most of the unattributed 65 ms);
+   - if that is not enough, build callees first so no caller is rebuilt.
+2. **P4, loops** (§20 table), then **P5, places and view repair**. P5 owns two divergences from
+   SPEC §8.4 that 0.3 left (`docs/KNOWN_ISSUES.md`, "Element views"): a boxed element still reads the
+   element a view was taken from, and a view crosses a call as a copy. The repair is one mechanism for
+   both storage kinds, with views passed through calls as `(handle, index)` (an ABI change: measure it
+   on the benchmarks before committing). A global `Vec` element held across a growth is the
+   unsound case still open there.
+3. **P6, signatures, witnesses and `delegate`.** It unblocks the probes `factory_shared_once` and
+   `mixed_frame_heap_binding`, `test_269`, `test_58`, `binder_rewrap_probe`, and the takes P2 refused
+   because the base is passed to a call (a signature can say the call does not retain it). It is also
+   what lets the compiler's own code take part: 4,472 values PIR would release in `src/` are left
+   because AST nodes are held by raw pointer, which no mode shows.
+4. **P7, AIF on PIR**, retiring the AST walk; **P8, the fact engine**, one domain at a time, each
+   byte for byte against its AST pass before that pass is deleted.
+
+Decided in 0.3 and not to be reopened without a measurement:
+
+- An element view is the Vec and an index, resolved at each read (SPEC §8.4); reversed from "keeps the
+  element it read" on 2026-11-28.
+- Integer edges: `/ 0` and `% 0` fail at run time (a literal zero is a compile error); `MIN / -1` is
+  `MIN` and `MIN % -1` is 0; a shift amount is taken modulo the width.
+- Moving out of a borrow is refused only for a plain struct going into longer-lived storage (P4116).
+  Rust's full rule (every non-`Copy` move out of a borrow) was measured at 188 places in `src/`, `std/`
+  and `ums/`, 56 in `tests/` and 5 website examples, and deferred; revisit it with P6's signatures,
+  which can say which of those are a view handed back rather than a move.
+- Leaks left by 0.3's drops, by what the analysis answers: a site counted as shared or a result it
+  says is held (another holder may exist), a result with no allocation site, a container whose
+  element release is unknown, a local allocation returned under another name, and a field read off a
+  temporary or a `Vec` literal in an arm.
+
 ## 21 · Alternatives considered and rejected
 
 | Alternative | Why not |
@@ -998,7 +1077,7 @@ in an arm.
 | **MLIR** | Decided against: a C++ dependency in a self-hosted Prismio compiler, and a dialect stack Prismio would mostly not use. The idea taken from it is progressive lowering, as two levels. |
 | **Equality saturation / e-graphs** | LLVM already does the algebra. The one place a choice among equivalent forms matters to Prismio (layout and representation) is a cost-model search over a handful of candidates (`LAYOUT.md`), not saturation. |
 | **A Datalog engine** for facts | The fact store is relational and Polonius-shaped, but a hand-written sparse solver is deterministic, has no dependency, and meets the compile-time budget. |
-| **A borrow checker** | Prismio's model is to never reject a view (SPEC §8.4). PIR's view rule decides a repair, not an error. |
+| **A borrow checker** | Prismio's model is to never reject a view (SPEC §8.4). PIR's view rule decides a repair, not an error. The one refusal, since 0.3, is a plain struct moved out of a borrow into longer-lived storage (P4116, §20.5). |
 | **Drop flags everywhere** (Rust MIR) | In affine SSA a value is consumed on a path or not, so locals never need a flag. A flag is one of five witness forms, used only where the value really is decided at run time. |
 
 ## 22 · Open questions for the maintainer
