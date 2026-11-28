@@ -18,8 +18,13 @@
 // while it was being built.
 
 import std.io
+
+// The element owns a String, so a Vec stores it boxed and a read of it is a reference
+// into the Vec's own box. An element of plain data is stored inline and crosses a return
+// as a copy (SPEC 8.4, test_411), which couples no lifetimes.
 struct Item {
-    value: Int
+    value: Int,
+    name: String
 }
 
 // ---------------------------------------------------------------------------
@@ -30,8 +35,8 @@ struct Item {
 // ---------------------------------------------------------------------------
 fn view_escapes_by_return(n: Int) -> Item {
     let mut items: Vec<Item> = []
-    items.push(Item { value: n })
-    items.push(Item { value: n + 1 })
+    items.push(Item { value: n, name: "item".clone() })
+    items.push(Item { value: n + 1, name: "item".clone() })
     return items[0]
 }
 
@@ -40,7 +45,7 @@ fn view_escapes_by_return(n: Int) -> Item {
 // set of `e`, not of the `list_get` that produced it.
 fn view_escapes_through_a_binding(n: Int) -> Item {
     let mut items: Vec<Item> = []
-    items.push(Item { value: n })
+    items.push(Item { value: n, name: "item".clone() })
     let e = items[0]
     return e
 }
@@ -56,8 +61,8 @@ fn view_escapes_through_a_binding(n: Int) -> Item {
 // the others.
 fn view_stays_local() -> Int {
     let mut items: Vec<Item> = []
-    items.push(Item { value: 3 })
-    items.push(Item { value: 4 })
+    items.push(Item { value: 3, name: "item".clone() })
+    items.push(Item { value: 4, name: "item".clone() })
 
     let mut total = 0
     let mut i = 0
@@ -95,8 +100,8 @@ fn sum_visible(items: Vec<Item>) -> Int {
 
 fn view_in_a_callee() -> Int {
     let mut items: Vec<Item> = []
-    items.push(Item { value: 100 })
-    items.push(Item { value: 23 })
+    items.push(Item { value: 100, name: "item".clone() })
+    items.push(Item { value: 23, name: "item".clone() })
     return sum_visible(items)
 }
 

@@ -1,0 +1,31 @@
+// A Vec's own element pushed back into it, which grows it while the element is read, and
+// an element stored inside a struct. The element types are their own: a value held by two
+// places is stored boxed everywhere, which is a different storage (docs/KNOWN_ISSUES.md).
+
+import std.io
+
+struct Q { x: Int, y: Int }
+struct R { x: Int, y: Int }
+struct Holder { r: R }
+
+fn main() -> Int {
+    let mut doubled: Vec<Q> = []
+    doubled.push(Q { x: 57, y: 1 })
+    for i in 0..<64 { doubled.push(doubled[0]) }
+    if (doubled.length != 65 or doubled[64].x != 57 or doubled[1].y != 1) {
+        println("FAIL push own element")
+        return 1
+    }
+    let mut lent: Vec<R> = []
+    lent.push(R { x: 58, y: 2 })
+    let mut holders: Vec<Holder> = []
+    holders.push(Holder { r: lent[0] })
+    for i in 0..<4096 { lent.push(R { x: i, y: i }) }
+    lent[0] = R { x: 0, y: 0 }
+    if (holders[0].r.x != 58) {
+        println("FAIL stored in a struct")
+        return 1
+    }
+    println("ok")
+    return 0
+}

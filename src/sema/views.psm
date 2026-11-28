@@ -1,0 +1,238 @@
+// SPEC 8.4 at a function boundary. A view of an element a Vec stores inline is the Vec
+// and an index (ir/views.psm), and a function's parameter or result carries only an
+// address. So the two places a view would cross a call pass a copy instead:
+//
+//   * a returned element, always;
+//   * an argument that is one, when the same call can change its Vec -- another argument
+//     is an `inout` rooted at the same binding, or the Vec is a global.
+//
+// The copy differs from the view only if the element is written after it crossed
+// (docs/KNOWN_ISSUES.md). Passing the Vec and index through calls is PIR's work.
+
+import std.collections.vec
+import std.string
+import ast.nodes
+import ast.types
+import symbols.bindings
+import symbols.declarations
+import common.diagnostics
+import common.diag_codes
+
+// The bindings of the function being checked that hold a view, and the Vec each is
+// rooted at: parallel columns, the latest declaration of a name last.
+let mut viewNames: Vec<String>
+let mut viewRoots: Vec<String>
+
+internal fn semaViewsReset() {
+    viewNames = []
+    viewRoots = []
+}
+
+// A `let` or an assignment gave `name` this value.
+internal fn semaViewsBind(module: ASTNode, name: String, value: ASTNode) {
+    let root = semaViewRoot(module, value)
+    viewNames.push(name.clone())
+    viewRoots.push(root)
+}
+
+// The name of the binding the view `value` is rooted at, or "" when it is no view of an
+// inline element.
+private fn semaViewRoot(module: ASTNode, value: ASTNode) -> String {
+    if (semaViewIsFlatStruct(module, value) == false) { return "".clone() }
+    if (value.kind == NodeKind.IDENTIFIER_EXPR) {
+        let mut at = viewNames.length - 1
+        while (at >= 0) {
+            if (viewNames[at].equals(value.s1)) { return viewRoots[at].clone() }
+            at = at - 1
+        }
+        return "".clone()
+    }
+    if (value.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(value.child1)) {
+        return semaViewRoot(module, ptr_to_node(value.child1))
+    }
+    let mut list = value
+    if (semaIsElementRead(value)) {
+        list = ptr_to_node(value.child2)
+    } else if (value.kind == NodeKind.INDEX_EXPR and nodeExists(value.child1)) {
+        list = ptr_to_node(value.child1)
+        if (nodeHasType(list) == false or nodeGetType(list).kind != TypeKind.SLICE) { return "".clone() }
+    } else {
+        return "".clone()
+    }
+    // The element of a temporary is no view of anything that outlives the expression.
+    while (nodeExists(node_to_ptr(list))) {
+        if (list.kind == NodeKind.IDENTIFIER_EXPR) { return list.s1.clone() }
+        if ((list.kind == NodeKind.MEMBER_ACCESS_EXPR or list.kind == NodeKind.SLICE_EXPR
+                or list.kind == NodeKind.INDEX_EXPR) and nodeExists(list.child1)) {
+            list = ptr_to_node(list.child1)
+        } else if (semaIsElementRead(list)) {
+            list = ptr_to_node(list.child2)
+        } else {
+            break
+        }
+    }
+    return "".clone()
+}
+
+// Whether `value` is a struct a Vec stores inline.
+private fn semaViewIsFlatStruct(module: ASTNode, value: ASTNode) -> Bool {
+    if (nodeHasType(value) == false) { return false }
+    let t = nodeGetType(value)
+    if (t.kind != TypeKind.STRUCT or semaHasEnum(module, t.name)) { return false }
+    return structDeclIsPodIn(module, t.name, 0, true)
+}
+
+// `return v[0]`: the caller gets the element as it is now.
+internal fn semaViewsCopyReturned(module: ASTNode, value: ASTNode) {
+    if (semaViewRoot(module, value).equals("")) { return }
+    semaViewsCopy(module, value)
+}
+
+// After a call's arguments are checked against `fnNode`: each one that is a view the call
+// itself could invalidate is passed as a copy, and so is one of the type the call returns,
+// which the callee may hand back. An `inout` one cannot be a copy, since the callee's
+// writes belong in the element, so there it is refused instead.
+internal fn semaViewsCopyArguments(module: ASTNode, call: ASTNode, fnNode: ASTNode) {
+    if (fnNode.kind != NodeKind.FUNCTION or semaViewsIsCopy(fnNode.s1)) { return }
+    let mut argPtr = call.child2
+    let mut paramPtr = fnNode.child1
+    while (nodeExists(argPtr) and nodeExists(paramPtr)) {
+        let argument = ptr_to_node(argPtr)
+        let following = argument.next
+        let root = semaViewRoot(module, argument)
+        if (root.equals("") == false) {
+            let writes = ptr_to_node(paramPtr).s2.equals("inout")
+            let changeable = ir_var_is_global(root) == 1
+                or semaViewsPassedInout(call, fnNode, root, argPtr)
+            if (writes) {
+                if (changeable) { semaViewsRefuseInout(argument, root) }
+            } else if (changeable or semaViewsReturnsType(module, fnNode, argument)) {
+                semaViewsCopy(module, argument)
+            }
+        }
+        argPtr = following
+        paramPtr = ptr_to_node(paramPtr).next
+    }
+}
+
+private fn semaViewsReturnsType(module: ASTNode, fnNode: ASTNode, argument: ASTNode) -> Bool {
+    if (nodeIsNull(fnNode.child3)) { return false }
+    let mut returned = semaAnnotationType(module, ptr_to_node(fnNode.child3))
+    if (returned.kind == TypeKind.OPTIONAL and nodeExists(returned.child)) {
+        returned = ptr_to_type(returned.child)
+    }
+    return returned.kind == TypeKind.STRUCT and returned.name.equals(nodeGetType(argument).name)
+}
+
+private fn semaViewsRefuseInout(argument: ASTNode, root: String) {
+    diag_error_at_code(DIAG_SEMA_ELEMENT_PASSED_INOUT, argument.file, argument.line, argument.col, argument.len,
+        "an element of ".concat(diagQuote(root), " is passed `inout` to a call that can change ", diagQuote(root)))
+    diag_note("pass a copy bound with `let mut`, and store it back after the call")
+}
+
+// Whether an argument other than `except` is an `inout` one rooted at `root`.
+private fn semaViewsPassedInout(call: ASTNode, fnNode: ASTNode, root: String, except: Ptr) -> Bool {
+    let mut argPtr = call.child2
+    let mut paramPtr = fnNode.child1
+    while (nodeExists(argPtr) and nodeExists(paramPtr)) {
+        if (argPtr != except and ptr_to_node(paramPtr).s2.equals("inout")) {
+            let mut place = ptr_to_node(argPtr)
+            while ((place.kind == NodeKind.MEMBER_ACCESS_EXPR or place.kind == NodeKind.INDEX_EXPR
+                    or place.kind == NodeKind.SLICE_EXPR) and nodeExists(place.child1)) {
+                place = ptr_to_node(place.child1)
+            }
+            if (place.kind == NodeKind.IDENTIFIER_EXPR and place.s1.equals(root)) { return true }
+        }
+        argPtr = ptr_to_node(argPtr).next
+        paramPtr = ptr_to_node(paramPtr).next
+    }
+    return false
+}
+
+private fn semaViewsIsCopy(name: String) -> Bool {
+    return name.startsWith("viewCopy$")
+}
+
+// Turns `value` into `viewCopy$T(value)` in place, declaring the function the first time.
+private fn semaViewsCopy(module: ASTNode, value: ASTNode) {
+    let t = nodeGetType(value)
+    let name = "viewCopy$".concat(t.name)
+    if (ir_decl_count(name) == 0) { semaViewsDeclareCopy(module, name, t.name) }
+
+    let inner = createNode(value.kind)
+    inner.s1 = value.s1
+    inner.s2 = value.s2
+    inner.i1 = value.i1
+    inner.i2 = value.i2
+    inner.i3 = value.i3
+    inner.child1 = value.child1
+    inner.child2 = value.child2
+    inner.child3 = value.child3
+    inner.typeInfo = value.typeInfo
+    inner.genericInfo = value.genericInfo
+    nodeSpanFrom(inner, value)
+    value.s2 = ""
+    value.genericInfo = ptr_null()
+    value.typeInfo = ptr_null()
+    let args = nodeList()
+    nodeListPush(args, inner)
+    semaBecomeCall(value, name, args.head)
+    semaExpr(module, value)
+}
+
+// `fn viewCopy$T(from: T) -> T { return T { a: from.a, ... } }`, spanned as the struct is,
+// so that it may name its private fields.
+private fn semaViewsDeclareCopy(module: ASTNode, name: String, structName: String) {
+    let decl = findStructDeclNamed(module, structName)
+    let fnNode = createNode(NodeKind.FUNCTION)
+    fnNode.s1 = name.clone()
+    nodeSpanFrom(fnNode, decl)
+
+    let param = createNode(NodeKind.FUNCTION_PARAMETER)
+    param.s1 = "from"
+    nodeSpanFrom(param, decl)
+    param.child1 = node_to_ptr(monoAnnotationFromType(typeStruct(structName)))
+    let params = nodeList()
+    nodeListPush(params, param)
+    fnNode.child1 = params.head
+
+    let fields = nodeList()
+    let mut fieldPtr = decl.child1
+    while (nodeExists(fieldPtr)) {
+        let declared = ptr_to_node(fieldPtr)
+        if (declared.kind == NodeKind.STRUCT_FIELD) {
+            let source = createNode(NodeKind.IDENTIFIER_EXPR)
+            source.s1 = "from"
+            nodeSpanFrom(source, decl)
+            let read = createNode(NodeKind.MEMBER_ACCESS_EXPR)
+            read.s1 = declared.s1.clone()
+            nodeSpanFrom(read, decl)
+            read.child1 = node_to_ptr(source)
+            let field = createNode(NodeKind.STRUCT_FIELD)
+            field.s1 = declared.s1.clone()
+            nodeSpanFrom(field, decl)
+            field.child1 = node_to_ptr(read)
+            nodeListPush(fields, field)
+        }
+        fieldPtr = declared.next
+    }
+    let literal = createNode(NodeKind.STRUCT_LITERAL_EXPR)
+    literal.s1 = structName.clone()
+    nodeSpanFrom(literal, decl)
+    literal.child1 = fields.head
+    let returned = createNode(NodeKind.RETURN_STATEMENT)
+    nodeSpanFrom(returned, decl)
+    returned.child1 = node_to_ptr(literal)
+    let body = createNode(NodeKind.BLOCK)
+    nodeSpanFrom(body, decl)
+    body.child1 = node_to_ptr(returned)
+    fnNode.child2 = node_to_ptr(body)
+    fnNode.child3 = node_to_ptr(monoAnnotationFromType(typeStruct(structName)))
+    // Emitted by the program that asks for it, whatever module declared the struct.
+    fnNode.genericInfo = node_to_ptr(packInstantiationMarker())
+
+    monoAppendDeclaration(module, fnNode)
+    indexTopLevel(fnNode)
+    fnNode.s2 = semaFunctionSymbol(module, fnNode)
+    semaPredeclareFunction(module, fnNode)
+}

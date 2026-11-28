@@ -11,6 +11,7 @@ import pir.graph
 import pir.builder
 import pir.interp_types
 import pir.interp_heap
+import pir.interp_views
 import pir.interp_ops
 import pir.interp_code
 import pir.interp_builtins
@@ -289,6 +290,9 @@ private fn pirUnaryNode(program: PirProgram, shapes: PirShapes, m: PirMachine, f
 private fn pirReadPin(shapes: PirShapes, program: PirProgram, heap: PirHeap, code: PirCode, step: Int, f: PirFunc, result: Int, object: Int, slot: Int, parent: Int, site: Int) -> Int {
     let type = f.valType[result]
     if (f.valMode[result] != PirMode.VIEW and program.types.kind[type] != PirTypeKind.ARRAY) { return 0 }
+    // An inline element, or a part of one, is read where it is now: no version is pinned.
+    if (object >= 0 and (heap.objects[object].owner >= 0
+            or pirVecIsInline(program, shapes, heap, object))) { return 0 }
     let pin = pirPinNew(heap, object, slot, site, parent, code.lastPin[step])
     code.lastPin[step] = pin
     return pin
@@ -354,6 +358,22 @@ internal fn pirUsesEnded(program: PirProgram, shapes: PirShapes, heap: PirHeap, 
     return false
 }
 
+// Whether `node` uses a view of an element its Vec no longer has an index for, which stops
+// the run with the bounds failure the compiled program reports where it reads the view.
+private fn pirUsesGone(shapes: PirShapes, heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int) -> Bool {
+    for i in 0..<f.opCount[node] {
+        let value = pirOperandAt(f, node, i)
+        let class = shapes.class[f.valType[value]]
+        if (class != PirClass.REF and class != PirClass.OPT_REF) { continue }
+        let word = m.regs[base + value]
+        if (pirElementGone(heap, word) == false) { continue }
+        let object = word as Int
+        pirIndexFail(m, "a Vec", heap.objects[object].ownerAt, heap.objects[heap.objects[object].owner].slots.length)
+        return true
+    }
+    return false
+}
+
 private fn pirCheckOperand(heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int, index: Int, site: Int) {
     pirPinCheck(heap, m.pins[base + pirOperandAt(f, node, index)], site)
 }
@@ -366,6 +386,7 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
     let node = code.node[step]
     let detail = code.x[step]
     if (heap.ends > 0 and pirUsesEnded(program, shapes, heap, m, f, base, node)) { return }
+    if (heap.shortened > 0 and pirUsesGone(shapes, heap, m, f, base, node)) { return }
     match (f.op[node]) {
         PirOp.BINARY => { pirBinaryNode(program, shapes, heap, m, f, base, node, detail, site) }
         PirOp.UNARY => { pirUnaryNode(program, shapes, m, f, base, node, detail) }
@@ -519,6 +540,12 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
             }
             let type = f.valType[pirOperandAt(f, node, 2)]
             let stored = pirStored(program, shapes, heap, type, pirOperandWord(m, f, base, node, 2), site)
+            if (pirVecIsInline(program, shapes, heap, found[0])) {
+                pirElementPlace(program, shapes, heap, found[0], found[1], stored, site)
+                pirBumpContents(heap, found[0])
+                pirSet(m, f, base, node, 0 as I64, 0)
+                return
+            }
             let displaced = heap.objects[found[0]].slots[found[1]]
             heap.objects[found[0]].slots[found[1]] = stored
             pirBumpContents(heap, found[0])
@@ -535,7 +562,13 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
             let type = f.valType[pirOperandAt(f, node, 1)]
             let stored = pirStored(program, shapes, heap, type, pirOperandWord(m, f, base, node, 1), site)
             pirGrow(heap, list)
-            heap.objects[list].slots.push(stored)
+            if (pirVecIsInline(program, shapes, heap, list)) {
+                // The value may be one of this Vec's own elements.
+                let taken = pirElementSnapshot(program, shapes, heap, stored, site)
+                pirElementPlace(program, shapes, heap, list, heap.objects[list].slots.length, taken, site)
+            } else {
+                heap.objects[list].slots.push(stored)
+            }
             pirBumpContents(heap, list)
         }
         PirOp.GLOBAL => {
@@ -581,7 +614,11 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
                 pirCheckOperand(heap, m, f, base, node, i, site)
                 let element = f.valType[pirOperandAt(f, node, i)]
                 let held = pirStored(program, shapes, heap, element, pirOperandWord(m, f, base, node, i), site)
-                heap.objects[made as Int].slots.push(held)
+                if (pirVecIsInline(program, shapes, heap, made as Int)) {
+                    pirElementPlace(program, shapes, heap, made as Int, i, held, site)
+                } else {
+                    heap.objects[made as Int].slots.push(held)
+                }
             }
             heap.objects[made as Int].capacity = f.opCount[node]
             pirSet(m, f, base, node, made, 0)

@@ -1,0 +1,134 @@
+// Elements a Vec stores inline (src/ir/views.psm). The interpreter has objects, not
+// bytes, so such a Vec keeps one element object per index for its whole life and a write
+// changes that object's contents. A view of an element is the object: it reads what is at
+// its index now, and an index the Vec no longer has stops the run (SPEC 8.4). A Vec of
+// boxed elements holds whatever object was last stored, and a view keeps the one it read.
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import aifcore.ownership
+import pir.types
+import pir.builder
+import pir.interp_types
+import pir.interp_heap
+
+// Whether `type` is a struct a Vec holds inline: plain data all the way down, and not one
+// the analysis counts (ir/expr.psm `inlineElemSize`).
+private fn pirInlineStruct(program: PirProgram, shapes: PirShapes, type: Int, depth: Int) -> Bool {
+    if (type < 0 or depth > 16 or program.types.kind[type] != PirTypeKind.STRUCT) { return false }
+    if (aif_type_is_counted(program.types.name[type]) == 1) { return false }
+    let fields = pirStructFields(program, shapes, type)
+    if (fields <= 0) { return false }
+    for i in 0..<fields {
+        let held = shapes.fieldTypes[shapes.fieldStart[type] + i]
+        if (pirPlainData(program, shapes, held, depth + 1) == false) { return false }
+    }
+    return true
+}
+
+private fn pirPlainData(program: PirProgram, shapes: PirShapes, type: Int, depth: Int) -> Bool {
+    if (type < 0 or depth > 16) { return false }
+    let kind = program.types.kind[type]
+    if (kind == PirTypeKind.INT or kind == PirTypeKind.FLOAT or kind == PirTypeKind.BOOL
+            or kind == PirTypeKind.CHAR) { return true }
+    if (kind == PirTypeKind.ARRAY or kind == PirTypeKind.OPTIONAL) {
+        return pirPlainData(program, shapes, program.types.child[type], depth + 1)
+    }
+    if (kind == PirTypeKind.ENUM) { return program.structByName.contains(program.types.name[type]) == false }
+    return pirInlineStruct(program, shapes, type, depth)
+}
+
+internal fn pirVecIsInline(program: PirProgram, shapes: PirShapes, heap: PirHeap, vec: Int) -> Bool {
+    if (vec <= 0 or heap.objects[vec].kind != PirObjectKind.VEC) { return false }
+    let type = heap.objects[vec].type
+    if (type < 0) { return false }
+    return pirInlineStruct(program, shapes, program.types.child[type], 0)
+}
+
+// Whether slot `i` of an object of `type` holds a nested object: a struct's or an array's
+// storage of its own. Everything else in an inline element is a number.
+private fn pirSlotIsStorage(program: PirProgram, shapes: PirShapes, type: Int, i: Int) -> Bool {
+    let mut held = program.types.child[type]
+    if (program.types.kind[type] == PirTypeKind.STRUCT) { held = shapes.fieldTypes[shapes.fieldStart[type] + i] }
+    if (held < 0) { return false }
+    let kind = program.types.kind[held]
+    return kind == PirTypeKind.STRUCT or kind == PirTypeKind.ARRAY
+}
+
+// A new object holding `source`'s contents, nested storage copied too, as element `at` of
+// `owner`, or of no Vec when `owner` is -1.
+private fn pirElementClone(program: PirProgram, shapes: PirShapes, heap: PirHeap, source: I64, owner: Int, at: Int, site: Int) -> I64 {
+    let from = source as Int
+    let type = heap.objects[from].type
+    let made = pirObjectNew(heap, heap.objects[from].kind, type, site)
+    heap.objects[made as Int].owner = owner
+    heap.objects[made as Int].ownerAt = at
+    for i in 0..<heap.objects[from].slots.length {
+        let mut held = heap.objects[from].slots[i]
+        if (held != (0 as I64) and pirSlotIsStorage(program, shapes, type, i)) {
+            held = pirElementClone(program, shapes, heap, held, owner, at, site)
+        }
+        heap.objects[made as Int].slots.push(held)
+    }
+    return made
+}
+
+// Writes `source`'s contents into `target`, which keeps its identity and that of its
+// nested storage.
+private fn pirElementCopyInto(program: PirProgram, shapes: PirShapes, heap: PirHeap, target: Int, source: Int) {
+    let type = heap.objects[target].type
+    for i in 0..<heap.objects[source].slots.length {
+        let incoming = heap.objects[source].slots[i]
+        let held = heap.objects[target].slots[i]
+        if (held != (0 as I64) and incoming != (0 as I64) and pirSlotIsStorage(program, shapes, type, i)) {
+            pirElementCopyInto(program, shapes, heap, held as Int, incoming as Int)
+        } else {
+            heap.objects[target].slots[i] = incoming
+        }
+    }
+    pirBumpContents(heap, target)
+}
+
+// A copy of `value` that no write to the Vec changes: a view of one of its elements has
+// to be read before the Vec moves things.
+internal fn pirElementSnapshot(program: PirProgram, shapes: PirShapes, heap: PirHeap, value: I64, site: Int) -> I64 {
+    return pirElementClone(program, shapes, heap, value, -1, 0, site)
+}
+
+// Element `index` of the inline Vec `vec` becomes `value`'s contents. `index` may be one
+// past the end, which appends: into the object that index had before the Vec was
+// shortened, if it had one.
+internal fn pirElementPlace(program: PirProgram, shapes: PirShapes, heap: PirHeap, vec: Int, index: Int, value: I64, site: Int) {
+    if (index < heap.objects[vec].slots.length) {
+        pirElementCopyInto(program, shapes, heap, heap.objects[vec].slots[index] as Int, value as Int)
+        return
+    }
+    let mut spare = 0 as I64
+    if (index < heap.objects[vec].spares.length) { spare = heap.objects[vec].spares[index] }
+    if (spare == (0 as I64)) {
+        spare = pirElementClone(program, shapes, heap, value, vec, index, site)
+    } else {
+        pirElementCopyInto(program, shapes, heap, spare as Int, value as Int)
+    }
+    heap.objects[vec].slots.push(spare)
+}
+
+// The Vec is cut to `keep` elements. The objects past the end are kept for their indexes:
+// a view of one reads whatever is pushed there next.
+internal fn pirElementTruncate(heap: PirHeap, vec: Int, keep: Int) {
+    let length = heap.objects[vec].slots.length
+    while (heap.objects[vec].spares.length < length) { heap.objects[vec].spares.push(0 as I64) }
+    for i in keep..<length { heap.objects[vec].spares[i] = heap.objects[vec].slots[i] }
+    heap.objects[vec].slots.truncate(keep)
+    heap.shortened = heap.shortened + 1
+}
+
+// Whether `value` is an element, or part of one, whose index its Vec no longer has; the
+// index and the length, for the failure.
+internal fn pirElementGone(heap: PirHeap, value: I64) -> Bool {
+    let at = value as Int
+    if (at <= 0 or at >= heap.objects.length) { return false }
+    let owner = heap.objects[at].owner
+    return owner >= 0 and heap.objects[at].ownerAt >= heap.objects[owner].slots.length
+}

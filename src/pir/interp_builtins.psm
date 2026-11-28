@@ -16,6 +16,7 @@ import pir.graph
 import pir.builder
 import pir.interp_types
 import pir.interp_heap
+import pir.interp_views
 import pir.interp_ops
 import pir.interp
 
@@ -428,7 +429,13 @@ private fn pirListBuiltin(program: PirProgram, shapes: PirShapes, heap: PirHeap,
                 pirStop(m, "Vec of ".concat(wanted.toString(), " elements"))
                 return list
             }
-            for i in 0..<wanted { heap.objects[list as Int].slots.push(b) }
+            for i in 0..<wanted {
+                if (pirVecIsInline(program, shapes, heap, list as Int)) {
+                    pirElementPlace(program, shapes, heap, list as Int, i, b, site)
+                } else {
+                    heap.objects[list as Int].slots.push(b)
+                }
+            }
         }
         return list
     }
@@ -440,6 +447,7 @@ private fn pirListBuiltin(program: PirProgram, shapes: PirShapes, heap: PirHeap,
         return 0 as I64
     }
     let length = heap.objects[list].slots.length
+    let inline = pirVecIsInline(program, shapes, heap, list)
     if (id == PirBuiltin.LIST_CAPACITY as Int) { return heap.objects[list].capacity as I64 }
     if (id == PirBuiltin.LIST_SWAP as Int) {
         let i = b as Int
@@ -448,6 +456,12 @@ private fn pirListBuiltin(program: PirProgram, shapes: PirShapes, heap: PirHeap,
             pirIndexFail(m, "a Vec", i, length)
         } else if (j < 0 or j >= length) {
             pirIndexFail(m, "a Vec", j, length)
+        } else if (inline) {
+            let first = pirElementSnapshot(program, shapes, heap, heap.objects[list].slots[i], site)
+            let second = pirElementSnapshot(program, shapes, heap, heap.objects[list].slots[j], site)
+            pirElementPlace(program, shapes, heap, list, i, second, site)
+            pirElementPlace(program, shapes, heap, list, j, first, site)
+            pirBumpContents(heap, list)
         } else {
             let held = heap.objects[list].slots[i]
             heap.objects[list].slots[i] = heap.objects[list].slots[j]
@@ -458,13 +472,23 @@ private fn pirListBuiltin(program: PirProgram, shapes: PirShapes, heap: PirHeap,
         let mut keep = b as Int
         if (keep < 0) { keep = 0 }
         if (keep < length) {
-            heap.objects[list].slots.truncate(keep)
+            if (inline) {
+                pirElementTruncate(heap, list, keep)
+            } else {
+                heap.objects[list].slots.truncate(keep)
+            }
             pirBumpContents(heap, list)
         }
     } else if (id == PirBuiltin.LIST_REMOVE_AT as Int) {
         let at = b as Int
         if (at < 0 or at >= length) {
             pirFail(m, 1, "runtime error: removeAt index ".concat(at.toString(), " is out of range for length ", length.toString()))
+        } else if (inline) {
+            for i in at..<(length - 1) {
+                pirElementPlace(program, shapes, heap, list, i, heap.objects[list].slots[i + 1], site)
+            }
+            pirElementTruncate(heap, list, length - 1)
+            pirBumpContents(heap, list)
         } else {
             for i in at..<(length - 1) { heap.objects[list].slots[i] = heap.objects[list].slots[i + 1] }
             heap.objects[list].slots.truncate(length - 1)
@@ -478,13 +502,27 @@ private fn pirListBuiltin(program: PirProgram, shapes: PirShapes, heap: PirHeap,
             let element = program.types.child[heap.objects[list].type]
             let stored = pirStored(program, shapes, heap, element, c, site)
             pirGrow(heap, list)
-            heap.objects[list].slots.push(stored)
-            let mut i = length
-            while (i > at) {
-                heap.objects[list].slots[i] = heap.objects[list].slots[i - 1]
-                i = i - 1
+            if (inline) {
+                let taken = pirElementSnapshot(program, shapes, heap, stored, site)
+                if (length > 0) {
+                    let last = pirElementSnapshot(program, shapes, heap, heap.objects[list].slots[length - 1], site)
+                    pirElementPlace(program, shapes, heap, list, length, last, site)
+                    let mut i = length - 1
+                    while (i > at) {
+                        pirElementPlace(program, shapes, heap, list, i, heap.objects[list].slots[i - 1], site)
+                        i = i - 1
+                    }
+                }
+                pirElementPlace(program, shapes, heap, list, at, taken, site)
+            } else {
+                heap.objects[list].slots.push(stored)
+                let mut i = length
+                while (i > at) {
+                    heap.objects[list].slots[i] = heap.objects[list].slots[i - 1]
+                    i = i - 1
+                }
+                heap.objects[list].slots[at] = stored
             }
-            heap.objects[list].slots[at] = stored
             pirBumpContents(heap, list)
         }
     } else if (id == PirBuiltin.LIST_RESERVE as Int) {

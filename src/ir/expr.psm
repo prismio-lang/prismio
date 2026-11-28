@@ -2896,6 +2896,75 @@ private fn isStaticBoxedListGet(expr: ASTNode, funcName: String) -> Bool {
     return inlineElemSizeOfList(listNode) == 0
 }
 
+// The stride of the element `expr` reads, `v[i]` or `s[i]` of a slice, where the element
+// is a struct the Vec stores inline: the read answers an address inside its storage
+// (ir/views.psm). 0 otherwise, and for an element of a temporary, which nothing else
+// can change.
+internal fn irElementViewStride(expr: ASTNode) -> Int {
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        if (nodeIsNull(expr.child1)) { return 0 }
+        let base = ptr_to_node(expr.child1)
+        if (nodeHasType(base) == false or nodeGetType(base).kind != TypeKind.SLICE) { return 0 }
+        if (base.kind == NodeKind.CALL_EXPR or irIsStructElement(base) == false) { return 0 }
+        return inlineElemSizeOfSlice(base)
+    }
+    if (expr.kind != NodeKind.CALL_EXPR or nodeIsNull(expr.child1)) { return 0 }
+    if (isTypedListGet(expr, ptr_to_node(expr.child1).s1) == false) { return 0 }
+    let list = ptr_to_node(expr.child2)
+    if (list.kind == NodeKind.CALL_EXPR or irIsStructElement(list) == false) { return 0 }
+    return inlineElemSizeOfList(list)
+}
+
+private fn irIsStructElement(container: ASTNode) -> Bool {
+    let t = nodeGetType(container)
+    if (nodeIsNull(t.child)) { return false }
+    let key = typeIrKey(ptr_to_type(t.child))
+    return isStructTypeKey(key) and isValueStructKey(key) == false and optIsWide(key) == false
+}
+
+// The element read of `expr` (irElementViewStride), with the Vec and index it used.
+internal fn irGenerateElementView(expr: ASTNode) -> ViewOrigin {
+    if (expr.kind == NodeKind.INDEX_EXPR) {
+        let view = generateExpression(ptr_to_node(expr.child1))
+        let index = generateExpression(ptr_to_node(expr.child2))
+        let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", view, 0))
+        let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", view, 1))
+        let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", view, 2))
+        ir_call_begin()
+        ir_call_arg("ptr", handle)
+        ir_call_arg("i32", offset)
+        ir_call_arg("i32", length)
+        ir_call_arg("i32", index)
+        let address = ir_get_temp_name(ir_call_end("ptr", "list_slice_get_inline"))
+        let absolute = ir_get_temp_name(ir_add("i32", offset, index))
+        return ViewOrigin { handle: handle, index: absolute, offset: "0".clone(), address: address }
+    }
+    let listNode = ptr_to_node(expr.child2)
+    let handle = generateExpression(listNode)
+    let index = generateExpression(ptr_to_node(listNode.next))
+    ir_call_begin()
+    ir_call_arg("ptr", handle)
+    ir_call_arg("i32", index)
+    let address = ir_get_temp_name(ir_call_end("ptr", "list_get_inline"))
+    return ViewOrigin { handle: handle, index: index, offset: "0".clone(), address: address }
+}
+
+// Whether `expr` reads a struct field held inline in its struct, whose value is its address.
+internal fn irMemberIsInlineStruct(expr: ASTNode) -> Bool {
+    if (nodeIsNull(expr.child1)) { return false }
+    let object = ptr_to_node(expr.child1)
+    if (nodeHasType(object) == false or nodeGetType(object).kind != TypeKind.STRUCT) { return false }
+    let structName = memberObjectStructName(object)
+    let key = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
+    return isStructTypeKey(key) and isValueStructKey(key) == false
+}
+
+internal fn irInlineFieldAddress(expr: ASTNode, object: String) -> String {
+    let structName = memberObjectStructName(ptr_to_node(expr.child1))
+    let index = ir_get_struct_field_index(structName, expr.s1)
+    return ir_get_temp_name(ir_struct_field_ptr(structName, object, index))
+}
+
 // The static inline-body stride of a `list_get(l, i)` this can serve, or 0 for
 // the pointer-slot representation.
 //
@@ -3699,6 +3768,7 @@ private fn irGlobalIsInlineStruct(name: String) -> Bool {
 }
 
 private fn generateIdentifier(expr: ASTNode) -> String {
+    viewsRefresh(expr.s1)
     let valType = ir_get_var_type(expr.s1)
     let loadType = storageType(valType)
     // Shadowing-aware: a local named the same as a global must read from

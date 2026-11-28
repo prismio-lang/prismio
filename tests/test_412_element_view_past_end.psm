@@ -1,0 +1,29 @@
+// expect-trap: truncated => index 0 is out of range for a Vec of length 0
+// expect-trap: popped => index 1 is out of range for a Vec of length 1
+// A view of an element whose index the Vec no longer has is a bounds error when it is
+// read (SPEC 8.4): never the old bytes, and never freed memory.
+
+import std.io
+import std.process
+
+struct P { x: Int, y: Int }
+
+fn main() -> Int {
+    let mut v: Vec<P> = []
+    v.push(P { x: 1, y: 2 })
+    v.push(P { x: 3, y: 4 })
+    let low = v[0]
+    let high = v[1]
+    if (low.x != 1 or high.x != 3) { return 1 }
+    if (process.args.count > 1 and process.args[1].equals("truncated")) {
+        v.truncate(0)
+        println(low.x)
+        return 1
+    }
+    if (process.args.count > 1 and process.args[1].equals("popped")) {
+        v.truncate(1)
+        println(high.x)
+        return 1
+    }
+    return 0
+}

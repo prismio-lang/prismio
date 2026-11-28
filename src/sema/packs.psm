@@ -682,7 +682,7 @@ private fn packCheckGenericBounds(module: ASTNode, template: ASTNode, callExpr: 
     return satisfied
 }
 
-private fn packInstantiationMarker() -> ASTNode {
+internal fn packInstantiationMarker() -> ASTNode {
     let marker = createNode(NodeKind.GENERIC_PARAM)
     marker.s1 = "$pack"
     return marker

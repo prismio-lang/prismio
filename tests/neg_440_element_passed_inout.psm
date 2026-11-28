@@ -1,0 +1,16 @@
+// expect-error: P4115
+// expect-error: an element of `v` is passed `inout` to a call that can change `v`
+
+struct P { x: Int, y: Int }
+
+fn both(inout v: Vec<P>, inout p: P) {
+    v.push(P { x: 1, y: 1 })
+    p.y = 5
+}
+
+fn main() -> Int {
+    let mut v: Vec<P> = []
+    v.push(P { x: 40, y: 2 })
+    both(v, v[0])
+    return 0
+}

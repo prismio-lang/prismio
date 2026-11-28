@@ -2110,6 +2110,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         paramPtr = paramNode.next
     }
     semaCheckUniqueArgs(expr, fnNode, name)
+    semaViewsCopyArguments(module, expr, fnNode)
 
     let mut retT = typeVoid()
     if (fnNode.kind == NodeKind.FUNCTION) {
@@ -3341,6 +3342,7 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
         if (semaBindingIsBorrow(ptr_to_node(stmt.child2))) {
             ir_mark_borrowed(stmt.s1)
         }
+        semaViewsBind(module, stmt.s1, ptr_to_node(stmt.child2))
     }
     ir_set_var_type(stmt.s1, typeSemKey(varT))
     if (varT.kind == TypeKind.LIST and hasInit) {
@@ -3560,6 +3562,7 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     if (target.kind == NodeKind.IDENTIFIER_EXPR) {
         if (semaBindingIsBorrow(ptr_to_node(stmt.child2))) {
             ir_mark_borrowed(target.s1)
+            semaViewsBind(module, target.s1, ptr_to_node(stmt.child2))
         }
     }
 }
@@ -3611,6 +3614,7 @@ private fn semaReturn(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) 
                 diag_note("declare the return as `Array<T, N>` to return it by value, or write into an array the caller provides")
             }
         }
+        semaViewsCopyReturned(module, ptr_to_node(stmt.child1))
     } else {
         semaExpectAssignable(stmt, "return", expectedReturn, typeVoid())
     }
@@ -4108,6 +4112,7 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     ir_clear_local_var_types()
     ir_clear_moved()
     ir_clear_borrowed()
+    semaViewsReset()
     closureEnclosingGenerics = fnNode.genericInfo
     semaAsyncContext = 0
     if (nodeIsAsync(fnNode)) { semaAsyncContext = 1 }

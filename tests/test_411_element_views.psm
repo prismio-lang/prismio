@@ -1,0 +1,157 @@
+// SPEC 8.4: a view of an element a Vec stores inline is the Vec and an index. A binding
+// that holds one reads what is at that index now, wherever the Vec's storage has moved
+// since, and a binding made from a Vec that is then replaced keeps that Vec. Where a view
+// would cross a call it is a copy: a returned element, and an argument whose Vec the same
+// call can change. docs/KNOWN_ISSUES.md has what differs for elements stored boxed.
+//
+// Every Vec here grows far enough to move its storage after the view is taken.
+
+import std.io
+
+struct P { x: Int, y: Int }
+struct Inner { a: Int }
+struct Outer { inner: Inner, b: Int }
+struct Shelf { v: Vec<P> }
+
+fn fail(message: String) -> Int {
+    println("FAIL", message)
+    return 1
+}
+
+fn one(x: Int) -> Vec<P> {
+    let mut v: Vec<P> = []
+    v.push(P { x: x, y: 2 })
+    return v
+}
+
+fn grow(inout v: Vec<P>) {
+    for i in 0..<4096 { v.push(P { x: i, y: i }) }
+}
+
+fn firstOf(v: Vec<P>) -> P { return v[0] }
+
+fn boundOf(v: Vec<P>) -> P {
+    let held = v[0]
+    return held
+}
+
+fn growThenRead(inout v: Vec<P>, p: P) -> Int {
+    grow(v)
+    return p.x
+}
+
+fn writeThenRead(inout v: Vec<P>, p: P) -> Int {
+    v[0] = P { x: 99, y: 0 }
+    return p.x
+}
+
+fn same(p: P) -> P { return p }
+
+fn main() -> Int {
+    let mut v = one(40)
+    let held = v[0]
+    let copied = held
+    grow(v)
+    if (held.x != 40 or copied.x != 40 or held.y != 2) { return fail("grow") }
+    v[0] = P { x: 7, y: 8 }
+    if (held.x != 7 or copied.x != 7) { return fail("set") }
+    v.swap(0, 1)
+    if (held.x != 0 or v[1].x != 7) { return fail("swap") }
+    v.truncate(0)
+    v.push(P { x: 5, y: 6 })
+    if (held.x != 5) { return fail("truncate then push") }
+
+    let mut w = one(41)
+    let mut cursor = w[0]
+    grow(w)
+    if (cursor.x != 41) { return fail("let mut") }
+    cursor = w[2]
+    grow(w)
+    if (cursor.x != 1) { return fail("assigned view") }
+    cursor = P { x: 1000, y: 0 }
+    grow(w)
+    if (cursor.x != 1000) { return fail("assigned value") }
+    cursor = w[1]
+    grow(w)
+    if (cursor.x != 0) { return fail("view after value") }
+
+    // A write through the view lands in the element.
+    let mut target = w[3]
+    grow(w)
+    target.y = 123
+    if (w[3].y != 123) { return fail("write through") }
+
+    let mut nested: Vec<Outer> = []
+    nested.push(Outer { inner: Inner { a: 42 }, b: 1 })
+    let inner = nested[0].inner
+    let outer = nested[0]
+    let deeper = outer.inner
+    for k in 0..<4096 { nested.push(Outer { inner: Inner { a: k }, b: k }) }
+    if (inner.a != 42 or deeper.a != 42 or outer.b != 1) { return fail("nested field") }
+
+    let mut each = one(43)
+    let mut seen = 0
+    for element in each {
+        if (each.length == 1) { grow(each) }
+        seen = element.x
+        break
+    }
+    if (seen != 43) { return fail("for") }
+
+    let mut front = one(44)
+    let first = front.first
+    grow(front)
+    if (first.x != 44) { return fail("first") }
+
+    let mut sliced = one(45)
+    sliced.push(P { x: 46, y: 0 })
+    let window = sliced[0..<2]
+    let seenThrough = window[1]
+    grow(sliced)
+    if (seenThrough.x != 46) { return fail("slice") }
+
+    // The Vec a view was taken from is kept when its binding is given another.
+    let mut replaced = one(47)
+    let old = replaced[0]
+    replaced = one(48)
+    grow(replaced)
+    if (old.x != 47 or replaced[0].x != 48) { return fail("replaced binding") }
+    let mut shelf = Shelf { v: one(49) }
+    let shelved = shelf.v[0]
+    shelf.v = one(50)
+    if (shelved.x != 49) { return fail("replaced field") }
+    let mut grid: Vec<Vec<P>> = []
+    grid.push(one(51))
+    let cell = grid[0][0]
+    grid[0] = one(52)
+    if (cell.x != 51) { return fail("replaced row") }
+
+    // Crossing a call: a copy.
+    let mut source = one(53)
+    let returned = firstOf(source)
+    let bound = boundOf(source)
+    grow(source)
+    source[0] = P { x: 0, y: 0 }
+    if (returned.x != 53 or bound.x != 53) { return fail("returned") }
+    let mut passed = one(54)
+    if (growThenRead(passed, passed[0]) != 54) { return fail("argument beside inout") }
+    let mut again = one(55)
+    let kept = again[0]
+    if (writeThenRead(again, kept) != 55) { return fail("view argument beside inout") }
+
+    // Handed back by the callee: the argument crosses as a copy.
+    let mut handed = one(59)
+    let back = same(handed[0])
+    grow(handed)
+    handed[0] = P { x: 0, y: 0 }
+    if (back.x != 59) { return fail("handed back") }
+
+    // Chosen by an `if` expression.
+    let mut chosen = one(60)
+    let either = if (chosen.length > 0) { chosen[0] } else { P { x: 0, y: 0 } }
+    grow(chosen)
+    chosen[0] = P { x: 61, y: 0 }
+    if (either.x != 61) { return fail("if expression") }
+    println("ok")
+    return 0
+}

@@ -722,10 +722,15 @@ An abstract machine for both levels, in `src/pir/interp.psm`:
 
 **As built (P1).** `prismio build x.psm --pir-run` interprets `main` over PIR-H
 (`src/pir/interp*.psm`). A value is one word: a number, float bits, or a handle to an object; a
-`Vec` or struct slot holds handles, so identity is the language's. Each object has a content
-version and per-field versions; a view carries a pin (object, slot, version, the pinning node, and
-the pin it was read through), and a read through a pin whose place has since been written is a
-**hazard**, reported after the run with both source positions. A fixed array is held by handle and
+`Vec` or struct slot holds handles, so identity is the language's. A `Vec` that stores its elements
+inline (a struct of plain data that nothing counts) is the exception: it keeps one object per index and
+a write changes that object, so a view of an element reads what is at its index now and an index past
+the end stops the run (SPEC §8.4, `pir/interp_views.psm`). That reverses P1's decision that a view
+holds the version it was read at. For everything stored by handle, each object has a content version
+and per-field versions, a view carries a pin (object, slot, version, the pinning node, and the pin it
+was read through), and a read through a pin whose place has since been written is a **hazard**: the
+view still reads what it was taken from, which is where the boxed layout differs from SPEC §8.4
+(KNOWN_ISSUES, "Element views"), reported after the run with both source positions. A fixed array is held by handle and
 copied when stored or returned. Failures print the runtime's message and exit with its status.
 What it does not model ends the run with `pir ineligible: <what>` (status 125) when it is reached:
 foreign functions other than the console, `exit` and the argument vector, `std.sys.raw`'s
@@ -939,6 +944,7 @@ table, and emission's wins (lifetime markers, alias scopes, result slots) are me
 | A local passed `inout` comes back as an extra call result | §7.2 (A8) |
 | Places are keyed by static type and every call clobbers every place; coarse, refined by signatures at P6 | §6.1 |
 | PIR is built **after** AIF, so its passes can read the analysis | §17 |
+| A view of an inline element resolves at each read (SPEC §8.4); reversed from "pinned to a version" on 2026-11-28 | §14 |
 
 ### 20.2 · P2's first slice, as built
 

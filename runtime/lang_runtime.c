@@ -2970,7 +2970,16 @@ void list_push_inline(void* lp, void* value, int elem_size) {
         list_push(lp, value);
         return;
     }
-    if (l->len >= l->cap) list_inline_grow(l);
+    if (l->len >= l->cap) {
+        // `v.push(v[0])`: the source may be a row of the block about to move, so it
+        // is found again by its offset once the block has.
+        uintptr_t at = (uintptr_t)value;
+        uintptr_t base = (uintptr_t)l->data;
+        size_t offset = (size_t)(at - base);
+        int own = at >= base && offset < (size_t)l->cap * (size_t)l->elem_size;
+        list_inline_grow(l);
+        if (own) value = (unsigned char*)l->data + offset;
+    }
     list_copy_elem((unsigned char*)l->data + (size_t)l->len * (size_t)l->elem_size,
                    value, (size_t)l->elem_size);
     l->len = l->len + 1;

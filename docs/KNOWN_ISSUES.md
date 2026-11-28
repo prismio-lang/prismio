@@ -42,6 +42,48 @@ history at `c9f71ef`: `git show c9f71ef:aif/evidence/RESULTS-<name>.md`
 
 ---
 
+## Element views
+
+The rule is [SPEC 8.4](aif/spec/SPEC.md): a view of an element is the Vec and an index, and reads what is
+at that index now. A `Vec` that stores its elements inline (a struct of plain data) follows it since 0.3.
+
+### A Vec that stores its elements boxed keeps the element a view was taken from
+
+**Wrong by SPEC 8.4, safe.** Elements that own memory, and a type the analysis counts (an element
+stored in two places, a `Vec` held in a global), are held by handle. After `let held = v[0]`,
+`v[0] = x` leaves `held` reading the old element, which is parked until the `Vec` dies; the same
+program over an inline element reads `x`. Which of the two a type gets is the compiler's choice, so
+a program cannot rely on either. Making boxed elements resolve at the read is PIR's view-repair
+stage, planned for 0.4.
+
+### A view crosses a call as a copy
+
+A parameter and a result carry an address, not a Vec and an index, so where a view of an inline
+element would cross a call the compiler passes a copy: a returned element, an argument whose `Vec`
+the same call can change (another argument is an `inout` rooted at it, or it is a global), and an
+argument of the type the call returns, which the callee may hand back. The copy differs from the view
+only if the element is written after it crossed. An element passed `inout` to such a call cannot be a
+copy and is refused (P4115). Passing the Vec and index through calls is PIR 0.4 work.
+
+### An element of a global `Vec` passed to a function that grows it writes outside a block
+
+**Unsound**, found 2026-11-28, on the compiler before that day's changes too. AddressSanitizer
+reports a heap-buffer-overflow in `rc_retain`; the program prints the right value.
+
+```prismio
+struct P { x: Int, y: Int }
+let mut stock: Vec<P>
+fn grow(p: P) -> Int {
+    for i in 0..<4096 { stock.push(P { x: i, y: i }) }
+    return p.x
+}
+fn main() {
+    stock = []
+    stock.push(P { x: 56, y: 2 })
+    println(grow(stock[0]))
+}
+```
+
 ## Ownership: leaks
 
 > **2026-10-21:** `graph_churn_*` turned up shapes that are now fixed (a fresh struct held by two `Vec`s of one type,

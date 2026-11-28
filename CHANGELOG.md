@@ -288,6 +288,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **A view of an element a Vec stores inline read freed memory.** `let held = v[0]` kept the element's address, and a
+  push that grew the Vec freed the storage under it (`held.x` printed 0; AddressSanitizer reports a use-after-free,
+  `--verify` nothing). A view is now the Vec and an index, as SPEC §8.4 has it: a binding that holds one looks the
+  element up at each read, so after `v[0] = x` it reads `x`, after a shorten and a push it reads what is at its index,
+  and past the end it is a bounds error. A binding whose block does nothing afterwards but read and write elements keeps
+  the address it took, so those loops compile as before. A Vec that is replaced while an element of it is viewed is kept
+  (a leak). Where a view would cross a call it is a copy: a returned element, an argument whose Vec the same call can
+  change, and an argument of the type the call returns; an element passed `inout` to a call that can change its Vec is
+  refused (`P4115`). The PIR interpreter follows the same rule, and its view hazards are now only about elements stored
+  boxed, which still read the element they were taken from (KNOWN_ISSUES, "Element views").
+  `v.push(v[0])` of a Vec that had to grow copied from the block it had just moved, in any build where the element
+  type was not counted (a `--debug` build): the push now finds its source again. `tests/test_411`-`test_413`, `neg_440`.
+
 - **Integer division and shifts have one defined answer, and the IR never asks LLVM an undefined question.** Before, a
   division by zero answered 0 or died with SIGTRAP depending on the shape, `Int.MIN / -1` died with SIGTRAP, and a shift
   by the width or more answered 0 or the amount modulo 32 depending on whether LLVM could see it. Now: `/ 0` and `% 0` stop

@@ -1,0 +1,303 @@
+// SPEC 8.4: a view of an element a Vec stores inline is the Vec and an index, never an
+// address kept across anything that can move or free the storage.
+//
+// A binding that holds such a view keeps, beside its slot, the Vec, the index and the
+// view's byte offset into the element (`v[i].inner` starts past the element's start).
+// Each read of the binding looks the element up again and refills the slot, so it sees
+// what is at that index now, and an index past the end stops the program. The lookup is
+// the ordinary element read, so with nothing written in between LLVM keeps one load.
+//
+// **Only a binding that needs it.** One whose block does nothing after it but read and
+// write elements keeps the address it took, as before: nothing there can move the
+// storage or change the length (viewsHazard).
+//
+// Elements a Vec stores boxed are not views of storage that moves, and are untouched
+// (docs/KNOWN_ISSUES.md).
+
+import std.collections.vec
+import std.collections.map
+import std.string
+import ast.nodes
+import ast.types
+import ir.bridge
+import symbols.bindings
+
+// What a view was taken from: the Vec's handle (`null` for a value that is no view), the
+// element, the view's byte offset into it, and the address it has now.
+struct ViewOrigin {
+    internal handle: String,
+    internal index: String,
+    internal offset: String,
+    internal address: String
+}
+
+// The tracked bindings of the function being generated, by slot: the names of the slots
+// holding handle, index and offset, and whether the binding may also hold a value that is
+// no view, so that a read has to ask.
+let mut viewOfSlot: HashMap<String, Int>
+let mut viewHandles: Vec<String>
+let mut viewIndexes: Vec<String>
+let mut viewOffsets: Vec<String>
+let mut viewMixed: Vec<Bool>
+let mut viewCount = 0
+let mut viewOpen = false
+
+// The Vecs some binding of this function views an element of, by name. A store over one
+// keeps the Vec it displaces: the view holds that Vec.
+let mut viewedLists: String
+
+internal fn viewsReset(body: Ptr) {
+    if (viewOpen) {
+        viewOfSlot.clear()
+    } else {
+        viewOpen = true
+        let slots = HashMap<String, Int>()
+        viewOfSlot = slots
+    }
+    viewHandles = []
+    viewIndexes = []
+    viewOffsets = []
+    viewMixed = []
+    viewedLists = "".clone()
+    viewsCollectViewed(body)
+}
+
+internal fn viewsKeepsList(name: String) -> Bool {
+    return viewedLists.contains("|".concat(name, "|"))
+}
+
+private fn viewsCollectViewed(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if ((n.kind == NodeKind.VARIABLE_DECL or n.kind == NodeKind.ASSIGNMENT_STATEMENT)) {
+            let mut value = n.child2
+            if (nodeExists(value)) {
+                let root = viewsRootList(ptr_to_node(value))
+                if (root.equals("") == false) {
+                    viewedLists = viewedLists.concat("|", root, "|")
+                }
+            }
+        }
+        viewsCollectViewed(n.child1)
+        viewsCollectViewed(n.child2)
+        viewsCollectViewed(n.child3)
+        p = n.next
+    }
+}
+
+// The name of the Vec an element view is rooted at, or "": `v[i]`, `v[a..<b][i]` and a
+// field of either.
+private fn viewsRootList(expr: ASTNode) -> String {
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(expr.child1)) {
+        return viewsRootList(ptr_to_node(expr.child1))
+    }
+    if (irElementViewStride(expr) == 0) { return "".clone() }
+    let mut list = ptr_to_node(expr.child2)
+    if (expr.kind == NodeKind.INDEX_EXPR) { list = ptr_to_node(expr.child1) }
+    while (list.kind == NodeKind.SLICE_EXPR and nodeExists(list.child1)) {
+        list = ptr_to_node(list.child1)
+    }
+    if (list.kind == NodeKind.IDENTIFIER_EXPR) { return list.s1.clone() }
+    return "".clone()
+}
+
+// Whether `expr` is an address inside a Vec's inline storage: an element, a field of one
+// held inline, or a binding already tracked as either.
+internal fn viewsIsView(expr: ASTNode) -> Bool {
+    if (irElementViewStride(expr) > 0) { return true }
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) { return viewsSlotOf(expr.s1) >= 0 }
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(expr.child1)) {
+        return irMemberIsInlineStruct(expr) and viewsIsView(ptr_to_node(expr.child1))
+    }
+    return false
+}
+
+private fn viewsSlotOf(name: String) -> Int {
+    if (ir_var_is_global(name) == 1 or ir_has_var_type(name) == 0) { return -1 }
+    return viewOfSlot.getOr(ir_get_var_slot(name), -1)
+}
+
+// Whether a declaration of `name` has to keep its origin: something later in its block can
+// move or shorten a Vec, or the binding is stored into another one, which has to know.
+internal fn viewsDeclNeeds(stmt: ASTNode) -> Bool {
+    let name = stmt.s1
+    if (nodeExists(stmt.child2) and viewsIsView(ptr_to_node(stmt.child2))) {
+        return astAnyChain(stmt.next, |n: ASTNode| viewsHazard(n, name))
+    }
+    // Declared with a value that is no view, and given one later.
+    if (nodeHasType(stmt) == false or nodeGetType(stmt).kind != TypeKind.STRUCT) { return false }
+    return astAnyChain(stmt.next, |n: ASTNode| viewsStoresViewInto(n, name))
+}
+
+private fn viewsStoresViewInto(n: ASTNode, name: String) -> Bool {
+    if (n.kind != NodeKind.ASSIGNMENT_STATEMENT or nodeIsNull(n.child1) or nodeIsNull(n.child2)) {
+        return false
+    }
+    let target = ptr_to_node(n.child1)
+    if (target.kind != NodeKind.IDENTIFIER_EXPR or target.s1.equals(name) == false) { return false }
+    return irElementViewStride(ptr_to_node(n.child2)) > 0 or viewsMayBeView(ptr_to_node(n.child2))
+}
+
+// A value that may be a view when it is stored, asked before the bindings it names are
+// declared: an element, a field of something, or a name.
+private fn viewsMayBeView(expr: ASTNode) -> Bool {
+    return expr.kind == NodeKind.IDENTIFIER_EXPR or expr.kind == NodeKind.MEMBER_ACCESS_EXPR
+}
+
+// What may move a Vec's storage or shorten it, or take the view somewhere this does not
+// follow: any call but the few that only read and write elements, a store of the binding
+// into another, and a store over the binding itself.
+private fn viewsHazard(n: ASTNode, name: String) -> Bool {
+    if (n.kind == NodeKind.CALL_EXPR) { return viewsCallMayMove(n) }
+    if (n.kind == NodeKind.SPAWN_EXPR) { return true }
+    if (n.kind == NodeKind.VARIABLE_DECL or n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        if (nodeExists(n.child2)) {
+            let value = ptr_to_node(n.child2)
+            if (value.kind == NodeKind.IDENTIFIER_EXPR and value.s1.equals(name)) { return true }
+        }
+        if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+            let target = ptr_to_node(n.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and target.s1.equals(name)) { return true }
+        }
+    }
+    return false
+}
+
+private fn viewsCallMayMove(call: ASTNode) -> Bool {
+    if (nodeIsNull(call.child1)) { return true }
+    let callee = ptr_to_node(call.child1).s1
+    if (callee.equals("list_get") or callee.equals("list_len") or callee.equals("list_set")
+            or callee.equals("list_swap") or callee.startsWith("__builtin_")) {
+        return false
+    }
+    // Printing numbers, characters and Strings runs no code that can reach a Vec.
+    if (callee.equals("print") or callee.equals("println")) {
+        let mut p = call.child2
+        while (nodeExists(p)) {
+            let argument = ptr_to_node(p)
+            if (nodeHasType(argument) == false) { return true }
+            let kind = nodeGetType(argument).kind
+            if (kind != TypeKind.INT and kind != TypeKind.FLOAT and kind != TypeKind.BOOL
+                    and kind != TypeKind.CHAR and kind != TypeKind.STRING) {
+                return true
+            }
+            p = argument.next
+        }
+        return false
+    }
+    return true
+}
+
+// The value of `expr` with what it was taken from, generating it once.
+internal fn viewsGenerate(expr: ASTNode) -> ViewOrigin {
+    let stride = irElementViewStride(expr)
+    if (stride > 0) { return irGenerateElementView(expr) }
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
+        let at = viewsSlotOf(expr.s1)
+        if (at >= 0) {
+            let address = generateExpression(expr)
+            return ViewOrigin {
+                handle: ir_get_temp_name(ir_load("ptr", viewHandles[at])),
+                index: ir_get_temp_name(ir_load("i32", viewIndexes[at])),
+                offset: ir_get_temp_name(ir_load("i32", viewOffsets[at])),
+                address: address
+            }
+        }
+    }
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR and viewsIsView(expr)) {
+        let base = viewsGenerate(ptr_to_node(expr.child1))
+        let address = irInlineFieldAddress(expr, base.address.clone())
+        let from = ir_get_temp_name(ir_ptr_to_int(base.address, "i32"))
+        let to = ir_get_temp_name(ir_ptr_to_int(address, "i32"))
+        let past = ir_get_temp_name(ir_sub("i32", to, from))
+        let offset = ir_get_temp_name(ir_add("i32", base.offset, past))
+        return ViewOrigin { handle: base.handle.clone(), index: base.index.clone(), offset: offset,
+                            address: address.clone() }
+    }
+    let value = generateExpression(expr)
+    return ViewOrigin { handle: "null".clone(), index: "0".clone(), offset: "0".clone(), address: value }
+}
+
+// Makes the binding in `slot`, declared with `init` (null for none), a tracked one, and
+// answers the value to store in it.
+internal fn viewsDeclare(slot: String, init: Ptr) -> String {
+    let mut isView = false
+    let mut origin = ViewOrigin { handle: "null".clone(), index: "0".clone(), offset: "0".clone(),
+                                  address: "null".clone() }
+    if (nodeExists(init)) {
+        isView = viewsIsView(ptr_to_node(init))
+        origin = viewsGenerate(ptr_to_node(init))
+    }
+    let at = viewHandles.length
+    let handle = "viewhandle.".concat(viewCount.toString())
+    let index = "viewindex.".concat(viewCount.toString())
+    let offset = "viewoffset.".concat(viewCount.toString())
+    viewCount = viewCount + 1
+    ir_set_var_type(handle, "Ptr")
+    ir_set_var_type(index, "Int")
+    ir_set_var_type(offset, "Int")
+    let handleSlot = ir_get_var_slot(handle)
+    let indexSlot = ir_get_var_slot(index)
+    let offsetSlot = ir_get_var_slot(offset)
+    ir_alloca("ptr", handleSlot)
+    ir_alloca("i32", indexSlot)
+    ir_alloca("i32", offsetSlot)
+    viewHandles.push(handleSlot)
+    viewIndexes.push(indexSlot)
+    viewOffsets.push(offsetSlot)
+    viewMixed.push(isView == false)
+    viewsStoreOrigin(at, origin)
+    viewOfSlot.set(slot.clone(), at)
+    return origin.address.clone()
+}
+
+private fn viewsStoreOrigin(at: Int, origin: ViewOrigin) {
+    ir_store("ptr", origin.handle, viewHandles[at])
+    ir_store("i32", origin.index, viewIndexes[at])
+    ir_store("i32", origin.offset, viewOffsets[at])
+}
+
+// Whether `name` is a tracked binding.
+internal fn viewsTracks(name: String) -> Bool {
+    return viewsSlotOf(name) >= 0
+}
+
+// The value a store into the tracked binding `name` puts there, its origin recorded.
+internal fn viewsAssign(name: String, value: ASTNode) -> String {
+    let at = viewsSlotOf(name)
+    if (viewsIsView(value) == false) { viewMixed.set(at, true) }
+    let origin = viewsGenerate(value)
+    viewsStoreOrigin(at, origin)
+    return origin.address.clone()
+}
+
+// Refills the slot of a tracked binding before it is read. A binding that may hold a value
+// that is no view has a null handle then, and its slot is left alone.
+internal fn viewsRefresh(name: String) {
+    let at = viewsSlotOf(name)
+    if (at < 0) { return }
+    let slot = ir_get_var_slot(name)
+    let handle = ir_get_temp_name(ir_load("ptr", viewHandles[at]))
+    let mut done = 0
+    if (viewMixed[at]) {
+        let present = ir_get_temp_name(ir_icmp_ne("ptr", handle, "null"))
+        let resolve = ir_get_label()
+        done = ir_get_label()
+        ir_cond_br_numbered(present, resolve, done)
+        ir_label_numbered(resolve)
+    }
+    let index = ir_get_temp_name(ir_load("i32", viewIndexes[at]))
+    ir_call_begin()
+    ir_call_arg("ptr", handle)
+    ir_call_arg("i32", index)
+    let element = ir_get_temp_name(ir_call_end("ptr", "list_get_inline"))
+    let offset = ir_get_temp_name(ir_load("i32", viewOffsets[at]))
+    // Kind 2, `byteOffset` (ir_ptr_op).
+    let address = ir_get_temp_name(ir_ptr_op(2, "i8", element, offset, ""))
+    ir_store("ptr", address, slot)
+    if (viewMixed[at]) {
+        ir_br_numbered(done)
+        ir_label_numbered(done)
+    }
+}

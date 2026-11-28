@@ -425,6 +425,7 @@ private fn generateFunction(func: ASTNode) {
         irHoistBorrowedTemporaries(func.child2)
         irFunctionDecl = node_to_ptr(func)
         irFunctionBody = func.child2
+        viewsReset(func.child2)
         // Only a loop repeats arithmetic often enough for `nsw` to matter, but any
         // fixed-array subscript may have a check the walk's facts make unnecessary.
         // And a parameter's range can settle a `%` with no loop in sight: a generator's step is

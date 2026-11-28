@@ -2922,8 +2922,10 @@ def run_aif_verify_test():
         #
         # So a drop here is not progress. It means the container is being freed
         # under a live reference again, and only test_53's own exit code says so.
-        # These 4 go to zero when a T2 return gains a free point, and not before.
-        "test_53_aif_views": 4,
+        # These 7 -- two returned elements' Vecs, their boxes and Strings -- go to
+        # zero when a T2 return gains a free point, and not before. It was 4 while
+        # the element owned no String; the same compiler counted 7 for this fixture.
+        "test_53_aif_views": 7,
         # AIF Level 4's reassignment half. One, and it is the *negative* direction
         # of the feature: borrow_reassign's initialiser, which the guard has to
         # decline because the slot ends up holding `h.name`. Declining it leaks 6

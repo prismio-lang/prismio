@@ -35,7 +35,13 @@ public struct PirObject {
     public capacity: Int,
     // The field a `take` moved out, -1 for none, and the node that took or dropped it.
     public taken: Int,
-    public endedAt: Int
+    public endedAt: Int,
+    // For an element object of a Vec that stores its elements inline (pir.interp_views),
+    // the Vec and the index; -1 for everything else. A Vec keeps the objects of indexes
+    // it was shortened past.
+    public owner: Int,
+    public ownerAt: Int,
+    public spares: Vec<I64>
 }
 
 // A pin is what a view was read from: an object's contents (`slot` -1), one of its fields,
@@ -60,7 +66,10 @@ public struct PirHeap {
     public hazardRead: Vec<Int>,
     public hazardCount: Vec<I64>,
     // The objects a `drop` has ended. While there are none, no operand needs asking.
-    public ends: Int
+    public ends: Int,
+    // The inline Vecs that have been shortened. While there are none, no operand can be
+    // a view past an end.
+    public shortened: Int
 }
 
 public fn pirHeapNew() -> PirHeap {
@@ -71,7 +80,8 @@ public fn pirHeapNew() -> PirHeap {
         pins: PirPins { object: [0], slot: [0], version: [0], site: [0], parent: [0] },
         hazardIds: HashMap<I64, Int>(),
         hazardPin: [], hazardRead: [], hazardCount: [],
-        ends: 0
+        ends: 0,
+        shortened: 0
     }
     // Handle 0.
     pirObjectNew(heap, PirObjectKind.BOX, -1, -1)
@@ -83,6 +93,7 @@ public fn pirObjectNew(heap: PirHeap, kind: PirObjectKind, type: Int, site: Int)
     let slots: Vec<I64> = []
     let bytes: Vec<U8> = []
     let fieldVersions: Vec<Int> = []
+    let spares: Vec<I64> = []
     heap.objects.push(PirObject {
         kind: kind,
         type: type,
@@ -94,7 +105,10 @@ public fn pirObjectNew(heap: PirHeap, kind: PirObjectKind, type: Int, site: Int)
         fieldVersions: fieldVersions,
         capacity: 0,
         taken: -1,
-        endedAt: -1
+        endedAt: -1,
+        owner: -1,
+        ownerAt: 0,
+        spares: spares
     })
     return handle as I64
 }
@@ -176,8 +190,9 @@ public fn pirPinNew(heap: PirHeap, object: Int, slot: Int, site: Int, parent: In
     return id
 }
 
-// A read through a view pinned by `pin`, at node `site`. Legal in the language, and what a
-// representation holding an interior address would get wrong, so it is recorded.
+// A read through a view pinned by `pin`, at node `site`: a view of something replaced
+// since, which still reads what it was read from. Legal in the language and recorded; an
+// element a Vec stores inline is no such view (pir.interp_views).
 public fn pirPinCheck(heap: PirHeap, pin: Int, site: Int) {
     let mut at = pin
     while (at != 0) {

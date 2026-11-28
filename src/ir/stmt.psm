@@ -480,7 +480,8 @@ private fn generateVariableDecl(stmt: ASTNode) {
     // `let x = x + 1` reads the *outer* x rather than the one being defined.
     let mut initVal = ""
     let hasInit = nodeExists(stmt.child2)
-    if (hasInit) {
+    let tracksView = viewsDeclNeeds(stmt)
+    if (hasInit and tracksView == false) {
         initVal = generateExpression(ptr_to_node(stmt.child2))
         // `let b = a` for an array whose length is known: storage of b's own,
         // not a second name for a's. A literal already is fresh storage.
@@ -499,6 +500,12 @@ private fn generateVariableDecl(stmt: ASTNode) {
     let slot = ir_get_var_slot(varName)
     let storeType = storageType(varType)
     ir_alloca(storeType, slot)
+    // A view of an element that something later may move: the binding keeps where it
+    // came from, and each read looks it up again (ir/views.psm).
+    if (tracksView) {
+        initVal = viewsDeclare(slot, stmt.child2)
+        if (hasInit == false) { ir_store(storeType, initVal, slot) }
+    }
 
     // Declared here rather than after the store: the alloca is what the
     // variable *is*, and a debugger stopped between the two should report the
@@ -728,7 +735,11 @@ private fn generateAssignment(stmt: ASTNode) {
             consumedOld = val.equals("") == false
         }
         if (consumedOld == false) {
-            val = generateExpression(ptr_to_node(stmt.child2))
+            if (viewsTracks(varName)) {
+                val = viewsAssign(varName, ptr_to_node(stmt.child2))
+            } else {
+                val = generateExpression(ptr_to_node(stmt.child2))
+            }
         }
         // The same clone the declaration makes, for the same reason and it
         // was not obvious that both needed it: a literal stored here leaves
@@ -741,7 +752,8 @@ private fn generateAssignment(stmt: ASTNode) {
         if (ir_var_is_global(varName) == 1) {
             ir_store_global(storeType, val, varName)
         } else {
-            if (releasesOld and consumedOld == false) {
+            // A Vec some binding views an element of is kept when it is replaced.
+            if (releasesOld and consumedOld == false and viewsKeepsList(varName) == false) {
                 generateDisplacedRelease(old, val, bindingDropKind(ptr_to_node(stmt.child2)),
                                          dropReleaseType(ir_get_var_slot(varName), varType))
             }
