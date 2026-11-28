@@ -13,6 +13,7 @@ import common.builtin_names
 import common.source_files
 import common.lang_items
 import aif.contracts
+import sema.references
 import pir.types
 import pir.graph
 import pir.state
@@ -118,6 +119,11 @@ internal fn pirCompute(program: PirProgram, f: PirFunc, s: PirScope, op: PirOp, 
 }
 
 private fn pirUnary(program: PirProgram, f: PirFunc, s: PirScope, node: ASTNode) -> Int {
+    // A place whose address is taken can change by a write no operand shows.
+    if (semaRefIsAddressOf(node)) {
+        pirRefuse(s, "address of a place")
+        return -1
+    }
     let operand = pirOperandExpr(program, f, s, ptr_to_node(node.child1))
     let resultType = pirNodeType(program, s, node)
     if (pirOk(s) == false) { return -1 }

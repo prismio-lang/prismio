@@ -1,0 +1,9 @@
+// expect-error: it is stored somewhere that outlives this function
+struct Holder { p: Ptr<Int> }
+fn keep(h: Ptr<mut Holder>) {
+    let x = 1
+    h.p = &x
+}
+fn main() -> Int {
+    return 0
+}

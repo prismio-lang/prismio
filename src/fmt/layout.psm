@@ -70,13 +70,14 @@ private fn fmtPreviousCode(tokens: FmtTokens, at: Int) -> Int {
     return i
 }
 
-// Whether this `-` or `+` is a sign (`(-1, 0)`, `x = -y`) rather than an operator (`a - b`):
-// what comes right before it is nothing, an opening bracket, a separator, another operator, or
-// a keyword (`return -1`, `in -3..3`).
+// Whether this `-` or `+` is a sign (`(-1, 0)`, `x = -y`) rather than an operator (`a - b`), or
+// this `*` or `&` a prefix (`*p = 1`, `f(&mut x)`) rather than a product or a mask: what comes
+// right before it is nothing, an opening bracket, a separator, another operator, or a keyword
+// (`return -1`, `in -3..3`).
 private fn fmtIsSign(text: String, tokens: FmtTokens, at: Int) -> Bool {
-    if (tokens.kinds[at] != FmtKind.ARITH) { return false }
+    if (tokens.kinds[at] != FmtKind.ARITH and tokens.kinds[at] != FmtKind.BITWISE) { return false }
     let b = fmtSingle(text, tokens, at)
-    if (b != 45 and b != 43) { return false }
+    if (b != 45 and b != 43 and b != 42 and b != 38) { return false }
     // A line that opens with `-5 =>` or `-x` is a sign when it hugs its operand; a continuation puts
     // a space after the operator (`- b`).
     if (tokens.breaks[at] > 0 and at + 1 < tokens.kinds.length and tokens.starts[at + 1] == tokens.ends[at]) { return true }

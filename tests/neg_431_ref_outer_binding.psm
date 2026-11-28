@@ -1,0 +1,10 @@
+// expect-error: is declared outside its block
+fn main() -> Int {
+    let y = 1
+    let mut p = &y
+    if (y > 0) {
+        let x = 2
+        p = &x
+    }
+    return p.load()
+}

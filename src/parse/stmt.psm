@@ -134,6 +134,24 @@ impl Parser {
         let op = operatorToken.value.substring(0, 1)
         self.advance()
 
+        // `*p += 1` names the pointer twice, which a name cannot make evaluate anything twice.
+        if (target.kind == NodeKind.UNARY_EXPR and target.s1.equals("*") and nodeExists(target.child1)
+                and ptr_to_node(target.child1).kind == NodeKind.IDENTIFIER_EXPR) {
+            let name = ptr_to_node(target.child1)
+            let readName = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, first)
+            readName.s1 = name.s1.clone()
+            let read = parserNodeFrom(NodeKind.UNARY_EXPR, first)
+            read.s1 = "*"
+            read.child1 = node_to_ptr(readName)
+            let derefCombined = parserNodeFrom(NodeKind.BINARY_EXPR, operatorToken)
+            derefCombined.s1 = op
+            derefCombined.child1 = node_to_ptr(read)
+            derefCombined.child2 = node_to_ptr(self.parseExpression(0))
+            let derefCompound = parserNodeFrom(NodeKind.ASSIGNMENT_STATEMENT, first)
+            derefCompound.child1 = node_to_ptr(target)
+            derefCompound.child2 = node_to_ptr(derefCombined)
+            return derefCompound
+        }
         if (target.kind != NodeKind.IDENTIFIER_EXPR) {
             diag_error_at_code(DIAG_PARSE_COMPOUND_ASSIGNMENT_TARGET, target.file, target.line, target.col, target.len,
                 "compound assignment ".concat(diagQuote(operatorToken.value),

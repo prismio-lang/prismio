@@ -17,11 +17,13 @@
 
 #ifdef PRISMIO_LLVM_BRIDGE
 
+#include <llvm/Analysis/AssumptionCache.h>
 #include <llvm/Analysis/LoopInfo.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/Analysis/ScalarEvolution.h>
 #include <llvm/Analysis/ScalarEvolutionExpressions.h>
 #include <llvm/IR/Dominators.h>
+#include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
@@ -40,6 +42,7 @@
 #include <llvm/Transforms/Scalar/LoopUnrollPass.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 #include <llvm/Transforms/Utils/LoopUtils.h>
+#include <llvm/Transforms/Utils/PromoteMemToReg.h>
 #include <llvm/Transforms/Utils/ValueMapper.h>
 
 #include <cstdlib>
@@ -499,6 +502,314 @@ struct SelfRecursionUnfold : llvm::PassInfoMixin<SelfRecursionUnfold> {
     }
 };
 
+// A `Vec` that stays in its function keeps its header in registers.
+//
+// A push reads the length, the capacity and the data pointer and writes the length, and
+// after the out-of-line grow they all have to be read again. LLVM cannot keep them in
+// registers across that call: the header is memory the call may change, so every merge
+// after a push reloads it, and the length goes round the loop through memory. In a loop
+// that is otherwise cheap that store-to-load chain is the critical path: graph_bfs's
+// queue spent 5 cycles per node on it, as much as all its other work.
+//
+// But nothing else can reach the header of a list whose pointer goes only to calls that do
+// not keep it. So it is an object with a few field accesses and a few calls, the shape
+// scalar replacement takes apart: each field accessed inline becomes an alloca, written
+// back before a call that takes the list, read again after a call that may change it, and
+// PromoteMemToReg makes those SSA values. The slow path pays, and the fast path has no
+// header access at all, which neither C++ nor Rust can do: `std::vector`'s `this` and
+// `RawVec::grow_one`'s `&mut self` are the same call, with the same pointer, and the
+// length is stored on every push.
+//
+// **Any other use of the pointer leaves the list alone**: a store of it, a phi, a return, a
+// call that may keep it. It is the header's whole life or none of it.
+//
+// A growing list keeps three values live across every loop it grows in, so a function with
+// many of them trades its header loads for spills: trie_search's five came to 1.06x, with
+// twice the stack accesses. Past MAX_GROWING_LISTS the growing ones stay in memory.
+//
+// The allocation answers some fields outright. A list born with an element size keeps it
+// for life (only `list_new`'s zero is ever stamped), which is the test every flat guard and
+// every inline accessor makes, so the guard folds and the boxed copy of the loop goes with
+// it. A new list's length is 0, or `n` for `filled(n, x)`.
+enum class ListCall { Reads, Changes, Ends };
+
+// What a runtime entry point does with the list it is given, for those LLVM cannot be
+// asked about: a list's `release` keeps its block in the allocator's free list, which
+// reads as a capture.
+static std::optional<ListCall> runtime_list_call(llvm::StringRef name) {
+    // No member of the set family grows the block or moves the length (flatSetScalarStride
+    // in src/ir/expr.psm).
+    if (name == "list_get_inline_scalar" || name == "list_get_inline" || name == "list_len"
+        || name == "list_capacity" || name == "list_str_data" || name == "list_str_word"
+        || name == "list_set_inline_scalar" || name == "list_set_unstamped") {
+        return ListCall::Reads;
+    }
+    if (name == "list_set_elem_owner" || name == "list_set_elem_releaser") return ListCall::Reads;
+    if (name == "list_release") return ListCall::Ends;
+    if (name == "list_push_inline_scalar_slow" || name == "list_push_inline_scalar"
+        || name == "list_inline_grow" || name == "list_reserve") {
+        return ListCall::Changes;
+    }
+    return std::nullopt;
+}
+
+static bool is_list_allocator(const llvm::Function* callee) {
+    if (!callee) return false;
+    llvm::StringRef name = callee->getName();
+    return name == "list_new" || name == "list_new_inline" || name == "list_new_with_capacity"
+           || name == "list_new_with_capacity_inline" || name == "list_new_filled_inline"
+           || name == "list_new_cap";
+}
+
+// Mirrors `RtList` as rt_list_header_type does in llvm-api-backend.c, whose field list
+// run_list_header_agreement_test compares against the C struct.
+static uint64_t list_field_offset(const llvm::Function& f, unsigned field) {
+    llvm::LLVMContext& ctx = f.getContext();
+    llvm::Type* ptr = llvm::PointerType::getUnqual(ctx);
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::StructType* header = llvm::StructType::get(ctx, {ptr, i32, i32, i32, ptr, i32, i32});
+    return f.getDataLayout().getStructLayout(header)->getElementOffset(field);
+}
+
+static constexpr unsigned LIST_FIELD_LEN = 1;
+static constexpr unsigned LIST_FIELD_ELEM_SIZE = 6;
+
+// The element size a list is born with, when the allocation names one, or null.
+static llvm::ConstantInt* list_born_element_size(const llvm::CallInst* header) {
+    llvm::StringRef name = header->getCalledFunction()->getName();
+    llvm::Value* size = nullptr;
+    if (name == "list_new_inline") size = header->getArgOperand(0);
+    if (name == "list_new_with_capacity_inline" || name == "list_new_cap") size = header->getArgOperand(1);
+    if (name == "list_new_filled_inline") size = header->getArgOperand(2);
+    auto* known = llvm::dyn_cast_or_null<llvm::ConstantInt>(size);
+    return known && !known->isZero() ? known : nullptr;
+}
+
+// The length a list is born with: `n` of `filled(n, x)`, which stops the program when it
+// is negative, and otherwise none.
+static llvm::Value* list_born_length(const llvm::CallInst* header) {
+    if (header->getCalledFunction()->getName() == "list_new_filled_inline") {
+        return header->getArgOperand(0);
+    }
+    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(header->getContext()), 0);
+}
+
+struct HeaderField {
+    uint64_t offset;
+    llvm::Type* type;
+    llvm::AllocaInst* slot = nullptr;
+    bool stored = false;
+    bool folded = false;
+};
+
+struct HeaderUses {
+    std::vector<HeaderField> fields;
+    std::vector<std::pair<llvm::Instruction*, size_t>> accesses;
+    std::vector<std::pair<llvm::CallBase*, ListCall>> calls;
+};
+
+static size_t header_field(HeaderUses& uses, uint64_t offset, llvm::Type* type) {
+    for (size_t i = 0; i < uses.fields.size(); i++) {
+        if (uses.fields[i].offset == offset && uses.fields[i].type == type) return i;
+    }
+    uses.fields.push_back(HeaderField{offset, type});
+    return uses.fields.size() - 1;
+}
+
+// Every use of the header pointer `value`, `offset` bytes into the header; false at the
+// first it cannot account for.
+static bool collect_header_uses(llvm::Value* value, uint64_t offset, const llvm::DataLayout& dl,
+                                HeaderUses& uses) {
+    for (llvm::Use& use : value->uses()) {
+        llvm::User* user = use.getUser();
+        if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(user)) {
+            llvm::APInt delta(dl.getIndexTypeSizeInBits(gep->getType()), 0);
+            if (!gep->accumulateConstantOffset(dl, delta) || delta.isNegative()) return false;
+            if (!collect_header_uses(gep, offset + delta.getZExtValue(), dl, uses)) return false;
+        } else if (auto* load = llvm::dyn_cast<llvm::LoadInst>(user)) {
+            if (!load->isSimple()) return false;
+            uses.accesses.emplace_back(load, header_field(uses, offset, load->getType()));
+        } else if (auto* store = llvm::dyn_cast<llvm::StoreInst>(user)) {
+            if (!store->isSimple() || store->getValueOperand() == value) return false;
+            size_t at = header_field(uses, offset, store->getValueOperand()->getType());
+            uses.fields[at].stored = true;
+            uses.accesses.emplace_back(store, at);
+        } else if (auto* call = llvm::dyn_cast<llvm::CallInst>(user)) {
+            // A call gets the header itself or nothing: an address inside it is not an
+            // operation this knows.
+            if (offset != 0 || call->isCallee(&use)) return false;
+            std::optional<ListCall> kind;
+            if (const llvm::Function* callee = call->getCalledFunction()) {
+                kind = runtime_list_call(callee->getName());
+            }
+            if (!kind) {
+                for (unsigned i = 0; i < call->arg_size(); i++) {
+                    if (call->getArgOperand(i) == value && !call->doesNotCapture(i)) return false;
+                }
+                kind = ListCall::Changes;
+            }
+            bool seen = false;
+            for (const auto& known : uses.calls) seen = seen || known.first == call;
+            if (!seen) uses.calls.emplace_back(call, *kind);
+        } else if (!llvm::isa<llvm::ICmpInst>(user)) {
+            // Comparing two lists' addresses, as a release's "is this the same list" does,
+            // gives nobody a way to reach the header.
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool header_fields_overlap(const HeaderUses& uses, const llvm::DataLayout& dl) {
+    for (size_t i = 0; i < uses.fields.size(); i++) {
+        for (size_t j = i + 1; j < uses.fields.size(); j++) {
+            const HeaderField& a = uses.fields[i];
+            const HeaderField& b = uses.fields[j];
+            if (a.offset < b.offset + dl.getTypeStoreSize(b.type)
+                && b.offset < a.offset + dl.getTypeStoreSize(a.type)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static llvm::Value* header_address(llvm::IRBuilder<>& at, llvm::Value* header, uint64_t offset) {
+    return at.CreateConstInBoundsGEP1_64(at.getInt8Ty(), header, offset);
+}
+
+static void reload_header(llvm::IRBuilder<>& at, llvm::Value* header, const HeaderUses& uses) {
+    for (const HeaderField& field : uses.fields) {
+        if (field.folded) continue;
+        at.CreateStore(at.CreateLoad(field.type, header_address(at, header, field.offset)), field.slot);
+    }
+}
+
+// Replaces every read of the element size with the size the list was born with, and takes
+// that field out of `uses`. False if something writes it.
+static bool fold_element_size(llvm::CallInst* header, HeaderUses& uses) {
+    llvm::ConstantInt* size = list_born_element_size(header);
+    if (!size) return true;
+    llvm::Function& f = *header->getFunction();
+    uint64_t offset = list_field_offset(f, LIST_FIELD_ELEM_SIZE);
+    for (size_t i = 0; i < uses.fields.size(); i++) {
+        if (uses.fields[i].offset != offset) continue;
+        if (uses.fields[i].stored || uses.fields[i].type != size->getType()) return false;
+    }
+    std::vector<std::pair<llvm::Instruction*, size_t>> kept;
+    for (const auto& access : uses.accesses) {
+        if (uses.fields[access.second].offset != offset) {
+            kept.push_back(access);
+            continue;
+        }
+        access.first->replaceAllUsesWith(size);
+        access.first->eraseFromParent();
+    }
+    uses.accesses = std::move(kept);
+    for (HeaderField& field : uses.fields) {
+        if (field.offset == offset) field.folded = true;
+    }
+    return true;
+}
+
+static void promote_header(llvm::CallInst* header, HeaderUses& uses, std::vector<llvm::AllocaInst*>& slots) {
+    llvm::Function& f = *header->getFunction();
+    llvm::IRBuilder<> entry(&*f.getEntryBlock().getFirstInsertionPt());
+    for (HeaderField& field : uses.fields) {
+        if (field.folded) continue;
+        field.slot = entry.CreateAlloca(field.type);
+        slots.push_back(field.slot);
+    }
+    for (const auto& access : uses.accesses) {
+        llvm::AllocaInst* slot = uses.fields[access.second].slot;
+        if (auto* load = llvm::dyn_cast<llvm::LoadInst>(access.first)) {
+            llvm::IRBuilder<> at(load);
+            llvm::LoadInst* replacement = at.CreateLoad(load->getType(), slot);
+            load->replaceAllUsesWith(replacement);
+            load->eraseFromParent();
+        } else {
+            auto* store = llvm::cast<llvm::StoreInst>(access.first);
+            llvm::IRBuilder<> at(store);
+            at.CreateStore(store->getValueOperand(), slot);
+            store->eraseFromParent();
+        }
+    }
+    for (const auto& call : uses.calls) {
+        llvm::IRBuilder<> before(call.first);
+        for (const HeaderField& field : uses.fields) {
+            if (!field.stored || field.folded) continue;
+            before.CreateStore(before.CreateLoad(field.type, field.slot),
+                               header_address(before, header, field.offset));
+        }
+        if (call.second == ListCall::Changes) {
+            llvm::IRBuilder<> after(call.first->getNextNode());
+            reload_header(after, header, uses);
+        }
+    }
+    llvm::IRBuilder<> fresh(header->getNextNode());
+    uint64_t length = list_field_offset(f, LIST_FIELD_LEN);
+    for (const HeaderField& field : uses.fields) {
+        if (field.folded) continue;
+        llvm::Value* born = field.offset == length ? list_born_length(header) : nullptr;
+        if (!born || born->getType() != field.type) {
+            born = fresh.CreateLoad(field.type, header_address(fresh, header, field.offset));
+        }
+        fresh.CreateStore(born, field.slot);
+    }
+}
+
+static constexpr unsigned MAX_GROWING_LISTS = 3;
+
+static bool header_grows(const HeaderUses& uses) {
+    for (const auto& call : uses.calls) {
+        if (call.second == ListCall::Changes) return true;
+    }
+    return false;
+}
+
+struct ListHeaderPromotion : llvm::PassInfoMixin<ListHeaderPromotion> {
+    llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager& fam) {
+        std::vector<llvm::CallInst*> headers;
+        for (llvm::Instruction& inst : llvm::instructions(f)) {
+            auto* call = llvm::dyn_cast<llvm::CallInst>(&inst);
+            if (call && is_list_allocator(call->getCalledFunction())) headers.push_back(call);
+        }
+        const llvm::DataLayout& dl = f.getDataLayout();
+        std::vector<llvm::AllocaInst*> slots;
+        unsigned growing = 0;
+        for (llvm::CallInst* header : headers) {
+            HeaderUses uses;
+            if (collect_header_uses(header, 0, dl, uses) && header_grows(uses)) growing++;
+        }
+        bool trace = trace_policies();
+        for (llvm::CallInst* header : headers) {
+            HeaderUses uses;
+            if (!collect_header_uses(header, 0, dl, uses)) {
+                if (trace) {
+                    llvm::errs() << "[policy] list header stays in memory in " << f.getName() << ":\n";
+                    for (llvm::User* user : header->users()) llvm::errs() << "  " << *user << "\n";
+                }
+                continue;
+            }
+            if (uses.accesses.empty()) continue;
+            if (header_fields_overlap(uses, dl) || !fold_element_size(header, uses)) continue;
+            if (uses.accesses.empty() || (growing > MAX_GROWING_LISTS && header_grows(uses))) continue;
+            promote_header(header, uses, slots);
+        }
+        if (headers.empty()) return llvm::PreservedAnalyses::all();
+        if (slots.empty()) {
+            llvm::PreservedAnalyses kept;
+            kept.preserveSet<llvm::CFGAnalyses>();
+            return kept;
+        }
+        llvm::PromoteMemToReg(slots, fam.getResult<llvm::DominatorTreeAnalysis>(f),
+                              &fam.getResult<llvm::AssumptionAnalysis>(f));
+        llvm::PreservedAnalyses kept;
+        kept.preserveSet<llvm::CFGAnalyses>();
+        return kept;
+    }
+};
+
 static void register_policies(llvm::PassBuilder& pb, int policies) {
     // Both at the vectorizer's start: loops rotated and simplified, trip counts
     // known, the unroller and the vectorizer still to come.
@@ -506,6 +817,14 @@ static void register_policies(llvm::PassBuilder& pb, int policies) {
         pb.registerVectorizerStartEPCallback(
             [](llvm::FunctionPassManager& fpm, llvm::OptimizationLevel) {
                 fpm.addPass(CoveredFillElimination());
+            });
+    }
+    // Where the function simplification pipeline tidies up after InstCombine, so inlined
+    // list code is already in the function and every loop pass still to come sees SSA.
+    if (policies & PRISMIO_POLICY_LIST_HEADERS) {
+        pb.registerPeepholeEPCallback(
+            [](llvm::FunctionPassManager& fpm, llvm::OptimizationLevel) {
+                fpm.addPass(ListHeaderPromotion());
             });
     }
     if (policies & PRISMIO_POLICY_SELF_RECURSION_UNFOLD) {

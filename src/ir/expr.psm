@@ -1,6 +1,7 @@
 // Lowering expressions to values.
 
 import symbols.bindings
+import sema.references
 import symbols.type_registry
 import symbols.declarations
 import symbols.facts
@@ -1481,6 +1482,15 @@ internal fn fatFromPtr(raw: String) -> String {
     return fatWithLength(raw, len)
 }
 
+// Terminated bytes this program does not own, in the borrowed class: bit 34 of the word,
+// PRISMIO_STR_BORROWED_TAG in the backend.
+private fn fatBorrowedFromPtr(raw: String) -> String {
+    ir_call_begin()
+    ir_call_arg("ptr", raw)
+    let len = ir_get_temp_name(ir_call_end("i32", "prismio_cstr_len"))
+    return fatWithLengthFlag(raw, len, "17179869184")
+}
+
 // FFI 5.2 `produce(f)`: the deallocator `f` names, or "" when it is the seam's own
 // `rt_free`, whose blocks Prismio releases like any other. A String from any other
 // allocator -- `strdup` declared `produce(free)`, a library's `produce(lib_string_free)` --
@@ -2231,6 +2241,7 @@ private fn irStableReceiver(p: Ptr, bodyPtr: Ptr) -> Bool {
 // True when it emitted the guard and the copy, leaving the builder in the block
 // the ordinary loop should start.
 internal fn generateWholeBufferCopy(cond: ASTNode, body: ASTNode, endLabel: Int) -> Bool {
+    if (irFunctionPinsLocals) { return false }
     if (cond.kind != NodeKind.BINARY_EXPR or cond.s1.equals("<") == false) { return false }
     if (nodeIsNull(cond.child1) or nodeIsNull(cond.child2)) { return false }
     let ivNode = ptr_to_node(cond.child1)
@@ -2348,6 +2359,7 @@ private fn irIsZeroScalar(nodePtr: Ptr) -> Bool {
 // undersized list still executes the original loop unchanged.
 internal fn generateWholeBufferZeroFill(cond: ASTNode, body: ASTNode,
                                         endLabel: Int) -> Bool {
+    if (irFunctionPinsLocals) { return false }
     if (cond.kind != NodeKind.BINARY_EXPR or cond.s1.equals("<") == false) {
         return false
     }
@@ -2578,6 +2590,7 @@ private fn irScalarFillValue(nodePtr: Ptr) -> Bool {
 // branched. Empty lists can now prepare capacity for a pure scalar fill before
 // this test; all other insufficient-capacity loops retain the ordinary path.
 internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
+    if (irFunctionPinsLocals) { return "" }
     let bodyPtr = node_to_ptr(body)
     if (irPushGuardOk(bodyPtr, bodyPtr) == false) { return "" }
 
@@ -2624,6 +2637,7 @@ internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
 // that the `while` it replaced did not: `large_buffer_copy`'s fill loop, written
 // as `for i in 0..<n`, took the benchmark from 1.20x of C++ to 1.80x.
 internal fn generateForPushGuard(stmt: ASTNode, endVal: String, down: Bool) -> String {
+    if (irFunctionPinsLocals) { return "" }
     let bodyPtr = stmt.child3
     if (irPushGuardOk(bodyPtr, bodyPtr) == false) { return "" }
     if (nodeExists(ptr_to_node(stmt.child2).next)) { return "" }
@@ -4389,8 +4403,46 @@ internal fn coalescePrepareChain(head: Ptr) {
     }
 }
 
+// `&place`: where a place already is (src/sema/references.psm). Nothing is read and nothing
+// moves. A struct value is the address of its storage already, so it is the pointer; a scalar
+// is its slot, which is why a function with one of these has its loop analyses off
+// (irFunctionPinsLocals): that slot can now change by a write no assignment shows.
+private fn generateAddressOf(place: ASTNode) -> String {
+    if (place.kind == NodeKind.IDENTIFIER_EXPR) {
+        let t = nodeGetType(place)
+        if (t.kind == TypeKind.STRUCT or t.kind == TypeKind.ARRAY) { return generateExpression(place) }
+        if (ir_var_is_global(place.s1) == 1) {
+            return ir_get_temp_name(ir_global_address(storageType(typeIrKey(t)), place.s1))
+        }
+        return ir_get_temp_name(ir_slot_address(ir_get_var_slot(place.s1)))
+    }
+    if (place.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let objectNode = ptr_to_node(place.child1)
+        let objectVal = generateExpression(objectNode)
+        let structName = memberObjectStructName(objectNode)
+        return ir_get_temp_name(ir_struct_field_ptr(structName, objectVal,
+                                                    ir_get_struct_field_index(structName, place.s1)))
+    }
+    if (place.kind == NodeKind.INDEX_EXPR) {
+        // An array of structs holds a pointer per element, and the element read is it.
+        if (isStructTypeKey(getExprType(place))) { return generateExpression(place) }
+        let baseNode = ptr_to_node(place.child1)
+        let arrayVal = generateExpression(baseNode)
+        let indexVal = generateExpression(ptr_to_node(place.child2))
+        generateArrayIndexCheck(place, nodeGetType(baseNode), indexVal)
+        return ir_get_temp_name(ir_elem_ptr(storageType(getExprType(place)), arrayVal, indexVal))
+    }
+    // `&v[i]`, which sema read as the element: in range, and stored inline at this width.
+    let listNode = ptr_to_node(place.child2)
+    let listVal = generateExpression(listNode)
+    let indexVal = generateExpression(ptr_to_node(listNode.next))
+    let stride = inlineElemSizeOfList(listNode)
+    return ir_get_temp_name(ir_list_element_address(listVal, indexVal, stride))
+}
+
 private fn generateUnary(expr: ASTNode) -> String {
     let operandNode = ptr_to_node(expr.child1)
+    if (semaRefIsAddressOf(expr)) { return generateAddressOf(operandNode) }
     let operandVal = generateExpression(operandNode)
     let uop = expr.s1
 
@@ -4727,7 +4779,10 @@ private fn generateBinary(expr: ASTNode) -> String {
             if (op.equals(">")) { tempId = ir_icmp_ugt(opType, leftVal, rightVal) }
             if (op.equals(">=")) { tempId = ir_icmp_uge(opType, leftVal, rightVal) }
         } else {
-            if (op.equals("/")) { tempId = ir_sdiv(opType, leftVal, rightVal) }
+            if (op.equals("/")) {
+                if (nowrapRemainderForm(expr) == REM_UNSIGNED) { tempId = ir_udiv(opType, leftVal, rightVal) }
+                else { tempId = ir_sdiv(opType, leftVal, rightVal) }
+            }
             if (op.equals("<")) { tempId = ir_icmp_slt(opType, leftVal, rightVal) }
             if (op.equals("<=")) { tempId = ir_icmp_sle(opType, leftVal, rightVal) }
             if (op.equals(">")) { tempId = ir_icmp_sgt(opType, leftVal, rightVal) }
@@ -4736,7 +4791,10 @@ private fn generateBinary(expr: ASTNode) -> String {
     }
     if (op.equals("%") and floatKeyValid(opType) == false) {
         let form = nowrapRemainderForm(expr)
-        if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
+        if (isUnsigned or form == REM_UNSIGNED) { tempId = ir_urem(opType, leftVal, rightVal) }
+        else if (form == REM_MERSENNE or form == REM_MERSENNE_SIGNED) {
+            tempId = mersenneRemainder(form, opType, leftVal, rightVal, mersenneBits(remainderDivisor(expr)))
+        }
         else if (form != REM_KEEP) { tempId = reducedRemainder(form, opType, leftVal, rightVal) }
         else { tempId = ir_srem(opType, leftVal, rightVal) }
     }
@@ -4778,6 +4836,24 @@ private fn reducedRemainder(form: Int, opType: String, x: String, m: String) -> 
     let stepped = ir_select(opType, high, less, x)
     if (form == REM_SUBTRACT) { return stepped }
     return remainderAddStep(opType, x, ir_get_temp_name(stepped), m)
+}
+
+// `x % m` for `m` = `2^k - 1` (ir/residues.psm): the shift and the mask, and the one step.
+private fn mersenneRemainder(form: Int, opType: String, x: String, m: String, k: Int) -> Int {
+    let mut high = 0
+    let mut floor = m.clone()
+    if (form == REM_MERSENNE) {
+        high = ir_lshr(opType, x, k.toString())
+    } else {
+        high = ir_ashr(opType, x, k.toString())
+        let negative = ir_get_temp_name(ir_icmp_slt(opType, x, "0"))
+        floor = ir_get_temp_name(ir_select(opType, negative, "1", m))
+    }
+    let low = ir_get_temp_name(ir_and(opType, x, m))
+    let sum = ir_get_temp_name(ir_add(opType, ir_get_temp_name(high), low))
+    let over = ir_get_temp_name(ir_icmp_sge(opType, sum, floor))
+    let less = ir_get_temp_name(ir_sub(opType, sum, m))
+    return ir_select(opType, over, less, sum)
 }
 
 // `x <= -m ? x + m : otherwise`.
@@ -5418,17 +5494,18 @@ private fn generateCallNumericBuiltin(expr: ASTNode, funcName: String) -> String
 
     // One slot of a `char**`, given its length here -- the single `strlen` at
     // the boundary. The bytes stay where the C runtime put them, which is why
-    // AIF treats the result as static storage and nothing releases it.
+    // AIF treats the result as static storage and nothing releases it, and the pair
+    // says so itself, as a literal's does: a Vec or a field it reaches copies it out.
     if (funcName.equals("__builtin_cstring_at") and nodeExists(expr.child2)) {
         let arrayNode = ptr_to_node(expr.child2)
         let arrayVal = generateExpression(arrayNode)
         let indexVal = generateExpression(ptr_to_node(arrayNode.next))
-        return fatFromPtr(ir_get_temp_name(ir_ptr_load_at(arrayVal, indexVal)))
+        return fatBorrowedFromPtr(ir_get_temp_name(ir_ptr_load_at(arrayVal, indexVal)))
     }
     // The pointer's bytes in place, measured by one `strlen`. Static for the same
     // reason as the slot read above: the caller's buffer is not ours to release.
     if (funcName.equals("__builtin_cstring") and nodeExists(expr.child2)) {
-        return fatFromPtr(generateExpression(ptr_to_node(expr.child2)))
+        return fatBorrowedFromPtr(generateExpression(ptr_to_node(expr.child2)))
     }
     if (funcName.equals("__builtin_errno_intr")) {
         return ir_get_temp_name(ir_errno_constant("EINTR"))
@@ -5922,7 +5999,7 @@ private fn generateCall(expr: ASTNode) -> String {
             guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
         }
         let mut checkBounds = 1
-        if (irAccessProved(expr)) {
+        if (irAccessProved(expr) or nowrapIndexInRange(expr)) {
             checkBounds = 0
         } else if (irLoopHeaderBoundActive
                 and listNode.kind == NodeKind.IDENTIFIER_EXPR
@@ -5972,12 +6049,12 @@ private fn generateCall(expr: ASTNode) -> String {
             guard2 = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
         }
         let mut checkBounds2 = 1
-        if (irAccessProved(expr)) { checkBounds2 = 0 }
+        if (irAccessProved(expr) or nowrapIndexInRange(expr)) { checkBounds2 = 0 }
         let mut hoistedBound2 = ""
         let mut hoistedData2 = ""
-        if (checkBounds2 == 0) {
+        if (irAccessProved(expr)) {
             hoistedData2 = ir_range_proof_data(node_to_ptr(expr)).clone()
-        } else if (setList.kind == NodeKind.IDENTIFIER_EXPR
+        } else if (checkBounds2 == 1 and setList.kind == NodeKind.IDENTIFIER_EXPR
                 and setList.s1.equals(irLoopHoistedBoundList)) {
             hoistedBound2 = irLoopHoistedBoundValue.clone()
             hoistedData2 = irLoopHoistedDataValue.clone()

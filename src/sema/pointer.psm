@@ -49,13 +49,13 @@ private fn semaPtrCopyNode(n: ASTNode) -> ASTNode {
     return c
 }
 
-// Why `ptrT` cannot be read as a value, or "" when it can. A struct is read a field at
-// a time (`p.magic`) and a pointer to a pointer is a pointer, so neither has a value to
-// load. A volatile pointer reads like any other, and every read is a volatile one.
+// Why `ptrT` cannot be read as a value, or "" when it can. A struct is read a field at a
+// time (`p.magic`), so it has no value to load. A pointer to a pointer loads the pointer. A
+// volatile pointer reads like any other, and every read is a volatile one.
 internal fn semaPtrReadRefusal(ptrT: TypeInfo) -> String {
     let pointee = typePtrPointee(ptrT)
     if (typeIsValid(pointee) == false) { return "" }
-    if (typeIsScalarOptionalInner(pointee)) { return "" }
+    if (typeIsScalarOptionalInner(pointee) or pointee.kind == TypeKind.PTR) { return "" }
     if (pointee.kind == TypeKind.STRUCT) {
         return "this points at ".concat(diagQuote(pointee.name), ", which is read a field at a time: `p.field`")
     }
@@ -244,7 +244,8 @@ internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiv
     let mut refusal = ""
     if (writes) {
         refusal = semaPtrWriteRefusal(ptrT)
-        if (refusal.equals("") and typeIsValid(pointee) and typeIsScalarOptionalInner(pointee) == false) {
+        if (refusal.equals("") and typeIsValid(pointee) and typeIsScalarOptionalInner(pointee) == false
+                and pointee.kind != TypeKind.PTR) {
             if (pointee.kind == TypeKind.STRUCT) {
                 refusal = "this points at ".concat(diagQuote(pointee.name),
                                                    ", which is written a field at a time: `p.field = value`")

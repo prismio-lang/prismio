@@ -1,0 +1,274 @@
+// `&x`, `&mut x`, `*p` and `p[i]` over a program's own variables (src/sema/references.psm).
+// What a write through a pointer changes, every later read has to see, including the reads the
+// loop analyses would otherwise have proved something about.
+
+import std.io
+import std.mem
+import std.process
+import std.sys
+import std.string
+
+repr(C) struct Point {
+    x: Int,
+    y: Int
+}
+
+struct Inner {
+    a: Int,
+    b: U8
+}
+
+struct Outer {
+    id: Int,
+    inner: Inner,
+    tags: Array<Int, 4>
+}
+
+let mut counter = 7
+let LIMIT = 3
+
+fn bump(p: Ptr<mut Int>) {
+    *p = *p + 1
+}
+
+fn read(p: Ptr<Int>) -> Int {
+    return *p
+}
+
+fn twice(p: Ptr<mut Int>) {
+    *p += 1
+    *p *= 2
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    println(label)
+    println(got)
+    return 1
+}
+
+fn scalars() -> Int {
+    let mut bad = 0
+    let mut x = 5
+    let p = &mut x
+    *p = 6
+    bad = bad + check("FAIL: write through", x, 6)
+    x = 9
+    bad = bad + check("FAIL: read through", *p, 9)
+    bump(&mut x)
+    bad = bad + check("FAIL: bump", x, 10)
+    twice(&mut x)
+    bad = bad + check("FAIL: compound", x, 22)
+    let y = 40
+    bad = bad + check("FAIL: read-only", read(&y), 40)
+    bad = bad + check("FAIL: mut reads as read-only", read(&mut x), 22)
+    let mut big: I64 = 1
+    let q = &mut big
+    *q = 5000000000 as I64
+    if (big != 5000000000 as I64) { bad = bad + 1 }
+    let mut small: U8 = 250
+    let s = &mut small
+    *s = 255 as U8
+    if (small != 255 as U8) { bad = bad + 1 }
+    let mut flag = false
+    let f = &mut flag
+    *f = true
+    if (flag == false) { bad = bad + 1 }
+    let mut ratio = 1.5
+    let r = &mut ratio
+    *r = 2.5
+    if (ratio != 2.5) { bad = bad + 1 }
+    return bad
+}
+
+// A pointer to a pointer: rebinding one through the other.
+fn pointers() -> Int {
+    let mut bad = 0
+    let mut a = 1
+    let mut b = 2
+    let mut p = &mut a
+    let pp = &mut p
+    *pp = &mut b
+    *p = 20
+    bad = bad + check("FAIL: pointer to pointer", b, 20)
+    bad = bad + check("FAIL: the other is untouched", a, 1)
+    return bad
+}
+
+// `i` changes through `p`, so the loop must not take it for a plain counter: no bound, step or
+// remainder can be read off the assignments, of which there are none.
+fn loops() -> Int {
+    let mut bad = 0
+    let mut i = 0
+    let mut steps = 0
+    let p = &mut i
+    while (i < 10) {
+        *p = *p + 3
+        steps = steps + 1
+    }
+    bad = bad + check("FAIL: counter through pointer", i, 12)
+    bad = bad + check("FAIL: its steps", steps, 4)
+
+    // The loop's bound moves.
+    let mut limit = 100
+    let q = &mut limit
+    let mut n = 0
+    let mut values = Vec<Int>.filled(100, 1)
+    while (n < limit) {
+        values[n] = n
+        if (n == 9) { *q = 20 }
+        n = n + 1
+    }
+    bad = bad + check("FAIL: moved bound", n, 20)
+
+    // A value whose range the walk could otherwise read: it starts as a remainder.
+    let mut sum = 5 % 7
+    let w = &mut sum
+    *w = 0 - 50
+    bad = bad + check("FAIL: negative after all", sum % 7, 0 - 1)
+    return bad
+}
+
+fn fields() -> Int {
+    let mut bad = 0
+    let mut o = Outer { id: 1, inner: Inner { a: 2, b: 3 as U8 }, tags: [10, 20, 30, 40] }
+    let id = &mut o.id
+    *id = 100
+    bad = bad + check("FAIL: field", o.id, 100)
+    let a = &mut o.inner.a
+    *a = 200
+    bad = bad + check("FAIL: nested field", o.inner.a, 200)
+    let whole = &mut o
+    whole.id = 101
+    bad = bad + check("FAIL: struct, by field", o.id, 101)
+    bad = bad + check("FAIL: struct, read", whole.inner.a, 200)
+    let inner = &mut o.inner
+    inner.a = 201
+    bad = bad + check("FAIL: inline struct", o.inner.a, 201)
+    let viaPointer = &mut whole.inner.a
+    *viaPointer = 202
+    bad = bad + check("FAIL: through a pointer's field", o.inner.a, 202)
+    let tag = &mut o.tags[2]
+    *tag = 33
+    bad = bad + check("FAIL: array field element", o.tags[2], 33)
+    return bad
+}
+
+fn elements() -> Int {
+    let mut bad = 0
+    let mut a: Array<Int, 4> = [1, 2, 3, 4]
+    let e = &mut a[1]
+    *e = 22
+    bad = bad + check("FAIL: array element", a[1], 22)
+    let mut v: Vec<Int> = []
+    v.push(5)
+    v.push(6)
+    let at = hidden(1)
+    let ve = &mut v[at]
+    *ve = 66
+    bad = bad + check("FAIL: Vec element", v[1], 66)
+    let mut pts: Vec<Point> = []
+    pts.push(Point { x: 1, y: 2 })
+    let pe = &mut pts[0]
+    pe.y = 22
+    bad = bad + check("FAIL: Vec struct element", pts[0].y, 22)
+    return bad
+}
+
+fn hidden(value: Int) -> Int {
+    let mut out = value
+    out = out + 0
+    return out
+}
+
+// `p[i]` steps and reads through, and needs `std.sys`.
+fn indexing() -> Int {
+    let mut bad = 0
+    let mut a: Array<Int, 4> = [1, 2, 3, 4]
+    let p = &mut a[0]
+    bad = bad + check("FAIL: p[i]", p[2], 3)
+    p[3] = 44
+    bad = bad + check("FAIL: p[i] =", a[3], 44)
+    let mut pts: Array<Point, 2> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    let s = &mut pts[1]
+    bad = bad + check("FAIL: an array of structs' element", s.x, 3)
+    let block = allocOf<Point>(2)
+    block[1].x = 5
+    block[1].y = 6
+    bad = bad + check("FAIL: p[i].x", block[1].x + block[1].y, 11)
+    free(block)
+    return bad
+}
+
+fn globals() -> Int {
+    let mut bad = 0
+    let p = &mut counter
+    *p = 8
+    bad = bad + check("FAIL: global", counter, 8)
+    bad = bad + check("FAIL: read-only global", read(&LIMIT), 3)
+    return bad
+}
+
+// A product across lines stays a product; a `*` that touches is a new statement.
+fn lines() -> Int {
+    let mut x = 3
+    let p = &mut x
+    let a = 4
+        * 5
+    let b = a
+    *p = b
+    return x
+}
+
+extern fn time(out: Ptr<mut I64>) -> I64
+
+// An out-parameter, the first thing C asks of a pointer to a variable.
+fn foreign() -> Int {
+    let mut now: I64 = 0
+    let answer = time(&mut now)
+    if (answer != now or now <= 0 as I64) { return 1 }
+    return 0
+}
+
+// A pointer that may be absent, and one read through two levels.
+fn optional(flag: Bool) -> Int {
+    let x = 11
+    let mut p: Ptr<Int>? = none
+    if (flag) { p = &x }
+    if (p == none) { return 0 - 1 }
+    return expect(p).load()
+}
+
+fn twoLevels() -> Int {
+    let point = Point { x: 3, y: 4 }
+    let p = &point
+    let pp = &p
+    return (*pp).y + pp.load().x
+}
+
+fn outOfRange() -> Int {
+    let mut v: Vec<Int> = []
+    v.push(1)
+    let p = &mut v[hidden(1)]
+    return *p
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + scalars()
+    bad = bad + pointers()
+    bad = bad + loops()
+    bad = bad + fields()
+    bad = bad + elements()
+    bad = bad + indexing()
+    bad = bad + globals()
+    bad = bad + check("FAIL: lines", lines(), 20)
+    bad = bad + check("FAIL: foreign", foreign(), 0)
+    bad = bad + check("FAIL: optional", optional(hidden(1) == 1), 11)
+    bad = bad + check("FAIL: optional, absent", optional(hidden(1) == 0), 0 - 1)
+    bad = bad + check("FAIL: two levels", twoLevels(), 7)
+    if (process.args.count > 1) { return outOfRange() }
+    if (bad != 0) { return 1 }
+    println("PASS: references")
+    return 0
+}

@@ -1,0 +1,5 @@
+// expect-error: `*` reads through a typed pointer
+fn main() -> Int {
+    let x = 1
+    return *x
+}

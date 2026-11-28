@@ -1,0 +1,6 @@
+// expect-error: which is `std.sys`'s
+fn main() -> Int {
+    let x = 1
+    let p = &x
+    return p[0]
+}

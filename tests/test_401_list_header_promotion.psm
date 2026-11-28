@@ -1,0 +1,195 @@
+// A Vec whose header stays in its function lives in registers (ListHeaderPromotion in
+// runtime/llvm_bridge.cpp), written back before a call that takes the list and read again
+// after one that can change it. Every shape here has to see the header it would have seen in
+// memory. The harness's list_header_promotion runs the out-of-range case, whose message
+// must name the live length.
+
+import std.io
+import std.process
+import std.string
+
+// `value`, as far as the walk can tell any value: it answers for a function of one `return`.
+fn hidden(value: Int) -> Int {
+    let mut out = value
+    out = out + 0
+    return out
+}
+
+// Grows from nothing through every doubling, reading its own elements as it goes.
+fn growing(n: Int) -> Int {
+    let mut values: Vec<Int> = []
+    let mut sum = 0
+    for i in 0..<n {
+        values.push(i)
+        sum = sum + values[values.length - 1] + values[values.length / 2]
+    }
+    return sum + values.length
+}
+
+// A queue that its own loop extends, from a capacity too small to hold it.
+fn queueGrows(n: Int) -> Int {
+    let mut queue: Vec<Int> = Vec<Int>.withCapacity(1)
+    queue.push(1)
+    let mut head = 0
+    let mut sum = 0
+    while (head < queue.length) {
+        let node = queue[head]
+        head = head + 1
+        sum = sum + node
+        if (node * 2 < n) { queue.push(node * 2) }
+        if (node * 2 + 1 < n) { queue.push(node * 2 + 1) }
+    }
+    return sum
+}
+
+fn readLength(values: Vec<Int>) -> Int {
+    return values.length
+}
+
+fn appendTwo(inout values: Vec<Int>) {
+    values.push(100)
+    values.push(200)
+}
+
+// A callee that reads the header has to see every push so far, and one that pushes has to
+// be seen. Not inlined, so a call really is there; the loop keeps the same list live across it.
+fn acrossCalls(n: Int) -> Int {
+    let mut values: Vec<Int> = Vec<Int>.withCapacity(2)
+    let mut sum = 0
+    for i in 0..<n {
+        values.push(i)
+        values.push(i + 1)
+        sum = sum + readLength(values)
+        if (i % 3 == 0) { appendTwo(values) }
+        sum = sum + values[values.length - 1] + values.length
+    }
+    return sum
+}
+
+// More growing lists than the promotion keeps in registers.
+fn many(n: Int) -> Int {
+    let mut a: Vec<Int> = []
+    let mut b: Vec<Int> = []
+    let mut c: Vec<Int> = []
+    let mut d: Vec<Int> = []
+    let mut e: Vec<Int> = []
+    for i in 0..<n {
+        a.push(i)
+        b.push(a[i] + 1)
+        c.push(b[i] + 1)
+        d.push(c[i] + 1)
+        e.push(d[i] + 1)
+    }
+    return e[n - 1] + a.length + e.length
+}
+
+// Each element width, and a list born empty and stamped by its first push.
+fn widths(n: Int) -> Int {
+    let mut bytes: Vec<U8> = []
+    let mut bools = Vec<Bool>.filled(n, false)
+    let mut wide: Vec<I64> = Vec<I64>.withCapacity(1)
+    let mut floats: Vec<Float> = []
+    let mut count = 0
+    for i in 0..<n {
+        bytes.push((i % 200) as U8)
+        bools[i] = i % 3 == 0
+        wide.push((i as I64) * 4294967296)
+        floats.push(i as Float)
+    }
+    for i in 0..<n {
+        if ((bytes[i] as Int) == i % 200 and bools[i] == (i % 3 == 0)
+                and wide[i] == (i as I64) * 4294967296 and floats[i] == i as Float) {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+struct Pair {
+    left: Int,
+    right: Int
+}
+
+fn structs(n: Int) -> Int {
+    let mut pairs: Vec<Pair> = []
+    for i in 0..<n {
+        pairs.push(Pair { left: i, right: i * 2 })
+    }
+    let mut sum = 0
+    for i in 0..<pairs.length {
+        sum = sum + pairs[i].right - pairs[i].left
+    }
+    return sum
+}
+
+// Declared in the loop: each pass has a new list, and the old one's length is not its own.
+fn redeclared(n: Int) -> Int {
+    let mut sum = 0
+    for i in 0..<n {
+        let mut values = Vec<Int>.filled(i % 5, 1)
+        values.push(i)
+        sum = sum + values.length + values[values.length - 1]
+    }
+    return sum
+}
+
+// A list that leaves is not promoted, and one chosen between is not either.
+fn built(n: Int) -> Vec<Int> {
+    let mut values: Vec<Int> = []
+    for i in 0..<n {
+        values.push(i)
+    }
+    return values
+}
+
+fn chosen(flag: Bool) -> Int {
+    let mut a: Vec<Int> = []
+    a.push(1)
+    a.push(2)
+    let b = built(5)
+    if (flag) { return a.length }
+    return b.length + b[4]
+}
+
+// Filled, zero elements, then pushed: a born length of 0 with a real capacity.
+fn filledEmpty() -> Int {
+    let mut values = Vec<Int>.filled(hidden(0), 7)
+    values.push(4)
+    values.push(5)
+    return values.length + values[0] + values[1]
+}
+
+fn outOfRange(n: Int) -> Int {
+    let mut values: Vec<Int> = []
+    for i in 0..<n {
+        values.push(i)
+    }
+    return values[values.length]
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    println(label)
+    println(got)
+    return 1
+}
+
+fn main() -> Int {
+    if (process.args.count > 1 and process.args[1].equals("past-the-end")) {
+        return outOfRange(hidden(37))
+    }
+    let mut bad = 0
+    bad = bad + check("FAIL: growing", growing(hidden(1000)), 750500)
+    bad = bad + check("FAIL: queueGrows", queueGrows(hidden(1000)), 499500)
+    bad = bad + check("FAIL: acrossCalls", acrossCalls(hidden(50)), 11084)
+    bad = bad + check("FAIL: many", many(hidden(100)), 303)
+    bad = bad + check("FAIL: widths", widths(hidden(500)), 500)
+    bad = bad + check("FAIL: structs", structs(hidden(100)), 4950)
+    bad = bad + check("FAIL: redeclared", redeclared(hidden(100)), 5250)
+    bad = bad + check("FAIL: chosen", chosen(hidden(0) == 0), 2)
+    bad = bad + check("FAIL: chosen, built", chosen(hidden(1) == 0), 9)
+    bad = bad + check("FAIL: filledEmpty", filledEmpty(), 11)
+    if (bad != 0) { return 1 }
+    println("PASS: list header promotion")
+    return 0
+}

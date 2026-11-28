@@ -250,7 +250,7 @@ fields, is the engine work `thetaFields` gestures at.
 ```
 let p = Process()
 p.program = process.args[0]
-p.arguments = ["x"]            // 4 allocated, 4 released
+p.arguments = ["x"]            // 3 allocated, 3 released
 ```
 
 An assignment `r.f = x`, `v[i].f = x` or `r.v[i].f = x` releases the list it displaces when the
@@ -614,6 +614,13 @@ Versioning push loops on the capacity guard made Prismio's loop C++'s exactly an
 nothing. Ruled out: the clock ramp, first-touch paging, the allocation (4 us) and the main
 loop's bounds checks. The reason is **not found** (`RESULTS-relational-tier.md`).
 
+### `prime_sieve` pays for an if-conversion
+
+Measured 2026-11-28 with the loop facts of 0.3.0: 0.43 -> 0.52 ms median of 41 runs (best 1.09x), 1.10x of C++ where it
+was ahead. The facts let LLVM turn the rarely taken `sum` update into a select that runs on every iteration. A rule
+keeping a step off conditional paths cured it and took `branch_mispredict` back to 0.75x of the build before, so it was
+rejected.
+
 ---
 
 ## Freestanding and the Linux kernel
@@ -674,6 +681,11 @@ lost to the analysis; the gap is the library surface.
 ---
 
 ## Language surface
+
+**A pointer made with `&` is not borrow-checked.** The compiler refuses a pointer that plainly leaves its variable's
+frame or block (`../src/sema/references.psm`), and does not follow one into a function that keeps it, or see that a
+`push` moved the block behind a `&v[i]`. Both are as undefined as in C. A function that takes an address also keeps
+none of its loop facts, and the PIR builder refuses it.
 
 **The compiler still spells some of the library's vocabulary** (found 2026-11-22, after the lang items landed). The items the language needs (`Result`, `??`, tuples, `Eq`/`Ord`/`Iterator`/`Copy`/`Key`, `HashMap`/`HashSet`, `vecOf`, the print family, the asm/raw/port wrappers) are found by marker. Three tables of names are not: the method names of arrays and `Vec` that `src/sema/array.psm` and `src/sema/vec.psm` lower to library functions (`sort`, `contains`, `fold`, ...); the `__builtin_*` to wrapper hint text in `semaBuiltinSpelling` (`src/sema/vec.psm`), which names `std.math`, `std.mem`, `std.sys` and `std.platform`; and the `String` method names the compiler writes for `+`, `==` and `as String` (`concat`, `compare`, `equals`, `toString`, `slice`, `charAt`, `parseFloat`, `parseBool`). Reproducer: `grep -rnE 'std\.[a-z_.]+"' src lsp`. Moving or renaming one of these library functions breaks the compiler, which a lang item would not.
 

@@ -6,11 +6,12 @@
 // `extern let`s below name them. Private, so neither symbol becomes a name in
 // the programs that import this module.
 //
-// **An argument allocates nothing until it is copied.** `__builtin_cstring_at`
-// hands back the bytes where the C runtime put them, and AIF models the result
-// as static storage. That is why `process.args[i]` returns a **copy**: a String
-// the caller owns, which no path can hand to the deallocator while it still
-// points into `argv`.
+// **An argument allocates nothing.** `process.args[i]` is a view of the bytes where the
+// C runtime put them, as cheap as a literal and released as little: AIF models it as static
+// storage, and the pair is in the borrowed class, so a Vec or a field holds it as it would
+// a literal, and no path can hand `argv` to the deallocator. `.clone()` makes an owned one where
+// a program wants its own bytes. The one way to change an argument is
+// `process.args.overwrite`, which checks before it writes.
 
 import std.core.option
 import std.string
@@ -51,14 +52,6 @@ private extern fn proc_env_remove(name: String borrow) -> Int
 private extern fn proc_env_all() -> String produce(rt_free)
 private extern fn proc_pid() -> Int
 private extern fn stdio_binary()
-
-private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
-    let mut i = 0
-    while (i < length) {
-        __builtin_string_put_byte(out, i, __builtin_string_byte_at(source, i))
-        i = i + 1
-    }
-}
 
 // The type of `process`. It holds only the argument accessor, which holds
 // nothing either: every answer is the runtime's.
@@ -127,12 +120,8 @@ impl ProcessQuery {
 }
 
 impl Args {
-    // The argument at `index`, as a string the caller owns, and `""` outside
+    // The argument at `index`, as a view of `argv` and not a copy, and `""` outside
     // `[0, count)`.
-    //
-    // A copy rather than the pointer, so that the result obeys the same rule as
-    // every other owned String and a caller cannot accidentally free `argv`. One
-    // small allocation per call, on a path that runs once per program.
     //
     // **Out of range and empty answer alike**, deliberately and not as a gap:
     // `count` is one property away, so the caller that cares can ask, and
@@ -141,18 +130,30 @@ impl Args {
     //
     // **The bound is checked here** because the builtin reads whatever slot it
     // is given. `argv` is null only while `argc` is still zero -- main's
-    // prologue stores the two together -- so this one test covers both. The
-    // empty answer is allocated like the other, so every path's result is one
-    // the caller owns.
+    // prologue stores the two together -- so this one test covers both.
     public fn at(self, index: Int) -> String {
-        if (index < 0 or index >= prismio_argc) {
-            return str_with_capacity(0)
+        if (index < 0 or index >= prismio_argc) { return "" }
+        return __builtin_cstring_at(prismio_argv, index)
+    }
+
+    // Writes `text` over the argument at `index`, from byte `offset`, and answers whether
+    // it did. The storage is the process's and its size is fixed, so every condition is
+    // tested before the first byte moves: the index is an argument, the bytes fit inside it,
+    // and `text` holds no NUL, which would end the argument early for C and leave a view
+    // reading past it. What it writes is a String's bytes, which the type says already. A
+    // view taken earlier sees the new bytes: it is the same memory.
+    public fn overwrite(self, index: Int, offset: Int, text: String) -> Bool {
+        if (index < 0 or index >= prismio_argc or offset < 0) { return false }
+        let target = __builtin_cstring_at(prismio_argv, index)
+        let count = text.length
+        if (offset > target.length or count > target.length - offset) { return false }
+        for i in 0..<count {
+            if ((__builtin_string_byte_at(text, i) as Int) == 0) { return false }
         }
-        let source = __builtin_cstring_at(prismio_argv, index)
-        let length = strLength(source)
-        let out = str_with_capacity(length)
-        prismioStdProcessCopyInto(out, source, length)
-        return out
+        for i in 0..<count {
+            __builtin_string_put_byte(target, offset + i, __builtin_string_byte_at(text, i))
+        }
+        return true
     }
 
     // `argc`, so the program name at 0 is counted.

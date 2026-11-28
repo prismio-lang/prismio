@@ -1325,6 +1325,8 @@ private fn semaHasTextForm(t: TypeInfo) -> Bool {
 }
 
 private fn semaUnaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (semaRefIsAddressOf(expr)) { return semaAddressOf(module, expr) }
+    if (expr.s1.equals("*")) { return semaDeref(module, expr) }
     let operand = ptr_to_node(expr.child1)
     let mut operandT = semaExpr(module, operand)
     let uop = expr.s1
@@ -2726,6 +2728,7 @@ private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return typeInvalid()
     }
 
+    if (typeIsTypedPtr(collectionT)) { return semaPtrIndex(module, expr, collectionT) }
     if (collectionT.kind != TypeKind.ARRAY and collectionT.kind != TypeKind.LIST
         and collectionT.kind != TypeKind.SLICE and collectionT.kind != TypeKind.DATAVIEW) {
         // An invalid collection has been reported already; "found Invalid"
@@ -3341,6 +3344,10 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
     let collectionT = semaExpr(module, ptr_to_node(target.child1))
     if (typeIsValid(collectionT) == false) { return true }
 
+    if (typeIsTypedPtr(collectionT)) {
+        semaPtrIndexAssignment(module, stmt, target, collectionT)
+        return true
+    }
     let mut store = ""
     if (collectionT.kind == TypeKind.LIST) { store = "list_set" }
     if (collectionT.kind == TypeKind.SLICE) { store = "slice_set" }
@@ -3411,6 +3418,10 @@ private fn semaCheckArrayCopy(value: ASTNode, targetT: TypeInfo, valueT: TypeInf
 
 private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     let target = ptr_to_node(stmt.child1)
+    if (target.kind == NodeKind.UNARY_EXPR and target.s1.equals("*")) {
+        semaDerefAssignment(module, stmt, target)
+        return
+    }
     semaInferAssigned(module, target, ptr_to_node(stmt.child2))
     if (target.kind == NodeKind.INDEX_EXPR) {
         if (semaIndexAssignment(module, stmt, target)) { return }
@@ -4120,6 +4131,7 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
         if (mainSaysNothing) { semaMainBareReturns(body) }
         semaBlock(module, body, expectedReturn)
         semaCheckDefiniteAssignment(body)
+        semaRefsCheckFrame(fnNode)
         if (nodeIsNoreturn(fnNode)) { semaCheckNoreturn(fnNode, body) }
 
         // Every path out of a value-returning function must return. Falling off

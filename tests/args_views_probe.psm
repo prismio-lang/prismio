@@ -1,0 +1,72 @@
+// `process.args[i]` is a view of `argv`, not a copy, and `overwrite` is the one way to change
+// one (std/process.psm). The arguments come from the harness's args_views, which also
+// reads the ledger under --verify: the views allocate nothing and nothing frees `argv`.
+
+import std.io
+import std.process
+import std.string
+
+struct Holder {
+    name: String
+}
+
+fn longest() -> String {
+    let mut best = process.args[0]
+    for i in 1..<process.args.count {
+        let here = process.args[i]
+        if (here.length > best.length) { best = here }
+    }
+    return best
+}
+
+fn check(label: String, ok: Bool) -> Int {
+    if (ok) { return 0 }
+    println(label)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + check("FAIL: count", process.args.count == 4)
+    bad = bad + check("FAIL: read", process.args[1].equals("alpha-is-a-long-argument"))
+    bad = bad + check("FAIL: short", process.args[2].equals("bet"))
+    bad = bad + check("FAIL: empty argument", process.args[3].equals(""))
+    bad = bad + check("FAIL: past the end", process.args[4].equals(""))
+    bad = bad + check("FAIL: negative", process.args[0 - 1].equals(""))
+
+    // Whatever keeps one keeps the view, and nothing releases `argv`.
+    let mut kept: Vec<String> = []
+    kept.push(process.args[1])
+    kept.push(process.args[2])
+    let holder = Holder { name: process.args[1] }
+    let owned = process.args[1].clone()
+    let joined = process.args[2].concat("-tail")
+    bad = bad + check("FAIL: pushed", kept[0].equals("alpha-is-a-long-argument") and kept[1].equals("bet"))
+    bad = bad + check("FAIL: field", holder.name.equals("alpha-is-a-long-argument"))
+    bad = bad + check("FAIL: returned", longest().equals("alpha-is-a-long-argument") or longest().length > 24)
+    bad = bad + check("FAIL: concat", joined.equals("bet-tail"))
+
+    // Each condition is tested before a byte moves.
+    let before = process.args[1]
+    bad = bad + check("FAIL: bad index", process.args.overwrite(9, 0, "x") == false)
+    bad = bad + check("FAIL: negative index", process.args.overwrite(0 - 1, 0, "x") == false)
+    bad = bad + check("FAIL: negative offset", process.args.overwrite(1, 0 - 1, "x") == false)
+    bad = bad + check("FAIL: too long", process.args.overwrite(2, 0, "four") == false)
+    bad = bad + check("FAIL: past the end of it", process.args.overwrite(2, 2, "xy") == false)
+    bad = bad + check("FAIL: offset past it", process.args.overwrite(2, 4, "") == false)
+    bad = bad + check("FAIL: untouched", before.equals("alpha-is-a-long-argument") and process.args[2].equals("bet"))
+
+    // A write that fits lands, and a view already taken sees it, being the same memory.
+    bad = bad + check("FAIL: fits", process.args.overwrite(1, 0, "ALPHA"))
+    bad = bad + check("FAIL: the view sees it", before.equals("ALPHA-is-a-long-argument"))
+    bad = bad + check("FAIL: at the end", process.args.overwrite(2, 2, "T") and process.args[2].equals("beT"))
+    bad = bad + check("FAIL: nothing to write", process.args.overwrite(3, 0, ""))
+    // Only a clone has bytes of its own. A Vec or a field holds the view, as it would a literal,
+    // and is the same memory; that each is released without touching `argv` is what the ledger reads.
+    bad = bad + check("FAIL: a clone keeps its own", owned.equals("alpha-is-a-long-argument"))
+    bad = bad + check("FAIL: a Vec holds the view", kept[0].equals("ALPHA-is-a-long-argument"))
+    bad = bad + check("FAIL: a field holds the view", holder.name.equals("ALPHA-is-a-long-argument"))
+    if (bad != 0) { return 1 }
+    println("PASS: argument views")
+    return 0
+}

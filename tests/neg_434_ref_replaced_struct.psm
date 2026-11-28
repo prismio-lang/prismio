@@ -1,0 +1,8 @@
+// expect-error: while a pointer made from it may be in use
+struct Point { x: Int }
+fn main() -> Int {
+    let mut s = Point { x: 1 }
+    let p = &mut s
+    s = Point { x: 2 }
+    return p.x
+}

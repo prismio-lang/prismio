@@ -1,0 +1,99 @@
+// `x % (2^k - 1)` as a shift, a mask and one step (src/ir/residues.psm), against the same
+// remainder by a value the walk cannot see, for every sign and at every multiple's edge.
+// The harness's mersenne_codegen reads the IR for which were reduced.
+
+import std.io
+
+// `value`, as far as the walk can tell any value: it answers for a function of one `return`.
+fn hidden(value: Int) -> Int {
+    let mut out = value
+    out = out + 0
+    return out
+}
+
+// A generator's step, whose state the walk can bound but not sign: `seed` comes back from
+// `step` itself, and a remainder has its dividend's sign.
+fn step(seed: I64) -> I64 {
+    return (seed * 48271) % 2147483647
+}
+
+fn generator(start: I64, n: Int, m: I64) -> Bool {
+    let mut fast = start
+    let mut slow = start
+    for _ in 0..<n {
+        fast = step(fast)
+        slow = (slow * 48271) % m
+        if (fast != slow) { return false }
+    }
+    return true
+}
+
+// The multiples of the divisor and their neighbours, on both sides of zero.
+fn multiples(m: I64) -> Bool {
+    for i in 0 - 1000..1000 {
+        for d in 0 - 2..2 {
+            let x = (i as I64) * 2147483647 + (d as I64)
+            if (x % 2147483647 != x % m) { return false }
+        }
+    }
+    return true
+}
+
+// Up to the far end of the dividends the form takes, 2^61.
+fn wide(m: I64) -> Bool {
+    for i in 0 - 2000..2000 {
+        let x = (i as I64) * 1000000000 * 1000000 + (i as I64)
+        if (x % 2147483647 != x % m) { return false }
+    }
+    return true
+}
+
+// At zero or above: the form with no sign to look at.
+fn positive(m: I64) -> Bool {
+    for i in 0..100000 {
+        let x = (i as I64) * 2147483629
+        if (x % 2147483647 != x % m) { return false }
+    }
+    return true
+}
+
+// `Int`, with a divisor small enough for its dividends to be in reach.
+fn narrow(m: Int) -> Bool {
+    for i in 0 - 70000..70000 {
+        let x = i * 15000
+        if (x % 65535 != x % m) { return false }
+    }
+    return true
+}
+
+// The smallest: 2^2 - 1 reaches 8, and 2^3 - 1 reaches 32.
+fn smallest(three: Int, seven: Int) -> Bool {
+    for i in 0 - 8..8 {
+        if (i % 3 != i % three) { return false }
+    }
+    for i in 0 - 32..32 {
+        if (i % 7 != i % seven) { return false }
+    }
+    return true
+}
+
+fn check(label: String, ok: Bool) -> Int {
+    if (ok) { return 0 }
+    println(label)
+    return 1
+}
+
+fn main() -> Int {
+    let big = hidden(2147483647) as I64
+    let mut bad = 0
+    bad = bad + check("FAIL: generator", generator(12345 as I64, 20000, big))
+    bad = bad + check("FAIL: generator, negative", generator(0 - 2147483646 as I64, 20000, big))
+    bad = bad + check("FAIL: multiples", multiples(big))
+    bad = bad + check("FAIL: wide", wide(big))
+    bad = bad + check("FAIL: positive", positive(big))
+    bad = bad + check("FAIL: narrow", narrow(hidden(65535)))
+    bad = bad + check("FAIL: smallest", smallest(hidden(3), hidden(7)))
+    if (bad != 0) { return 1 }
+    println("PASS: mersenne remainders")
+    return 0
+}

@@ -397,9 +397,9 @@ def run_param_ranges_test():
 
     test_314 checks the answers; a wrong range is poison that may still print them, so
     the IR is read: `scaled` gets [0, 150) and [150, 151) from two loops, `halved` the
-    quotient 1023, `countDown` a non-negative bound from its own guarded `n - 1`; the
-    unbounded argument, the public function and the one also called from a closure
-    get none.
+    quotient 1023, `countDown` a non-negative bound from its own guarded `n - 1`, and the
+    public function its one literal, since this module is the whole program; the unbounded
+    argument, the exported function and the one also called from a closure get none.
     """
     print(f"\n{BLUE}--- Running param_ranges ---{RESET}")
     source = TEST_DIR / "test_314_param_ranges.psm"
@@ -422,16 +422,21 @@ def run_param_ranges_test():
     wanted = {
         "scaled": ["range(i32 0, 150)", "range(i32 150, 151)"],
         "halved": ["range(i32 1023, 1024)"],
-        "countDown": ["range(i32 0, 2147483647)"],
+        "exposed": ["range(i32 5, 6)"],
     }
     for name, ranges in wanted.items():
         text = signature(name)
         for want in ranges:
             if want not in text:
                 problems.append(f"{name}: no `{want}` in `{text}`")
-    for name in ("unbounded", "exposed", "fromClosure"):
+    # Narrowed a little further each round, so its top edge is a matter of how many there are.
+    if "range(i32 0, " not in signature("countDown"):
+        problems.append(f"countDown: no non-negative range in `{signature('countDown')}`")
+    for name in ("unbounded", "fromClosure"):
         if "range(" in signature(name):
             problems.append(f"{name}: a range on a parameter not every call bounds")
+    if "range(" in signature("reachable"):
+        problems.append("reachable: an exported function has a range")
     if problems:
         print(f"{RED}[FAIL] param ranges{RESET}")
         for problem in problems:
@@ -1312,6 +1317,9 @@ def run_remainder_steps_codegen_test():
         def srem_by(name, divisor):
             return re.search(rf'srem i32 [^,\n]+, {divisor}\b', body(name)) is not None
 
+        def divides_by(name, divisor):
+            return re.search(rf'[su]rem i32 [^,\n]+, {divisor}\b', body(name)) is not None
+
         for name, divisor in (("checksumValue", 1000000007), ("checksumBoth", 1000000007),
                               ("smallBoth", 11), ("subtractOnly", 17), ("identity", 13),
                               ("nested", 997)):
@@ -1320,7 +1328,7 @@ def run_remainder_steps_codegen_test():
         if not re.search(r'icmp sle i32 [^,\n]+, -11\b', body("smallBoth")):
             problems.append("smallBoth has no add step for a negative dividend")
         for name, divisor in (("notKept", 1009), ("edge", 2147483647)):
-            if not srem_by(name, divisor):
+            if not divides_by(name, divisor):
                 problems.append(f"{name} lost a % {divisor} its facts do not bound")
     if problems:
         print(f"{RED}[FAIL] remainder steps: " + "\n".join(problems) + RESET)
@@ -3048,4 +3056,171 @@ def run_curated_closure_test():
 
     print(f"{GREEN}[PASS] curated closure: {len(curated)} op(s) reference only exported "
           f"symbols{RESET}")
+    return True
+
+
+@harness_test(suite="codegen")
+def run_list_header_promotion_test():
+    """A promoted header is written back before the runtime sees it.
+
+    test_401 checks the answers. This runs the out-of-range read, whose message must carry the
+    live length, which at that point exists only in a register.
+    """
+    print(f"\n{BLUE}--- Running list_header_promotion ---{RESET}")
+    source = TEST_DIR / "test_401_list_header_promotion.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-header-promotion-") as tmp:
+        exe = Path(tmp) / ("promotion.exe" if platform.system() == "Windows" else "promotion")
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(exe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] header promotion: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ran = subprocess.run([str(exe), "past-the-end"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace")
+        if ran.returncode == 0 or "index 37 is out of range for a Vec of length 37" not in ran.stderr:
+            problems.append(f"past-the-end: {ran.returncode} {ran.stderr.strip()[:200]!r}")
+        ran = subprocess.run([str(exe)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if ran.returncode != 0:
+            problems.append(f"the program itself: {ran.stdout.strip()[:200]!r}")
+    if problems:
+        print(f"{RED}[FAIL] list header promotion{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] a promoted header reaches the runtime whole{RESET}")
+    return True
+
+
+def _function_bodies(ir):
+    return {m.group(1): m.group(2) for m in re.finditer(
+        r'^define [^\n]*@(\w+?)__[^\n]*\n(.*?)^}', ir, re.MULTILINE | re.DOTALL)}
+
+
+@harness_test(suite="codegen")
+def run_list_contents_codegen_test():
+    """What a local Vec holds, a checked access says of its index, and a division `let` says of
+    its dividend reach codegen, and stop where they should.
+
+    test_402 checks the answers. The IR is read for what the facts did: `bfs`'s checksum is a
+    step, its `%` and `/` by `width` unsigned, and its four neighbour accesses unchecked;
+    `pushedNegative`'s and `rebound`'s `%` stay signed, `movedBase` keeps a check on the base
+    that moved, and the two out-of-range programs stop with the runtime's message.
+    """
+    print(f"\n{BLUE}--- Running list_contents_codegen ---{RESET}")
+    source = TEST_DIR / "test_402_list_contents.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-list-contents-") as tmp:
+        ir_path = Path(tmp) / "contents.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] list contents IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        bodies = _function_bodies(ir_path.read_text())
+
+        exe = Path(tmp) / ("contents.exe" if platform.system() == "Windows" else "contents")
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(exe)])
+        if built.returncode != 0:
+            problems.append(f"build failed: {built.stdout} {built.stderr}")
+        else:
+            for case, index, length in (("past-the-end", 16, 16), ("moved-base", 16, 16)):
+                ran = subprocess.run([str(exe), case], capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace")
+                wanted = f"index {index} is out of range for a Vec of length {length}"
+                if ran.returncode == 0 or wanted not in ran.stderr:
+                    problems.append(f"{case}: {ran.returncode} {ran.stderr.strip()[:200]!r}")
+
+    bfs = bodies.get("bfs", "")
+    if re.search(r'srem i32 [^,\n]+, 1000000007\b', bfs):
+        problems.append("bfs: the checksum kept its remainder")
+    if not re.search(r'icmp sge i32 [^,\n]+, 1000000007\b', bfs):
+        problems.append("bfs: the checksum is not a one-sided step")
+    if "urem i32" not in bfs or "udiv i32" not in bfs:
+        problems.append("bfs: `node % width` and `node / width` are not unsigned")
+    for name in ("pushedNegative", "rebound", "stored"):
+        if not re.search(r'srem i32 [^,\n]+, 1009\b', bodies.get(name, "")):
+            problems.append(f"{name}: a % that can see a negative element is not signed")
+    if "sdiv i32" not in bodies.get("signedDividend", "") and "srem i32" not in bodies.get("signedDividend", ""):
+        problems.append("signedDividend: a dividend of unknown sign lost its signed remainder")
+    if problems:
+        print(f"{RED}[FAIL] list contents{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] list contents and division ties reach codegen, and stop where they should{RESET}")
+    return True
+
+
+@harness_test(suite="codegen",
+              reads=["tests/test_403_mersenne_remainder.psm"])
+def run_mersenne_codegen_test():
+    """`x % (2^k - 1)` is a shift, a mask and one step wherever the facts bound `x` (test_403)."""
+    print(f"\n{BLUE}--- Running mersenne_codegen ---{RESET}")
+    source = TEST_DIR / "test_403_mersenne_remainder.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-mersenne-") as tmp:
+        ir_path = Path(tmp) / "mersenne.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] mersenne IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        bodies = _function_bodies(ir_path.read_text())
+
+    def reduced(name, width, divisor, shift):
+        body = bodies.get(name, "")
+        if re.search(rf'srem i{width} [^,\n]+, {divisor}\b', body):
+            problems.append(f"{name}: kept its % {divisor}")
+        if not re.search(rf'(ashr|lshr) i{width} [^,\n]+, {shift}\b', body):
+            problems.append(f"{name}: no shift by {shift}")
+
+    reduced("step", 64, 2147483647, 31)
+    reduced("multiples", 64, 2147483647, 31)
+    reduced("wide", 64, 2147483647, 31)
+    reduced("positive", 64, 2147483647, 31)
+    reduced("narrow", 32, 65535, 16)
+    if "lshr i64" not in bodies.get("positive", ""):
+        problems.append("positive: a dividend at zero or above looks at its sign")
+    if problems:
+        print(f"{RED}[FAIL] mersenne remainders{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] remainders by a Mersenne number need no multiply{RESET}")
+    return True
+
+
+@harness_test(suite="codegen")
+def run_args_views_test():
+    """`process.args[i]` is a view of `argv`, and `overwrite` checks before it writes.
+
+    args_views_probe checks the answers, which need these four arguments. The ledger is read
+    as well: a view allocates nothing, so what the program allocates is only what it kept,
+    and everything it kept it released, with `argv` never reaching the deallocator.
+    """
+    print(f"\n{BLUE}--- Running args_views ---{RESET}")
+    source = TEST_DIR / "args_views_probe.psm"
+    problems = []
+    arguments = ["alpha-is-a-long-argument", "bet", ""]
+    with tempfile.TemporaryDirectory(prefix="prismio-args-views-") as tmp:
+        exe = Path(tmp) / ("views.exe" if platform.system() == "Windows" else "views")
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(exe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] args views: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ran = subprocess.run([str(exe), *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if ran.returncode != 0 or "PASS: argument views" not in ran.stdout:
+            problems.append(f"the program: {ran.returncode} {ran.stdout.strip()[:300]!r} {ran.stderr.strip()[:200]!r}")
+        checked = Path(tmp) / ("verified.exe" if platform.system() == "Windows" else "verified")
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "--verify", "-o", str(checked)])
+        if built.returncode != 0:
+            problems.append(f"--verify build: {built.stdout} {built.stderr}")
+        else:
+            ran = subprocess.run([str(checked), *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if " 0 leaked, 0 violation(s)" not in ran.stderr + ran.stdout:
+                problems.append(f"the ledger: {(ran.stderr + ran.stdout).strip()[-300:]!r}")
+    if problems:
+        print(f"{RED}[FAIL] args views{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] an argument is a view, and a write to one is checked first{RESET}")
     return True

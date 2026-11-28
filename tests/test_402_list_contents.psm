@@ -1,0 +1,195 @@
+// What a local Vec holds, what a checked access says of its index, and what a division
+// `let` says of its dividend (src/ir/contents.psm, src/ir/residues.psm, src/ir/nowrap.psm).
+//
+// Each function computes a remainder or a quotient twice: once by a literal or a name the
+// walk may reduce, and once by a value it cannot see. The two must agree, and the shapes that
+// must not be reduced are here too. The harness's list_contents_codegen reads the IR for
+// which were, and runs the out-of-range cases, which must still stop the program.
+
+import std.io
+import std.process
+import std.string
+
+// `value`, as far as the walk can tell any value: it answers for a function of one `return`.
+fn hidden(value: Int) -> Int {
+    let mut out = value
+    out = out + 0
+    return out
+}
+
+// The shape all of this is for: every node pushed was first a checked index into `seen`, so
+// every node popped is in [0, total), and `x` and `y` say which neighbours are too.
+fn bfs(m: Int) -> Int {
+    let width = 37
+    let total = width * width
+    let divisor = hidden(width)
+    let mut seen = Vec<Bool>.filled(total, false)
+    let mut queue: Vec<Int> = Vec<Int>.withCapacity(total)
+    queue.push(0)
+    seen[0] = true
+    let mut head = 0
+    let mut fast = 0
+    let mut slow = 0
+    while (head < queue.length) {
+        let node = queue[head]
+        head = head + 1
+        fast = (fast + node) % 1000000007
+        slow = (slow + node) % m
+        let x = node % width
+        let y = node / width
+        if (x != node % divisor or y != node / divisor) { return 0 - 1 }
+        if (x > 0) {
+            let next = node - 1
+            if (seen[next] == false) {
+                seen[next] = true
+                queue.push(next)
+            }
+        }
+        if (x + 1 < width) {
+            let next = node + 1
+            if (seen[next] == false) {
+                seen[next] = true
+                queue.push(next)
+            }
+        }
+        if (y > 0) {
+            let next = node - width
+            if (seen[next] == false) {
+                seen[next] = true
+                queue.push(next)
+            }
+        }
+        if (y + 1 < width) {
+            let next = node + width
+            if (seen[next] == false) {
+                seen[next] = true
+                queue.push(next)
+            }
+        }
+    }
+    if (fast != slow or head != total) { return 0 - 1 }
+    return fast
+}
+
+// A negative element reaches the `%`: it must keep its sign.
+fn pushedNegative(n: Int, m: Int) -> Bool {
+    let mut values: Vec<Int> = Vec<Int>.withCapacity(n)
+    for i in 0..<n {
+        values.push(i - n / 2)
+    }
+    let mut fast = 0
+    let mut slow = 0
+    for i in 0..<values.length {
+        fast = fast + values[i] % 1009
+        slow = slow + values[i] % m
+    }
+    return fast == slow
+}
+
+fn addNegative(inout values: Vec<Int>) {
+    values.push(0 - 12345)
+}
+
+// Passed away, so a store the walk cannot see can put anything in it.
+fn passedAway(m: Int) -> Bool {
+    let mut values: Vec<Int> = Vec<Int>.withCapacity(4)
+    values.push(7)
+    addNegative(values)
+    let a = values[1]
+    return a % 1009 == a % m
+}
+
+// One name, two lists: the second's elements are not the first's.
+fn rebound(m: Int) -> Bool {
+    let mut total = 0
+    let mut check = 0
+    if (m > 0) {
+        let mut values: Vec<Int> = []
+        values.push(3)
+        total = total + values[0] % 1009
+        check = check + values[0] % m
+    }
+    if (m > 1) {
+        let mut values: Vec<Int> = []
+        values.push(0 - 3)
+        total = total + values[0] % 1009
+        check = check + values[0] % m
+    }
+    return total == check
+}
+
+// A stored element counts, not only a pushed one.
+fn stored(m: Int) -> Bool {
+    let mut values = Vec<Int>.filled(4, 5)
+    values[hidden(2)] = 0 - 5000
+    let mut fast = 0
+    let mut slow = 0
+    for i in 0..<4 {
+        fast = fast + values[i] % 1009
+        slow = slow + values[i] % m
+    }
+    return fast == slow
+}
+
+// `filled` says how long a list is born. A push makes it longer, so the index that reads the
+// pushed element is in range, and the facts must not say otherwise.
+fn grownPastFilled() -> Int {
+    let mut values = Vec<Int>.filled(4, 1)
+    values.push(9)
+    let at = hidden(4)
+    let got = values[at]
+    return got + at
+}
+
+// `base` moves after `x` was taken, so `x` says nothing of it, and the access keeps its check.
+fn movedBase(n: Int) -> Int {
+    let mut base = n
+    let x = base % 8
+    let mut table = Vec<Int>.filled(16, 2)
+    base = base - 16
+    if (x > 0) {
+        table[0] = table[base - 1]
+    }
+    return table[0]
+}
+
+// A dividend the facts cannot put at zero or above ties nothing: -9 % 8 is -1.
+fn signedDividend(a: Int) -> Int {
+    let n = hidden(a)
+    let x = n % 8
+    if (x < 0) { return x }
+    return 0
+}
+
+// A filled list's index read past its length.
+fn outOfRange(at: Int) -> Int {
+    let mut table = Vec<Int>.filled(16, 2)
+    table[at] = 3
+    return table[at + 1]
+}
+
+fn check(label: String, ok: Bool) -> Int {
+    if (ok) { return 0 }
+    println(label)
+    return 1
+}
+
+fn main() -> Int {
+    if (process.args.count > 1) {
+        let name = process.args[1]
+        if (name.equals("past-the-end")) { return outOfRange(hidden(16)) }
+        if (name.equals("moved-base")) { return movedBase(hidden(33)) }
+    }
+    let mut bad = 0
+    bad = bad + check("FAIL: bfs", bfs(hidden(1000000007)) >= 0)
+    bad = bad + check("FAIL: pushedNegative", pushedNegative(hidden(5000), hidden(1009)))
+    bad = bad + check("FAIL: passedAway", passedAway(hidden(1009)))
+    bad = bad + check("FAIL: rebound", rebound(hidden(1009)))
+    bad = bad + check("FAIL: stored", stored(hidden(1009)))
+    bad = bad + check("FAIL: grownPastFilled", grownPastFilled() == 13)
+    bad = bad + check("FAIL: movedBase", movedBase(hidden(25)) == 2)
+    bad = bad + check("FAIL: signedDividend", signedDividend(0 - 9) == 0 - 1)
+    if (bad != 0) { return 1 }
+    println("PASS: list contents")
+    return 0
+}

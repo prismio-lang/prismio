@@ -284,7 +284,7 @@ private fn tileBindsAny(scope: Ptr, expr: Ptr) -> Bool {
 // written begins, for the copy not entered. Answers the label the copy falls back
 // to, where the caller puts a plain copy of the loop, or -1 when there is no copy.
 internal fn generateStrideTiling(stmt: ASTNode, endLabel: Int) -> Int {
-    if (compiler_is_freestanding() == 1 or ir_overflow_checks() == 1) { return 0 - 1 }
+    if (compiler_is_freestanding() == 1 or ir_overflow_checks() == 1 or irFunctionPinsLocals) { return 0 - 1 }
     let nest = strideNestOf(stmt)
     if (nest.found == false) { return 0 - 1 }
     let id = irTileCounter

@@ -9,6 +9,26 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`&x`, `&mut x`, `*p` and `p[i]`: a pointer to a program's own variable** (`src/sema/references.psm`). `&x` is a `Ptr<T>` and
+  `&mut x` a `Ptr<mut T>`, of a local, a global, a field, or an element of an array or `Vec`; `*p` is `p.load()`, `*p = v` and `*p += v`
+  are `p.store(v)`, and `p[i]` is `p.offset(i)` read through or written through, behind `import std.sys` as `offset` is. A pointer
+  to a pointer now loads and stores. They are the existing typed pointers, so a place must hold plain data. `&v[i]` is wrapped in the
+  two conditions a raw pointer cannot carry: the index in range, and the element stored inline at the pointer's width
+  (`ir_list_element_address`, `list_element_address_fail`). The compiler refuses a pointer to a local that plainly leaves it:
+  returned, stored somewhere longer-lived, sent on a channel, spawned, captured, or assigned to a name outside the variable's block,
+  following it through `let`, stepping and what holds it; a whole struct cannot be replaced while a pointer made from it may be in
+  use. It is not a borrow checker, and the page says what it does not see. **A function that takes an address keeps none of its loop
+  facts** (`irFunctionPinsLocals`): every analysis that reads assignments to a name would miss a write through a pointer, so
+  its `nsw` marks, range guards, push guards, block copies and tiling are off, and its calls bound nothing in what they call.
+  `*` and `&` that start a line and touch what follows are prefixes, so `*p = 1` after an expression is a new statement and a
+  product continued on a new line, which has a space, stays one; `fmt` knows. The PIR builder refuses such a function (`address of a place`). `tests/test_404`, `neg_427`-`neg_436`.
+
+- **`process.args[i]` is a view of `argv`, not a copy, and `process.args.overwrite(index, offset, text)` is the one way to change an
+  argument.** The view is in a literal's class: it allocates nothing, a `Vec` or a field holds it, nothing releases it, and
+  `.clone()` gives a program bytes of its own. `overwrite` tests every condition before a byte moves (an argument at that index, the
+  bytes inside its fixed size, no NUL in `text`) and answers `false` having changed nothing. `__builtin_cstring` and
+  `__builtin_cstring_at` now set the borrowed bit themselves (`fatBorrowedFromPtr`). A compiler from the committed seed still bootstraps. `tests/args_views_probe.psm`, `args_views`, whose `--verify` ledger shows no leak and nothing freeing `argv`.
+
 - **PIR stage P2, first slice: move at last use (`--pir=plan`, `docs/PIR_PLAN.md` §20.2).** A field or match
   payload read out of a struct or enum that is built here, handed to no call and dead afterwards is moved out of
   it: the slot is nulled and whoever receives the value releases it. Off by default, and without a take the
@@ -76,6 +96,37 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   needed no change; both have tests for the new spellings.
 
 ### Changed
+
+- **A `Vec` whose header stays in its function keeps the header in registers** (`ListHeaderPromotion`,
+  `runtime/llvm_bridge.cpp`; `PRISMIO_LIST_HEADERS=0` turns it off). A push reads the length, capacity and data pointer
+  and writes the length, and after the out-of-line grow all of it must be read again. The pass takes a header apart where
+  every use of its pointer is a field access or a call that does not keep it: each field an alloca, written back before a
+  call that takes the list, read after one that can change it, then SSA. A list born with an element size keeps it for
+  life, so its flat guards fold. More than three growing lists in one function stay in memory. The hosted suite binary is
+  270 -> 221 KB. `tests/test_401`, `list_header_promotion`.
+
+- **What a local `Vec` holds, what a checked access says of its index, and what a division says of its dividend are
+  facts.** `ir/contents.psm` follows a local `Vec` as it does a local array, its `push` a store; a checked `v[i]` that ran
+  puts `i` in range; `let x = a % c` or `let y = a / c` ties `x` and `y` to `a`; `I64` is a fact type; a public function
+  in a program takes its parameters' ranges from its calls, in up to four rounds, and a function of one `return` answers
+  for its result. A `%` or `/` proved at zero or above is `urem`/`udiv`, and a list access below the shortest length has
+  no check. Emitting the compiler's own IR is 20% slower (2.81 -> 3.39 s; `check` is unchanged, and building the hosted
+  benchmark program is faster, 0.81 -> 0.71 s). `tests/test_402`, `list_contents_codegen`.
+
+- **A remainder by `2^k - 1` is a shift, a mask and one step, whatever the dividend's sign** (`mersenneForm`,
+  `ir/residues.psm`), wherever the facts bound the dividend within 2^(2k - 1) of zero, which is what the return ranges
+  above give MINSTD's `(seed * 48271) % 2147483647`. A second version of the same idea, an LLVM pass over the remainders
+  that were left, never fired on the hosted suite and was left out. `tests/test_403`, `mersenne_codegen`.
+
+  Header promotion and the two above, measured together against the build with the lock-free channel (Apple M5, AC
+  power, `benchmarks/run.py`, equal checksums, 73 workloads): geometric mean 0.924x (C++/Rust control 1.003x), 0.69x of
+  C++ and 0.67x of Rust. `vector_iteration` 0.31x, `strided_memory` 0.33x, `branch_mispredict` 0.35x, `random_gather`
+  0.44x, `allocation_escape` 0.45x, `vector_dot` 0.48x, `graph_bfs` 0.653 -> 0.382 ms (0.59x of C++ and Rust),
+  `vector_growth` 0.66x, `graph_churn_alloc` 28.1 -> 24.2 ms (0.70x of C++), `graph_churn_single` 17.3 -> 15.2 ms
+  (0.87x), `graph_churn_full` 60.5 -> 54.3 ms (0.68x), `dijkstra_shortest_path` 0.514 -> 0.461 ms (0.90x). **What it
+  cost**: `prime_sieve` 0.43 -> 0.52 ms median of 41 (best 1.09x; 1.10x of C++, where it was ahead), because the same
+  if-conversion runs a rarely taken update on every iteration; `string_search` reads 1.04x and the 1 us
+  `dead_code_elimination` 3 us.
 
 - **A channel is a lock-free ring, and `graph_churn_transfer` is 0.52x of C++ and 0.63x of Rust.** `chan_send`/`chan_recv`
   and their copying forms took a pthread mutex and signalled under it per message, so a pipeline stage spent more of its

@@ -117,6 +117,8 @@ void prismio_llvm_drop_body(LLVMValueRef function);
 #define PRISMIO_POLICY_COVERED_FILLS 2
 // SELF_RECURSION_UNFOLD: a small pure tree-recursive function is inlined into itself once.
 #define PRISMIO_POLICY_SELF_RECURSION_UNFOLD 4
+/* The header of a `Vec` that stays in its function, kept in registers. */
+#define PRISMIO_POLICY_LIST_HEADERS 8
 // `<prefix>,default<O<level>>` (half 0), or one half of it: 1 = through the
 // inliner's simplification, 2 = the per-function optimisation pipeline after it.
 // `policies` adds the passes above. See llvm_bridge.cpp. 0 on success.

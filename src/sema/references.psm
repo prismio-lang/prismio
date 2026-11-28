@@ -1,0 +1,501 @@
+// References to the program's own variables: `&x`, `&mut x`, `*p` and `p[i]`.
+//
+// `&x` makes a `Ptr<T>` to a place a program already has, and `&mut x` a `Ptr<mut T>`: a local
+// or a global, a field, an element of an array or a `Vec`. They are the typed pointers
+// src/sema/pointer.psm has always read and written, so nothing downstream is new but the way
+// one comes to exist. A place must hold plain data, as for any pointer (semaPtrPointeeRefusal),
+// and `&mut` needs a place the program may change.
+//
+// `*p` reads through and `*p = v` writes through, the spellings of `p.load()` and `p.store(v)`.
+// `p[i]` is `p.offset(i)` read through or written through, and is `std.sys`'s like `offset`,
+// because a pointer carries no length to check `i` against.
+//
+// A `&v[i]` is the one form with a check of its own, since a Vec knows both of the things a
+// raw pointer does not: `i` must be in range, and the element must be stored inline at the
+// width the pointer's type promises. What the Vec does next is not checked. A push may move
+// its block, as with `std::vector`.
+//
+// **What this file refuses is the pointer that plainly outlives what it points at**
+// (semaRefsCheckFrame): a pointer into a frame leaving that frame, directly or by way of a name
+// or a struct or Vec that holds it. A pointer passed to a function that keeps it is out of its
+// sight, and is the caller's to get right.
+
+import ast.nodes
+import ast.types
+import common.diagnostics
+import common.mem_builtins
+import lexer.token
+import std.string
+import symbols.bindings
+import symbols.type_registry
+
+// Set when any function in the program takes an address: the loop analyses read it before
+// walking a tree to ask (ir/nowrap.psm), so a program with none pays nothing.
+let mut semaRefsTaken = false
+
+public fn semaRefsAnyTaken() -> Bool {
+    return semaRefsTaken
+}
+
+// Whether `n` holds an `&` anywhere: a local may then change by a write no assignment shows.
+public fn semaRefsTakesAddress(nodePtr: Ptr) -> Bool {
+    let mut p = nodePtr
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.UNARY_EXPR and semaRefIsAddressOf(n)) { return true }
+        if (semaRefsTakesAddress(n.child1) or semaRefsTakesAddress(n.child2)
+                or semaRefsTakesAddress(n.child3)) {
+            return true
+        }
+        p = n.next
+    }
+    return false
+}
+
+public fn semaRefIsAddressOf(e: ASTNode) -> Bool {
+    return e.s1.equals("&") or e.s1.equals("&mut")
+}
+
+// The name of a place's root, the place being a name, a field, a subscript or a list read,
+// or "" for anything else. `throughPointer` is set where the chain goes through a typed
+// pointer, whose target is no part of this frame.
+private fn semaRefRoot(place: ASTNode, out: RefRoot) {
+    let mut at = place
+    loop {
+        if (at.kind == NodeKind.IDENTIFIER_EXPR) {
+            out.name = at.s1.clone()
+            return
+        }
+        if (at.kind == NodeKind.MEMBER_ACCESS_EXPR or at.kind == NodeKind.INDEX_EXPR) {
+            if (nodeIsNull(at.child1)) { return }
+            let inner = ptr_to_node(at.child1)
+            if (nodeHasType(inner) and typeIsTypedPtr(nodeGetType(inner))) { out.throughPointer = true }
+            at = inner
+        } else if (at.kind == NodeKind.CALL_EXPR and semaRefIsListRead(at)) {
+            at = ptr_to_node(at.child2)
+        } else {
+            return
+        }
+    }
+}
+
+struct RefRoot {
+    name: String,
+    throughPointer: Bool
+}
+
+private fn semaRefIsListRead(e: ASTNode) -> Bool {
+    if (e.kind != NodeKind.CALL_EXPR or nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return false }
+    return ptr_to_node(e.child1).s1.equals("list_get")
+}
+
+// `&x`, `&mut x`: the pointer's capabilities are the place's. A place reached through a
+// `Ptr<T>` cannot be made a `Ptr<mut T>`, and one reached through a volatile pointer stays volatile.
+internal fn semaAddressOf(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    let operand = ptr_to_node(expr.child1)
+    let writable = expr.s1.equals("&mut")
+    let isPlace = operand.kind == NodeKind.IDENTIFIER_EXPR or operand.kind == NodeKind.MEMBER_ACCESS_EXPR
+                  or operand.kind == NodeKind.INDEX_EXPR
+    if (isPlace == false) {
+        semaErrorAt(operand, "`&` takes the address of a variable, a field or an element")
+        diag_note("a value with no place of its own has no address: bind it with `let` first")
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    if (operand.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(operand.child1)) {
+        let object = ptr_to_node(operand.child1)
+        if (object.kind == NodeKind.IDENTIFIER_EXPR and ir_enum_has_variant(object.s1, operand.s1) == 1) {
+            semaErrorAt(operand, "`&` takes the address of a variable, a field or an element")
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+    }
+    let placeT = semaExpr(module, operand)
+    if (typeIsValid(placeT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    let refusal = semaPtrPointeeRefusal(module, placeT)
+    if (refusal.equals("") == false) {
+        semaErrorAt(operand, refusal)
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    let mut volatile = false
+    if (operand.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(operand.child1)
+            and nodeHasType(ptr_to_node(operand.child1))
+            and typeIsTypedPtr(nodeGetType(ptr_to_node(operand.child1)))) {
+        let holder = nodeGetType(ptr_to_node(operand.child1))
+        volatile = typePtrIsVolatile(holder)
+        if (writable and typePtrIsMut(holder) == false) {
+            semaErrorAt(operand, "cannot take `&mut` of a field through ".concat(diagQuote(typeDisplay(holder)),
+                                                                                  ", which is read-only"))
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+    } else if (writable) {
+        if (semaCheckMutablePlace(operand) == false) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+    }
+    semaRefsTaken = true
+    let t = typePtrTo(placeT, writable, volatile)
+    nodeSetType(expr, t)
+    return t
+}
+
+// `*p`: `p.load()`, and a pointer to a struct is written a field at a time, as ever.
+internal fn semaDeref(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    let operand = ptr_to_node(expr.child1)
+    let ptrT = semaExpr(module, operand)
+    if (typeIsValid(ptrT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    if (typeIsTypedPtr(ptrT) == false) {
+        semaErrorAt(operand, "`*` reads through a typed pointer, found ".concat(typeDisplay(ptrT)))
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    let refusal = semaPtrReadRefusal(ptrT)
+    if (refusal.equals("") == false) {
+        semaErrorAt(operand, refusal)
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    operand.next = ptr_null()
+    expr.typeInfo = ptr_null()
+    semaBecomeCall(expr, "__builtin_ptr_load", node_to_ptr(operand))
+    return semaExpr(module, expr)
+}
+
+// `*p = v`: `p.store(v)`. `stmt` becomes the call.
+internal fn semaDerefAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) {
+    let pointer = ptr_to_node(target.child1)
+    let ptrT = semaExpr(module, pointer)
+    if (typeIsValid(ptrT) == false) { return }
+    if (typeIsTypedPtr(ptrT) == false) {
+        semaErrorAt(pointer, "`*` writes through a typed pointer, found ".concat(typeDisplay(ptrT)))
+        return
+    }
+    target.child2 = stmt.child2
+    semaPtrMethod(module, target, "store", pointer, ptrT)
+    stmt.kind = NodeKind.EXPRESSION_STATEMENT
+    stmt.child1 = node_to_ptr(target)
+    stmt.child2 = ptr_null()
+}
+
+// `p.offset(i)`, as a new node. `expr` is the `p[i]` being rewritten.
+private fn semaPtrStep(module: ASTNode, expr: ASTNode, ptrT: TypeInfo) -> ASTNode {
+    let step = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(step, expr)
+    let pointer = ptr_to_node(expr.child1)
+    let index = ptr_to_node(expr.child2)
+    index.next = ptr_null()
+    step.child2 = node_to_ptr(index)
+    semaPtrMethod(module, step, "offset", pointer, ptrT)
+    return step
+}
+
+// `p[i]`: the `i`th element read through. An element that is a struct is the place, as a
+// struct field through a pointer is, so `p[i].x` reads one field.
+internal fn semaPtrIndex(module: ASTNode, expr: ASTNode, ptrT: TypeInfo) -> TypeInfo {
+    if (typePtrPointee(ptrT).kind != TypeKind.STRUCT) {
+        let refusal = semaPtrReadRefusal(ptrT)
+        if (refusal.equals("") == false) {
+            semaErrorAt(expr, refusal)
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+    }
+    let step = semaPtrStep(module, expr, ptrT)
+    if (nodeHasType(step) and typeIsValid(nodeGetType(step)) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    expr.typeInfo = ptr_null()
+    if (typePtrPointee(ptrT).kind == TypeKind.STRUCT) {
+        // The step's own call in this node's place, so the parent's pointer still holds.
+        expr.kind = step.kind
+        expr.s1 = step.s1
+        expr.s2 = step.s2
+        expr.i1 = step.i1
+        expr.child1 = step.child1
+        expr.child2 = step.child2
+        expr.child3 = step.child3
+        return semaExpr(module, expr)
+    }
+    semaBecomeCall(expr, "__builtin_ptr_load", node_to_ptr(step))
+    return semaExpr(module, expr)
+}
+
+// `p[i] = v`: the same step, written through. `stmt` becomes the call.
+internal fn semaPtrIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode, ptrT: TypeInfo) {
+    let step = semaPtrStep(module, target, ptrT)
+    if (nodeHasType(step) == false or typeIsValid(nodeGetType(step)) == false) { return }
+    let writable = nodeGetType(step)
+    target.kind = NodeKind.CALL_EXPR
+    target.child2 = stmt.child2
+    semaPtrMethod(module, target, "store", step, writable)
+    stmt.kind = NodeKind.EXPRESSION_STATEMENT
+    stmt.child1 = node_to_ptr(target)
+    stmt.child2 = ptr_null()
+}
+
+// ---------------------------------------------------------------------------
+// A pointer outliving its frame
+// ---------------------------------------------------------------------------
+
+// What the walk knows as it goes through one function, by name, as a block-structured walk
+// can: each name's depth where it was declared, and how deep the shallowest thing a name's
+// pointer reaches is, for a name that holds a pointer into this frame.
+struct RefFrame {
+    names: Vec<String>,
+    depths: Vec<Int>,
+    reaches: Vec<Int>,
+    addressed: Vec<String>,
+    depth: Int
+}
+
+impl RefFrame {
+    private fn slot(self, name: String) -> Int {
+        let mut i = self.names.length - 1
+        while (i >= 0) {
+            let known: String = self.names[i]
+            if (known.equals(name)) { return i }
+            i = i - 1
+        }
+        return 0 - 1
+    }
+}
+
+impl RefFrame {
+    private fn declare(self, name: String) {
+        self.names.push(name.clone())
+        self.depths.push(self.depth)
+        self.reaches.push(0 - 1)
+    }
+}
+
+impl RefFrame {
+    // How deep what `e` points at lives, or -1 when it is not a pointer into this frame.
+    private fn frameDepth(self, e: ASTNode) -> Int {
+        if (e.kind == NodeKind.UNARY_EXPR and semaRefIsAddressOf(e)) {
+            let root = RefRoot { name: "", throughPointer: false }
+            semaRefRoot(ptr_to_node(e.child1), root)
+            if (root.name.equals("") or root.throughPointer) { return 0 - 1 }
+            let at = self.slot(root.name)
+            if (at < 0) { return 0 - 1 }
+            return self.depths[at]
+        }
+        if (e.kind == NodeKind.IDENTIFIER_EXPR) {
+            let at = self.slot(e.s1)
+            if (at < 0) { return 0 - 1 }
+            return self.reaches[at]
+        }
+        if (e.kind == NodeKind.STRUCT_LITERAL_EXPR) { return self.frameDepthChain(e.child1) }
+        if (e.kind == NodeKind.CAST_EXPR and nodeExists(e.child1)) {
+            return self.frameDepth(ptr_to_node(e.child1))
+        }
+        // Stepping a pointer stays inside what it points at.
+        if (e.kind == NodeKind.CALL_EXPR and nodeExists(e.child1) and nodeExists(e.child2)) {
+            let name = ptr_to_node(e.child1).s1
+            if (name.startsWith("__builtin_ptr_") and name.equals("__builtin_ptr_load") == false) {
+                return self.frameDepth(ptr_to_node(e.child2))
+            }
+        }
+        return 0 - 1
+    }
+}
+
+impl RefFrame {
+    private fn frameDepthChain(self, head: Ptr) -> Int {
+        let mut most = 0 - 1
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            let mut here = self.frameDepth(n)
+            if (nodeExists(n.child1) and here < 0) { here = self.frameDepth(ptr_to_node(n.child1)) }
+            if (here > most) { most = here }
+            p = n.next
+        }
+        return most
+    }
+}
+
+// Refuses what plainly keeps a pointer into this function's frame past the end of what it
+// points at. Run after the body is typed, so the walk reads the lowered forms.
+internal fn semaRefsCheckFrame(fnNode: ASTNode) {
+    if (semaRefsTaken == false or nodeIsNull(fnNode.child2)) { return }
+    if (semaRefsTakesAddress(fnNode.child2) == false) { return }
+    let f = RefFrame { names: [], depths: [], reaches: [], addressed: [], depth: 0 }
+    let mut p = fnNode.child1
+    while (nodeExists(p)) {
+        f.declare(ptr_to_node(p).s1)
+        p = ptr_to_node(p).next
+    }
+    f.collectAddressed(fnNode.child2)
+    f.walk(fnNode.child2)
+}
+
+impl RefFrame {
+    private fn collectAddressed(self, nodePtr: Ptr) {
+        let mut p = nodePtr
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.UNARY_EXPR and semaRefIsAddressOf(n)) {
+                let operand = ptr_to_node(n.child1)
+                if (operand.kind == NodeKind.IDENTIFIER_EXPR and nodeHasType(operand)
+                        and nodeGetType(operand).kind == TypeKind.STRUCT) {
+                    self.addressed.push(operand.s1.clone())
+                }
+            }
+            self.collectAddressed(n.child1)
+            self.collectAddressed(n.child2)
+            self.collectAddressed(n.child3)
+            p = n.next
+        }
+    }
+}
+
+private fn semaRefEscape(at: ASTNode, what: String) {
+    semaErrorAt(at, "this keeps a pointer to a local variable past the end of the variable: ".concat(what))
+    diag_note("a pointer made with `&` lasts as long as what it points at; allocate with `std.mem`'s `allocOf` for one that lasts longer")
+}
+
+impl RefFrame {
+    private fn walk(self, nodePtr: Ptr) {
+        let mut p = nodePtr
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            self.visit(n)
+            p = n.next
+        }
+    }
+}
+
+impl RefFrame {
+    private fn visit(self, n: ASTNode) {
+        if (n.kind == NodeKind.BLOCK) {
+            let names = self.names.length
+            self.depth = self.depth + 1
+            self.walk(n.child1)
+            self.depth = self.depth - 1
+            self.leaveBlock(names)
+            return
+        }
+        if (n.kind == NodeKind.CLOSURE_EXPR) {
+            self.visitClosure(n, n.child1)
+            self.visitClosure(n, n.child2)
+            return
+        }
+        if (n.kind == NodeKind.SPAWN_EXPR and nodeExists(n.child1)) {
+            let call = ptr_to_node(n.child1)
+            if (self.frameDepthChain(call.child2) >= 0) {
+                semaRefEscape(n, "a spawned task may run past it")
+            }
+        }
+        if (n.kind == NodeKind.VARIABLE_DECL) {
+            if (nodeExists(n.child2)) { self.visit(ptr_to_node(n.child2)) }
+            let reach = nodeExists(n.child2) and self.frameDepth(ptr_to_node(n.child2)) >= 0
+            let mut depth = 0 - 1
+            if (reach) { depth = self.frameDepth(ptr_to_node(n.child2)) }
+            self.declare(n.s1)
+            self.reaches[self.names.length - 1] = depth
+            return
+        }
+        if (n.kind == NodeKind.FOR_STATEMENT) {
+            self.declare(n.s1)
+            if (n.s2.equals("") == false) { self.declare(n.s2) }
+        }
+        if (n.kind == NodeKind.RETURN_STATEMENT and nodeExists(n.child1)
+                and self.frameDepth(ptr_to_node(n.child1)) >= 0) {
+            semaRefEscape(ptr_to_node(n.child1), "this function returns it")
+        }
+        if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1) and nodeExists(n.child2)) {
+            self.visitAssignment(n, ptr_to_node(n.child1), ptr_to_node(n.child2))
+        }
+        if (n.kind == NodeKind.CALL_EXPR and nodeExists(n.child1) and nodeExists(n.child2)) {
+            let name = ptr_to_node(n.child1).s1
+            let first = ptr_to_node(n.child2)
+            if ((name.equals("list_push") or name.equals("list_set")) and nodeExists(first.next)) {
+                let mut value = ptr_to_node(first.next)
+                if (name.equals("list_set") and nodeExists(value.next)) { value = ptr_to_node(value.next) }
+                self.keptIn(value, first)
+            }
+            if (name.equals("chan_send") and nodeExists(first.next)
+                    and self.frameDepth(ptr_to_node(first.next)) >= 0) {
+                semaRefEscape(ptr_to_node(first.next), "another thread may read it after")
+            }
+        }
+        self.walk(n.child1)
+        self.walk(n.child2)
+        self.walk(n.child3)
+    }
+}
+
+impl RefFrame {
+    private fn leaveBlock(self, names: Int) {
+        // A name's slot goes with its block, which is what lets one be declared again.
+        self.names.truncate(names)
+        self.depths.truncate(names)
+        self.reaches.truncate(names)
+    }
+}
+
+impl RefFrame {
+    // A closure captures by value and may outlive the block, so a pointer into the frame
+    // does not go in.
+    private fn visitClosure(self, closure: ASTNode, nodePtr: Ptr) {
+        let mut p = nodePtr
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.IDENTIFIER_EXPR and self.frameDepth(n) >= 0) {
+                semaRefEscape(n, "a closure holds it")
+            }
+            self.visitClosure(closure, n.child1)
+            self.visitClosure(closure, n.child2)
+            self.visitClosure(closure, n.child3)
+            p = n.next
+        }
+    }
+}
+
+impl RefFrame {
+    private fn visitAssignment(self, n: ASTNode, target: ASTNode, value: ASTNode) {
+        if (target.kind == NodeKind.IDENTIFIER_EXPR and nodeHasType(target)
+                and nodeGetType(target).kind == TypeKind.STRUCT) {
+            for i in 0..<self.addressed.length {
+                let known: String = self.addressed[i]
+                if (known.equals(target.s1)) {
+                    semaErrorAt(target, "cannot replace ".concat(diagQuote(target.s1),
+                                                                 " while a pointer made from it may be in use"))
+                    diag_note("assign its fields one at a time, which keeps the place the pointer points at")
+                }
+            }
+        }
+        self.keptIn(value, target)
+    }
+}
+
+impl RefFrame {
+    // `value` was stored into the place `holder`: a local that outlives what it points at
+    // cannot keep it, and a local that does not now holds a pointer into the frame itself.
+    private fn keptIn(self, value: ASTNode, holder: ASTNode) {
+        let reach = self.frameDepth(value)
+        if (reach < 0) { return }
+        let root = RefRoot { name: "", throughPointer: false }
+        semaRefRoot(holder, root)
+        let at = self.slot(root.name)
+        if (root.name.equals("") or root.throughPointer or at < 0) {
+            semaRefEscape(value, "it is stored somewhere that outlives this function")
+            return
+        }
+        if (self.depths[at] < reach) {
+            semaRefEscape(value, diagQuote(root.name).concat(" is declared outside its block"))
+            return
+        }
+        if (reach > self.reaches[at]) { self.reaches[at] = reach }
+    }
+}

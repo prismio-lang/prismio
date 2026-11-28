@@ -3008,6 +3008,13 @@ PRISMIO_FAILS void list_index_fail(int index, int len) {
     exit(1);
 }
 
+// `&v[i]` on a Vec that does not hold its elements inline at the width the pointer promises:
+// an element shared by two containers is boxed, for one. A pointer to it would read a box.
+PRISMIO_FAILS void list_element_address_fail(int stride) {
+    fprintf(stderr, "runtime error: this Vec does not store its elements inline at %d bytes, so `&v[i]` has no place to point at\n", stride);
+    exit(1);
+}
+
 // The same for an `Array<T, N>` or a `[T]`, whose check codegen emits inline
 // (ir_array_index_check) where the loop's range proof does not already cover the index.
 PRISMIO_FAILS void array_index_fail(int index, int len) {

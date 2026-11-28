@@ -1,0 +1,9 @@
+// expect-error: this function returns it
+fn leak() -> Ptr<Int> {
+    let x = 5
+    let p = &x
+    return p
+}
+fn main() -> Int {
+    return leak().load()
+}

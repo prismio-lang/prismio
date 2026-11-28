@@ -48,6 +48,14 @@ private let mut markRemPass: Vec<Int>
 private let mut markRemForm: Vec<Int>
 // The reductions pass (ir/reductions.psm) that found this `+`/`-` to update a loop reduction, or 0.
 private let mut markReassoc: Vec<Int>
+
+// Ranges by interned key, for ir/param_ranges.psm. Each round writes the `next` columns and
+// reads the settled ones, and ir_range_settle moves them across.
+private let mut rangeRows: HashMap<Int, Int>
+private let mut rangeLo: Vec<I64>
+private let mut rangeHi: Vec<I64>
+private let mut rangeNextLo: Vec<I64>
+private let mut rangeNextHi: Vec<I64>
 private let mut lastProof = 0
 private let mut factsOpened = false
 
@@ -69,6 +77,12 @@ private fn factsOpen() {
     markRemPass = []
     markRemForm = []
     markReassoc = []
+    let rows = HashMap<Int, Int>()
+    rangeRows = rows
+    rangeLo = []
+    rangeHi = []
+    rangeNextLo = []
+    rangeNextHi = []
     factsOpened = true
 }
 
@@ -98,6 +112,66 @@ public fn ir_guard_safe_verdict(name: String) -> Int {
 public fn ir_is_guard_safe_fn(name: String) -> Int {
     if (ir_guard_safe_verdict(name) == 1) { return 1 }
     return 0
+}
+
+public fn ir_range_clear() {
+    factsOpen()
+    for row in 0..<rangeLo.length {
+        rangeLo[row] = 1 as I64
+        rangeHi[row] = 0 as I64
+        rangeNextLo[row] = 1 as I64
+        rangeNextHi[row] = 0 as I64
+    }
+}
+
+// What this round found of `key`.
+public fn ir_range_note(key: String, lo: I64, hi: I64) {
+    factsOpen()
+    let id = irNameId(key)
+    let mut row = rangeRows.getOr(id, -1)
+    if (row < 0) {
+        row = rangeLo.length
+        rangeRows.set(id, row)
+        rangeLo.push(1 as I64)
+        rangeHi.push(0 as I64)
+        rangeNextLo.push(1 as I64)
+        rangeNextHi.push(0 as I64)
+    }
+    rangeNextLo[row] = lo
+    rangeNextHi[row] = hi
+}
+
+// This round's answers become the table; whatever it did not note is gone. True when
+// anything differs from the last round.
+public fn ir_range_settle() -> Bool {
+    factsOpen()
+    let mut changed = false
+    for row in 0..<rangeLo.length {
+        let known = rangeLo[row] <= rangeHi[row]
+        let found = rangeNextLo[row] <= rangeNextHi[row]
+        if (known != found or (found and (rangeLo[row] != rangeNextLo[row] or rangeHi[row] != rangeNextHi[row]))) {
+            changed = true
+        }
+        rangeLo[row] = rangeNextLo[row]
+        rangeHi[row] = rangeNextHi[row]
+        rangeNextLo[row] = 1 as I64
+        rangeNextHi[row] = 0 as I64
+    }
+    return changed
+}
+
+public fn ir_range_known(key: String) -> Bool {
+    factsOpen()
+    let row = rangeRows.getOr(irNameId(key), -1)
+    return row >= 0 and rangeLo[row] <= rangeHi[row]
+}
+
+public fn ir_range_lo(key: String) -> I64 {
+    return rangeLo[rangeRows.getOr(irNameId(key), -1)]
+}
+
+public fn ir_range_hi(key: String) -> I64 {
+    return rangeHi[rangeRows.getOr(irNameId(key), -1)]
 }
 
 public fn ir_range_proof_new() -> Int {

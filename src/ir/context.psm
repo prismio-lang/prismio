@@ -36,6 +36,9 @@ let mut irLoopDepth = 0
 // String binding's data pointer is resolved once, where the binding is made, only
 // when one does: see the parameter loop in generateFunction (ir/module.psm).
 let mut irFunctionHasLoop = false
+// The function takes the address of something (src/sema/references.psm), so a local may change
+// by a write through a pointer, which every analysis that reads assignments to a name would miss.
+let mut irFunctionPinsLocals = false
 
 // The slot holding the enclosing loop's flat-List guard, or "" outside such a
 // loop. One `i1` per loop rather than one test per `list_get`: see

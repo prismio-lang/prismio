@@ -331,6 +331,9 @@ public extern fn ir_ptr_to_int(value: String, toType: String) -> Int
 public extern fn ir_bitcast(fromType: String, value: String, toType: String) -> Int
 public extern fn ir_struct_field_ptr(structName: String, object: String, fieldIndex: Int) -> Int
 public extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
+public extern fn ir_global_address(type: String, name: String) -> Int
+public extern fn ir_slot_address(name: String) -> Int
+public extern fn ir_list_element_address(listValue: String, indexValue: String, stride: Int) -> Int
 // `index` into an array of `length` elements: in range, or the program stops.
 public extern fn ir_array_index_check(index: String, length: String)
 // M4.2's flat-List access with its representation test hoisted out of the

@@ -1695,6 +1695,13 @@ int ir_load(const char *type, const char *ptr_name) {
     return intern_value(LLVMBuildLoad2(g_builder, type_from_key(type), ptr, ""));
 }
 
+// Where a local is, for `&x`.
+int ir_slot_address(const char *name) {
+    LLVMValueRef ptr = lookup_named(g_allocas, g_alloca_count, name, NULL);
+    if (!ptr) backend_fail("address of an unknown local", name);
+    return intern_value(ptr);
+}
+
 void ir_store(const char *type, const char *value, const char *ptr_name) {
     LLVMValueRef ptr = lookup_named(g_allocas, g_alloca_count, ptr_name, NULL);
     if (!ptr) ptr = lookup_named(g_params, g_param_count, ptr_name, NULL);
@@ -2447,6 +2454,11 @@ static LLVMValueRef global_named(const char *name, LLVMTypeRef ty) {
 int ir_load_global(const char *type, const char *name) {
     LLVMTypeRef ty = type_from_key(type);
     return intern_value(LLVMBuildLoad2(g_builder, ty, global_named(name, ty), ""));
+}
+
+// Where a global is, for `&g`.
+int ir_global_address(const char *type, const char *name) {
+    return intern_value(global_named(name, type_from_key(type)));
 }
 
 void ir_store_global(const char *type, const char *value, const char *name) {
@@ -3901,6 +3913,52 @@ static void bounds_or_fail(LLVMValueRef idx, LLVMValueRef len, const char *fail_
 
 static void list_bounds_or_fail(LLVMValueRef idx, LLVMValueRef len) {
     bounds_or_fail(idx, len, "list_index_fail");
+}
+
+// `&v[i]`: the address of a row, wrapped in the two conditions a raw pointer cannot carry
+// past this point. The list must hold its elements inline at the width the pointer's type
+// promises, and the index must be inside it; anything else stops the program here.
+int ir_list_element_address(const char *list, const char *index, int stride) {
+    LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    if (block_done()) return intern_value(LLVMConstNull(ptrty));
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef listty = rt_list_header_type();
+    LLVMValueRef hdr = resolve_value(list, "ptr");
+    LLVMValueRef idx = resolve_value(index, "i32");
+    if (stride <= 0) backend_fail("the address of an element of a Vec with no inline storage", "");
+    LLVMValueRef size = LLVMBuildLoad2(g_builder, i32,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_ELEM_SIZE, ""), "");
+    tag_list_header(size, "i32");
+    tag_invariant_load(size);
+    LLVMValueRef inlined = LLVMBuildICmp(g_builder, LLVMIntEQ, size,
+                                         LLVMConstInt(i32, (unsigned long long)stride, 0), "");
+    int ok = ir_get_label();
+    int wrong = ir_get_label();
+    LLVMBuildCondBr(g_builder, inlined, block_for(ok), block_for(wrong));
+    LLVMPositionBuilderAtEnd(g_builder, block_for(wrong));
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), &i32, 1, 0);
+    LLVMValueRef fail = LLVMGetNamedFunction(g_module, "list_element_address_fail");
+    if (!fail) {
+        fail = LLVMAddFunction(g_module, "list_element_address_fail", fnty);
+        const char *attrs[3] = {"noreturn", "cold", "nounwind"};
+        for (int i = 0; i < 3; i++) {
+            unsigned kind = LLVMGetEnumAttributeKindForName(attrs[i], strlen(attrs[i]));
+            LLVMAddAttributeAtIndex(fail, LLVMAttributeFunctionIndex,
+                                    LLVMCreateEnumAttribute(g_ctx, kind, 0));
+        }
+    }
+    LLVMValueRef width = LLVMConstInt(i32, (unsigned long long)stride, 0);
+    LLVMBuildCall2(g_builder, fnty, fail, &width, 1, "");
+    LLVMBuildUnreachable(g_builder);
+    LLVMPositionBuilderAtEnd(g_builder, block_for(ok));
+    LLVMValueRef len = LLVMBuildLoad2(g_builder, i32,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, ""), "");
+    tag_list_header(len, "i32");
+    list_bounds_or_fail(idx, len);
+    LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty,
+        LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, ""), "");
+    tag_list_header(data, "ptr");
+    return intern_value(flat_element_address(data, idx, stride, 1));
 }
 
 // `index` into an array of `length` elements, a constant for an `Array<T, N>`: in range,
@@ -9520,6 +9578,7 @@ static int env_off(const char *name) {
 static int pipeline_policies(int opt_level) {
     int policies = 0;
     if (opt_level >= 1 && !env_off("PRISMIO_COVERED_FILLS")) policies |= PRISMIO_POLICY_COVERED_FILLS;
+    if (opt_level >= 1 && !env_off("PRISMIO_LIST_HEADERS")) policies |= PRISMIO_POLICY_LIST_HEADERS;
     if (opt_level >= 2 && opt_level < IR_OPT_SIZE && !env_off("PRISMIO_SELF_UNFOLD"))
         policies |= PRISMIO_POLICY_SELF_RECURSION_UNFOLD;
     if (g_freestanding && opt_level >= 2 && opt_level < IR_OPT_SIZE) {

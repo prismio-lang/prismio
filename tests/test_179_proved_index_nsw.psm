@@ -88,9 +88,9 @@ fn shiftedBack(xs: Vec<Int>, base: Int) -> Int {
 }
 
 // Two back is not the same: `base + c` in [2, len + 1] can be one past `Int`.
-// `public`, like the two below, so that the rule is tested for a parameter nothing
-// bounds: a private function takes its parameters' ranges from its calls
-// (src/ir/param_ranges.psm), and main's one call passes 2, which does prove it.
+// Called through `hidden`, so that the rule is tested for a parameter nothing bounds: a
+// function takes its parameters' ranges from its calls (src/ir/param_ranges.psm), and
+// main's one call passes 2, which does prove it.
 public fn shiftedBackTwo(xs: Vec<Int>, base: Int) -> Int {
     let mut acc = 0
     let mut c = 1
@@ -123,6 +123,13 @@ public fn lookedUp(xs: Vec<Int>, table: Vec<Int>) -> Int {
         i = i + 1
     }
     return acc
+}
+
+// `value`, as far as the walk can tell any value: it answers for a function of one `return`.
+fn hidden(value: Int) -> Int {
+    let mut out = value
+    out = out + 0
+    return out
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {
@@ -160,7 +167,7 @@ fn main() -> Int {
 
     // 1..10, then 2..11, and 991..1000 against the end of a 1000-element list.
     bad = bad + check("FAIL: shiftedBack", shiftedBack(xs, 0), 55)
-    bad = bad + check("FAIL: shiftedBackTwo", shiftedBackTwo(xs, 2), 65)
+    bad = bad + check("FAIL: shiftedBackTwo", shiftedBackTwo(xs, hidden(2)), 65)
     bad = bad + check("FAIL: shiftedBack end", shiftedBack(xs, 990), 9955)
     // `base + c` wraps at c = 1; every index is far outside and reads nothing.
     if (trapCase("shifted-back-wrapping")) { return (shiftedBack(xs, 2147483647)) as Int }

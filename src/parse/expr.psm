@@ -62,6 +62,7 @@ impl Parser {
 
             let operatorPrecedence = getOperatorPrecedence(operatorToken)
             if (operatorPrecedence == 0 or operatorPrecedence < precedence) { break }
+            if (self.startsPrefixLine(operatorToken)) { break }
             if (self.lengthDepth > 0 and operatorToken.value.equals(">>")) { break }
 
             let mut op = operatorToken.value
@@ -138,6 +139,19 @@ impl Parser {
 }
 
 
+impl Parser {
+    // `*p = 5` on the line after an expression is a new statement, not a product: a `*` or
+    // `&` that starts its line and touches what follows is a prefix. A product continued on
+    // a new line has a space there, which is how anyone writes one and how `fmt` prints one.
+    private fn startsPrefixLine(self, op: Token) -> Bool {
+        if (op.value.equals("*") == false and op.value.equals("&") == false) { return false }
+        if (self.lastLine == op.line) { return false }
+        let after = self.peek()
+        return after.line == op.line and after.col == op.col + op.len
+    }
+}
+
+
 // Folds `-<numeric literal>` into the literal itself rather than lowering it to
 // `sub 0, n`. Negative numbers then still count as literals, which is what lets
 // them appear where a constant is required (a global initializer) and what lets
@@ -172,8 +186,12 @@ impl Parser {
         let isNot = (current.type == TokenType.NEGATION and current.value.equals("!"))
                     or (current.type == TokenType.KEYWORD and current.value.equals("not"))
         let isComplement = current.type == TokenType.ARITHMETIC_OPERATOR and current.value.equals("~")
+        let isAddress = (current.type == TokenType.ARITHMETIC_OPERATOR or current.type == TokenType.AMPERSAND)
+                        and current.value.equals("&")
+        let isDeref = current.type == TokenType.ARITHMETIC_OPERATOR and current.value.equals("*")
 
-        if (isNegate == false and isNot == false and isComplement == false) {
+        if (isAddress) { return self.parseAddressOf() }
+        if (isNegate == false and isNot == false and isComplement == false and isDeref == false) {
             return self.parsePrimary()
         }
 
@@ -186,6 +204,22 @@ impl Parser {
             return operand
         }
 
+        let unary = self.node(NodeKind.UNARY_EXPR)
+        unary.s1 = op
+        unary.child1 = node_to_ptr(operand)
+        return unary
+    }
+}
+
+
+impl Parser {
+    // `&place` and `&mut place`. The place is read as a postfix chain, so `&a.b[i]` is the
+    // address of the element, and `&x + 1` the value of `x` plus one.
+    private fn parseAddressOf(self) -> ASTNode {
+        self.advance()
+        let mut op = "&"
+        if (self.matchVal(TokenType.KEYWORD, "mut")) { op = "&mut" }
+        let operand = self.parseUnary()
         let unary = self.node(NodeKind.UNARY_EXPR)
         unary.s1 = op
         unary.child1 = node_to_ptr(operand)

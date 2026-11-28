@@ -1,0 +1,7 @@
+// expect-error: which is read-only
+fn main() -> Int {
+    let mut x = 5
+    let p = &x
+    *p = 6
+    return x
+}

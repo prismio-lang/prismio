@@ -2,16 +2,18 @@
 //
 // A private function is called only from its own file, so every call to it is in
 // this module, and the range its parameter can take is the join of what each call
-// passes. Each call's arguments are read with the interval walk's facts where the
+// passes. A program's `public` functions are the same: this module is the whole
+// program, nothing but `export` is visible past it, and a library, which can be
+// called by a program not yet written, is the case that keeps its public functions out.
+// Each call's arguments are read with the interval walk's facts where the
 // call is made (ir/nowrap.psm), before any function is generated, as AIF reads the
 // whole module before codegen. The result reaches two places: the function's own
 // walk starts from it, and its definition says it to LLVM as a `range` attribute.
 //
-// That is a fact LLVM does not find for itself. A heap's `sift(data, start, 2047)`
-// is called with `start` counting down from 1023 to 0, and IPSCCP widens a loop's
-// counter to the full range; told `start` is in [0, 1023], LLVM proves the sift
-// loop's indices non-negative and indexes with a free zero-extension instead of a
-// `sxtw` (heapsort 10.74M -> 10.39M instructions, C 10.70M).
+// A call's facts may come from the caller's own parameters, so `main`'s literal needs
+// a round per call between it and its use. A round reads the table the one before
+// settled, and each table is true, since it was proved from a true table, so the last
+// one is as sound as the first however many rounds there were.
 //
 // **Every call must be seen, or nothing is claimed.** A function gets no range when
 // it is exported, a method (reachable through its receiver from any file, the way
@@ -21,16 +23,23 @@
 // recorded fewer calls than the module holds, which is any call inside a closure,
 // a global's initialiser or a form the walk does not record. A call with a different
 // number of arguments than parameters also takes the range away.
+//
+// A function whose whole body is one `return` of an integer also answers for its result,
+// in the same table: a remainder is bounded whatever it was given, so a generator's
+// `seed = next(seed)` keeps `seed` in range round any loop, and the range goes back into
+// `next`'s own parameter on the next round, which is what bounds the product inside it.
 
 import ast.nodes
 import ast.types
 import ast.fn_attrs
 import ir.bridge
+import symbols.facts
 import std.string
 
-// One line per parameter with a range: `\n<symbol>#<index>|<lo>|<hi>`. Rebuilt by
-// paramRangesCollect before each emission of the module.
-let mut paramRangeTable = ""
+// The table is ir_range_* (symbols/facts.psm), keyed `<symbol>#<index>` for a parameter and
+// by the symbol for a result. Rebuilt by paramRangesCollect before each emission of the
+// module.
+const PARAM_RANGE_ROUNDS = 4
 
 // The candidates of one collection: each one's symbol and source name, how many
 // calls the module holds to it, and whether something disqualified it.
@@ -45,7 +54,8 @@ struct ParamCandidates {
 }
 
 internal fn paramRangesCollect(module: ASTNode) {
-    paramRangeTable = ""
+    ir_range_clear()
+    let returns = returnRangeCandidates(module)
     let c = ParamCandidates { decls: [], symbols: [], names: [], calls: [], poisoned: [], callers: [] }
     let mut p = module.child1
     while (nodeExists(p)) {
@@ -65,7 +75,6 @@ internal fn paramRangesCollect(module: ASTNode) {
         }
         p = decl.next
     }
-    if (c.symbols.length == 0) { return }
 
     let mut q = module.child1
     while (nodeExists(q)) {
@@ -83,23 +92,82 @@ internal fn paramRangesCollect(module: ASTNode) {
             sites.watched.push(symbol.clone())
         }
     }
-    if (sites.watched.length == 0) { return }
+    for _ in 0..<PARAM_RANGE_ROUNDS {
+        paramRangesWalk(c, returns, sites)
+        if (ir_range_settle() == false) { break }
+    }
+}
+
+// One walk of the program, noting a table from the settled one.
+private fn paramRangesWalk(c: ParamCandidates, returns: Vec<Ptr>, sites: NowrapCallSites) {
+    sites.seen.clear()
+    sites.symbols.clear()
+    sites.indices.clear()
+    sites.los.clear()
+    sites.his.clear()
     for k in 0..<c.callers.length {
         let caller = ptr_to_node(c.callers[k])
         nowrapRecordCalls(caller, paramRangesEntry(caller), sites)
     }
-
     for i in 0..<c.symbols.length {
         if (c.poisoned[i] == false and c.calls[i] > 0) {
             paramRangeJoin(ptr_to_node(c.decls[i]), c.symbols[i], c.calls[i], sites)
         }
     }
+    returnRangesRound(returns)
 }
 
-// A private, non-generic free function with a body and an integer parameter.
+// The functions that can answer for their result: non-generic, with a body that is one
+// `return` of a value, which is what the inliner keeps whole and the walk can read with no
+// loop to go round.
+private fn returnRangeCandidates(module: ASTNode) -> Vec<Ptr> {
+    let mut found: Vec<Ptr> = []
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (decl.kind == NodeKind.FUNCTION and nodeExists(decl.child2) and nodeIsNull(decl.genericInfo)) {
+            let body = ptr_to_node(decl.child2)
+            if (body.kind == NodeKind.BLOCK and nodeExists(body.child1)) {
+                let only = ptr_to_node(body.child1)
+                if (only.kind == NodeKind.RETURN_STATEMENT and nodeIsNull(only.next) and nodeExists(only.child1)
+                        and nowrapIsFactType(ptr_to_node(only.child1))) {
+                    found.push(p)
+                }
+            }
+        }
+        p = decl.next
+    }
+    return found
+}
+
+private fn returnRangesRound(returns: Vec<Ptr>) {
+    let out = residueRangeNew()
+    for i in 0..<returns.length {
+        let decl = ptr_to_node(returns[i])
+        if (nowrapReturnRange(decl, paramRangesEntry(decl), out)) {
+            ir_range_note(returnRangeKey(functionSymbolName(decl)), out.lo, out.hi)
+        }
+    }
+}
+
+// A result's key in the table.
+internal fn returnRangeKey(symbol: String) -> String {
+    return symbol.concat("#ret")
+}
+
+// Whether every call to a public function is in this module: one a program's own
+// source defines, built as a program. The workload driver calls functions no walk sees.
+private fn paramRangeWholeProgram(decl: ASTNode) -> Bool {
+    if (irProfileMode or moduleEmitsLibrary()) { return false }
+    return shouldEmitFunctionFromSource(decl)
+}
+
+// A non-generic free function with a body and an integer parameter, private or in a
+// whole program.
 private fn paramRangeCandidate(decl: ASTNode) -> Bool {
     if (decl.kind != NodeKind.FUNCTION or nodeIsNull(decl.child2)) { return false }
-    if (decl.i2 != 1 or decl.s1.equals("main") or nodeExists(decl.genericInfo)) { return false }
+    if (decl.s1.equals("main") or nodeExists(decl.genericInfo)) { return false }
+    if (decl.i2 != 1 and paramRangeWholeProgram(decl) == false) { return false }
     // export (1) and async (4).
     if (nodeIsExported(decl) or nodeIsAsync(decl)) { return false }
     if (nodeIsNull(decl.child1)) { return false }
@@ -219,8 +287,8 @@ private fn paramRangeJoin(decl: ASTNode, symbol: String, calls: Int, sites: Nowr
 }
 
 private fn paramRangeJoinOne(symbol: String, index: Int, t: TypeInfo, sites: NowrapCallSites) {
-    let mut lo = 2147483647 as I64
-    let mut hi = (0 - 2147483647 - 1) as I64
+    let mut lo = nowrapFactLimit()
+    let mut hi = 0 - nowrapFactLimit()
     for k in 0..<sites.symbols.length {
         let known: String = sites.symbols[k]
         if (known.equals(symbol) and sites.indices[k] == index) {
@@ -230,51 +298,27 @@ private fn paramRangeJoinOne(symbol: String, index: Int, t: TypeInfo, sites: Now
         }
     }
     if (lo > hi or nowrapFitsType(lo, hi, t) == false) { return }
-    if (hi > 2147483647 as I64) { return }
-    let line = "\n".concat(symbol, "#", index.toString(), "|")
-    paramRangeTable = paramRangeTable.concat(line, (lo as Int).toString(), "|", (hi as Int).toString())
+    ir_range_note(paramRangeKey(symbol, index), lo, hi)
+}
+
+private fn paramRangeKey(symbol: String, index: Int) -> String {
+    return symbol.concat("#", index.toString())
 }
 
 private fn paramRangeArity(decl: ASTNode) -> Int {
     return chainLength(decl.child1)
 }
 
-// The `|lo|hi` tail of a parameter's line, or "" when it has no range.
-private fn paramRangeRecord(symbol: String, index: Int) -> String {
-    if (paramRangeTable.equals("")) { return "" }
-    let key = "\n".concat(symbol, "#", index.toString(), "|")
-    let at = paramRangeTable.indexOf(key)
-    if (at < 0) { return "" }
-    let start = at + key.length
-    let rest = paramRangeTable.substring(start, paramRangeTable.length - start)
-    let end = rest.indexOf("\n")
-    if (end < 0) { return rest.clone() }
-    return rest.substring(0, end)
-}
-
-private fn paramRangeLo(record: String) -> I64 {
-    let bar = record.indexOf("|")
-    return record.substring(0, bar).parseIntOr(0) as I64
-}
-
-private fn paramRangeHi(record: String) -> I64 {
-    let bar = record.indexOf("|")
-    return record.substring(bar + 1, record.length - bar - 1).parseIntOr(0) as I64
-}
-
 // The facts the function's walk starts from: one per parameter with a range.
 internal fn paramRangesEntry(func: ASTNode) -> NowrapFacts {
     let facts = nowrapFactsNew()
-    if (paramRangeTable.equals("")) { return facts }
     let symbol = functionSymbolName(func)
     let mut index = 0
     let mut p = func.child1
     while (nodeExists(p)) {
         let param = ptr_to_node(p)
-        let record = paramRangeRecord(symbol, index)
-        if (record.equals("") == false) {
-            nowrapAssume(facts, param.s1, paramRangeLo(record), paramRangeHi(record))
-        }
+        let key = paramRangeKey(symbol, index)
+        if (ir_range_known(key)) { nowrapAssume(facts, param.s1, ir_range_lo(key), ir_range_hi(key)) }
         index = index + 1
         p = param.next
     }
@@ -283,7 +327,6 @@ internal fn paramRangesEntry(func: ASTNode) -> NowrapFacts {
 
 // Tells LLVM the range of the parameter just declared, the `index`th of `func`.
 internal fn paramRangeDeclare(func: ASTNode, index: Int) {
-    let record = paramRangeRecord(functionSymbolName(func), index)
-    if (record.equals("")) { return }
-    ir_function_param_range(paramRangeLo(record), paramRangeHi(record))
+    let key = paramRangeKey(functionSymbolName(func), index)
+    if (ir_range_known(key)) { ir_function_param_range(ir_range_lo(key), ir_range_hi(key)) }
 }

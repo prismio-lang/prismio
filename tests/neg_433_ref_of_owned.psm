@@ -1,0 +1,6 @@
+// expect-error: which owns memory
+fn main() -> Int {
+    let s = "a string"
+    let p = &s
+    return 0
+}

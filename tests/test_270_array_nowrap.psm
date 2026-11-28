@@ -182,9 +182,9 @@ public fn negativeLeft(a: [Int], x: Int, y: Int) -> Int {
 
 // A view's indices reach Int.MAX - 1, and `i - 2` with `i` at Int.MIN + 1 wraps
 // to exactly that. So the access does not put `i` at 2 or more, and `i - 3` may wrap.
-// `public`, like the six other functions whose ops must stay plain, so that each is
-// tested for parameters nothing bounds: a private function takes its parameters'
-// ranges from its calls (src/ir/param_ranges.psm), and main's one call here passes 4.
+// Called through `hidden`, so that it is tested for a parameter nothing bounds: a function
+// takes its parameters' ranges from its calls (src/ir/param_ranges.psm), and main's one
+// call here passes 4.
 public fn viewBelow(a: [Int], i: Int) -> Int {
     let mut acc = 0
     let mut k = 0
@@ -193,6 +193,13 @@ public fn viewBelow(a: [Int], i: Int) -> Int {
         k = k + 1
     }
     return acc
+}
+
+// `value`, as far as the walk can tell any value: it answers for a function of one `return`.
+fn hidden(value: Int) -> Int {
+    let mut out = value
+    out = out + 0
+    return out
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {
@@ -218,7 +225,7 @@ fn main() -> Int {
     bad = bad + check("FAIL: shadowed", shadowed(probe), 0 - 2147482996)
     bad = bad + check("FAIL: headKill", headKill(probe), 0 - 2147483647 - 1)
     bad = bad + check("FAIL: negativeLeft", negativeLeft(probe, 0 - 2147483646, 2147483647), 3)
-    bad = bad + check("FAIL: viewBelow", viewBelow(probe, 4), 3)
+    bad = bad + check("FAIL: viewBelow", viewBelow(probe, hidden(4)), 3)
 
     if (bad != 0) { return 1 }
     println("PASS: array access no-wrap facts")

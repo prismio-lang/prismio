@@ -31,6 +31,20 @@
 // outside any closure, and its name is bound once there: no view, no `inout`, no copy,
 // no `for x in`, no shadowing. Anything else could write it where the walk does not look.
 //
+// A local `Vec` of those elements qualifies the same way, with its `v[i]`, `v[i] = x`,
+// `v.push(x)` and `v.length` standing for the subscript: a push is one more store, and
+// what it has not pushed a read cannot reach, since the read's bounds check stops it. A
+// breadth-first queue is the case: every node pushed was first a checked index into
+// `seen`, so every node popped is one, and the `%` on it needs no sign and, in a checksum,
+// no division.
+//
+// **Every store must be seen, or nothing is claimed.** The scan below counts each store
+// site by node; a site the record walk did not reach takes its list's bound away, as an
+// unrecorded call takes a parameter's (ir/param_ranges.psm).
+//
+// The same scan answers how long a `Vec<T>.filled(n, x)` is, whatever its `T`: one that
+// nothing pushes or passes keeps `n`, so a checked index into it is at most `n - 1`.
+//
 // Its elements are `Int` or a narrower integer (ir/nowrap.psm's fact types), and a
 // family's bound must lie inside every member's type, so a store that would wrap one
 // leaves the family unbounded. pointer_chase's `next[at]` needs the unsigned case: every
@@ -77,7 +91,18 @@ struct ArrayContents {
     // name, and how many times the function binds the name.
     aliasNames: Vec<String>,
     aliasArrays: Vec<String>,
-    aliasBindings: Vec<Int>
+    aliasBindings: Vec<Int>,
+    // Every store site a list's name reaches, its slot, and whether the walk recorded it.
+    siteNodes: Vec<Ptr>,
+    siteSlots: Vec<Int>,
+    siteSeen: Vec<Bool>,
+    // The `Vec<T>.filled` locals: each one's name, the smallest and largest length the
+    // walk found it declared with (-1 where nothing bounds it), and whether something else
+    // may resize it.
+    filledNames: Vec<String>,
+    filledLo: Vec<I64>,
+    filledHi: Vec<I64>,
+    filledFailed: Vec<Bool>
 }
 
 // A stored value's form; see the top of this file. An absent part is
@@ -95,10 +120,12 @@ internal fn contentsCollect(func: ASTNode) -> ArrayContents {
     let c = ArrayContents {
         names: [], elemLo: [], elemHi: [], family: [], depth: [], concreteLo: [], concreteHi: [],
         growth: [], sumLoC: [], sumLoR: [], sumHiC: [], sumHiR: [], failed: [], readWriter: [],
-        readSlot: [], lo: [], hi: [], aliasNames: [], aliasArrays: [], aliasBindings: []
+        readSlot: [], lo: [], hi: [], aliasNames: [], aliasArrays: [], aliasBindings: [],
+        siteNodes: [], siteSlots: [], siteSeen: [], filledNames: [], filledLo: [], filledHi: [],
+        filledFailed: []
     }
     c.collect(func.child2)
-    if (c.names.length == 0) { return c }
+    if (c.names.length == 0 and c.filledNames.length == 0) { return c }
     c.countBindings(func.child1)
     c.countBindings(func.child2)
     c.scan(func.child2, false)
@@ -114,11 +141,12 @@ impl ArrayContents {
             if (n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n)) {
                 self.add(n.s1, ptr_to_type(nodeGetType(n).child))
             }
+            if (n.kind == NodeKind.VARIABLE_DECL and contentsIsFilled(n)) { self.addFilled(n.s1) }
             if (n.kind == NodeKind.VARIABLE_DECL and n.i1 != 1 and nodeExists(n.child2)) {
                 let init = ptr_to_node(n.child2)
-                if (init.kind == NodeKind.INDEX_EXPR and contentsBaseName(init).equals("") == false) {
+                if (contentsSubscripted(init).equals("") == false) {
                     self.aliasNames.push(n.s1.clone())
-                    self.aliasArrays.push(contentsBaseName(init))
+                    self.aliasArrays.push(contentsSubscripted(init))
                     self.aliasBindings.push(0)
                 }
             }
@@ -156,13 +184,50 @@ impl ArrayContents {
 }
 
 
-// An integer element of a fact type and a known length: a zero-filled or
-// literal-initialised local.
+// An integer element of a fact type, and either a known length, a zero-filled or
+// literal-initialised local, or a `Vec`, which holds nothing it was not given.
 private fn contentsIsIntArray(decl: ASTNode) -> Bool {
     if (nodeHasType(decl) == false) { return false }
     let t = nodeGetType(decl)
-    if (t.kind != TypeKind.ARRAY or t.length <= 0 or nodeIsNull(t.child)) { return false }
+    if (nodeIsNull(t.child)) { return false }
+    if (t.kind == TypeKind.LIST) { return nowrapTypeBits(ptr_to_type(t.child)) > 0 }
+    if (t.kind != TypeKind.ARRAY or t.length <= 0) { return false }
     return nowrapTypeBits(ptr_to_type(t.child)) > 0
+}
+
+// `Vec<T>.filled(n, x)` of a scalar `T`, whatever its width.
+private fn contentsIsFilled(decl: ASTNode) -> Bool {
+    if (nodeHasType(decl) == false or nodeGetType(decl).kind != TypeKind.LIST) { return false }
+    if (nodeIsNull(decl.child2)) { return false }
+    return contentsCallee(ptr_to_node(decl.child2)).equals("list_new_filled")
+}
+
+// The name a call's callee is, or "".
+private fn contentsCallee(e: ASTNode) -> String {
+    if (e.kind != NodeKind.CALL_EXPR or nodeIsNull(e.child1)) { return "" }
+    let callee = ptr_to_node(e.child1)
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR) { return "" }
+    return callee.s1.clone()
+}
+
+// What a call does to the `Vec` that is its first argument, in sema's lowered spelling
+// (src/sema/vec.psm): every operation a list's name may be mentioned by.
+const LIST_OP_NONE = 0
+const LIST_OP_READ = 1
+const LIST_OP_STORE = 2
+const LIST_OP_PUSH = 3
+const LIST_OP_SIZE = 4
+
+internal fn contentsListOp(e: ASTNode) -> Int {
+    let name = contentsCallee(e)
+    if (name.equals("") or nodeIsNull(e.child2)) { return LIST_OP_NONE }
+    let list = ptr_to_node(e.child2)
+    if (nodeHasType(list) == false or nodeGetType(list).kind != TypeKind.LIST) { return LIST_OP_NONE }
+    if (name.equals("list_get")) { return LIST_OP_READ }
+    if (name.equals("list_set")) { return LIST_OP_STORE }
+    if (name.equals("list_push")) { return LIST_OP_PUSH }
+    if (name.equals("list_len") or name.equals("list_capacity")) { return LIST_OP_SIZE }
+    return LIST_OP_NONE
 }
 
 impl ArrayContents {
@@ -175,10 +240,11 @@ impl ArrayContents {
             let binds = n.kind == NodeKind.VARIABLE_DECL or n.kind == NodeKind.FOR_STATEMENT
                         or n.kind == NodeKind.FUNCTION_PARAMETER
             if (binds) {
-                self.bindingOf(n.s1, n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n))
+                self.bindingOf(n.s1, n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n),
+                               n.kind == NodeKind.VARIABLE_DECL and contentsIsFilled(n))
                 self.aliasBound(n.s1)
                 if (n.kind == NodeKind.FOR_STATEMENT) {
-                    self.bindingOf(n.s2, false)
+                    self.bindingOf(n.s2, false, false)
                     self.aliasBound(n.s2)
                 }
             }
@@ -196,7 +262,9 @@ impl ArrayContents {
     // The declaration itself is the one binding allowed, and it was collected; any
     // other binding of the name disqualifies it. Two array declarations of one name
     // already failed in add().
-    private fn bindingOf(self, name: String, isTheArray: Bool) {
+    private fn bindingOf(self, name: String, isTheArray: Bool, isTheFilled: Bool) {
+        let filled = self.filledSlot(name)
+        if (filled >= 0 and isTheFilled == false) { self.filledFailed[filled] = true }
         let slot = self.slotOf(name)
         if (slot < 0 or isTheArray) { return }
         self.failed[slot] = 1
@@ -260,13 +328,17 @@ impl ArrayContents {
         while (nodeExists(p)) {
             let n = ptr_to_node(p)
             let inner = inClosure or n.kind == NodeKind.CLOSURE_EXPR
+            let op = contentsListOp(n)
             if (n.kind == NodeKind.INDEX_EXPR and inClosure == false and contentsBaseName(n).equals("") == false) {
                 self.scan(n.child2, inner)
                 self.scan(n.child3, inner)
+            } else if (op != LIST_OP_NONE and inClosure == false
+                       and ptr_to_node(n.child2).kind == NodeKind.IDENTIFIER_EXPR) {
+                self.scanListOp(n, op)
+                self.scan(ptr_to_node(n.child2).next, inner)
+                self.scan(n.child3, inner)
             } else {
-                if (n.kind == NodeKind.IDENTIFIER_EXPR and self.slotOf(n.s1) >= 0) {
-                    self.failed[self.slotOf(n.s1)] = 1
-                }
+                if (n.kind == NodeKind.IDENTIFIER_EXPR) { self.failName(n.s1) }
                 self.scan(n.child1, inner)
                 self.scan(n.child2, inner)
                 self.scan(n.child3, inner)
@@ -276,6 +348,117 @@ impl ArrayContents {
     }
 }
 
+
+impl ArrayContents {
+    // A mention of a name by anything but a subscript or a list operation.
+    private fn failName(self, name: String) {
+        let slot = self.slotOf(name)
+        if (slot >= 0) { self.failed[slot] = 1 }
+        let filled = self.filledSlot(name)
+        if (filled >= 0) { self.filledFailed[filled] = true }
+    }
+}
+
+
+impl ArrayContents {
+    // A list operation on a named list: a store is a site the walk must record, and a
+    // push is the one that moves the length.
+    private fn scanListOp(self, n: ASTNode, op: Int) {
+        let name = ptr_to_node(n.child2).s1
+        if (op == LIST_OP_PUSH) {
+            let filled = self.filledSlot(name)
+            if (filled >= 0) { self.filledFailed[filled] = true }
+        }
+        let slot = self.slotOf(name)
+        if (slot >= 0 and (op == LIST_OP_STORE or op == LIST_OP_PUSH)) {
+            self.siteNodes.push(node_to_ptr(n))
+            self.siteSlots.push(slot)
+            self.siteSeen.push(false)
+        }
+    }
+}
+
+
+impl ArrayContents {
+    // The walk recorded this store.
+    internal fn siteRecorded(self, n: ASTNode) {
+        let at = node_to_ptr(n)
+        for i in 0..<self.siteNodes.length {
+            if (self.siteNodes[i] == at) { self.siteSeen[i] = true }
+        }
+    }
+}
+
+
+impl ArrayContents {
+    private fn filledSlot(self, name: String) -> Int {
+        for i in 0..<self.filledNames.length {
+            let known: String = self.filledNames[i]
+            if (known.equals(name)) { return i }
+        }
+        return 0 - 1
+    }
+}
+
+
+impl ArrayContents {
+    private fn addFilled(self, name: String) {
+        let at = self.filledSlot(name)
+        if (at >= 0) {
+            self.filledFailed[at] = true
+            return
+        }
+        self.filledNames.push(name.clone())
+        self.filledLo.push((0 - 1) as I64)
+        self.filledHi.push((0 - 1) as I64)
+        self.filledFailed.push(false)
+    }
+}
+
+
+impl ArrayContents {
+    // `name` was just declared `Vec<T>.filled(n, x)`, with `n` in [lo, hi], or -1s when
+    // nothing bounds it.
+    internal fn noteFilled(self, name: String, lo: I64, hi: I64) {
+        let at = self.filledSlot(name)
+        if (at < 0) { return }
+        self.filledLo[at] = lo
+        self.filledHi[at] = hi
+    }
+}
+
+
+impl ArrayContents {
+    // The largest index a checked access to the list `list` can have run with.
+    internal fn lastIndexOf(self, list: ASTNode) -> I64 {
+        let most = (CONTENTS_INT_MAX - 1) as I64
+        if (list.kind != NodeKind.IDENTIFIER_EXPR) { return most }
+        let at = self.filledSlot(list.s1)
+        if (at < 0 or self.filledFailed[at] or self.filledHi[at] < 1 as I64) { return most }
+        return self.filledHi[at] - 1 as I64
+    }
+}
+
+
+impl ArrayContents {
+    // The shortest the list `list` can be, or 0: an index below this needs no check.
+    internal fn shortestLength(self, list: ASTNode) -> I64 {
+        if (list.kind != NodeKind.IDENTIFIER_EXPR) { return 0 as I64 }
+        let at = self.filledSlot(list.s1)
+        if (at < 0 or self.filledFailed[at] or self.filledLo[at] < 1 as I64) { return 0 as I64 }
+        return self.filledLo[at]
+    }
+}
+
+
+// The name a subscript or a list read indexes directly, or "".
+private fn contentsSubscripted(e: ASTNode) -> String {
+    if (e.kind == NodeKind.INDEX_EXPR) { return contentsBaseName(e) }
+    if (contentsListOp(e) != LIST_OP_READ) { return "" }
+    let list = ptr_to_node(e.child2)
+    if (list.kind != NodeKind.IDENTIFIER_EXPR) { return "" }
+    return list.s1.clone()
+}
 
 // The name a subscript indexes directly, or "".
 private fn contentsBaseName(e: ASTNode) -> String {
@@ -297,10 +480,23 @@ impl ArrayContents {
 
 
 impl ArrayContents {
-    // The slot of a qualifying array that subscript `e` indexes, or -1.
+    // The slot of a qualifying array that subscript or list read `e` indexes, or -1.
     internal fn slotOfIndex(self, e: ASTNode) -> Int {
-        if (e.kind != NodeKind.INDEX_EXPR) { return 0 - 1 }
-        let slot = self.slotOf(contentsBaseName(e))
+        let slot = self.slotOf(contentsSubscripted(e))
+        if (slot < 0 or self.failed[slot] == 1) { return 0 - 1 }
+        return slot
+    }
+}
+
+
+impl ArrayContents {
+    // The slot of a qualifying list that the store or push `e` writes, or -1.
+    internal fn slotOfListStore(self, e: ASTNode) -> Int {
+        let op = contentsListOp(e)
+        if (op != LIST_OP_STORE and op != LIST_OP_PUSH) { return 0 - 1 }
+        let list = ptr_to_node(e.child2)
+        if (list.kind != NodeKind.IDENTIFIER_EXPR) { return 0 - 1 }
+        let slot = self.slotOf(list.s1)
         if (slot < 0 or self.failed[slot] == 1) { return 0 - 1 }
         return slot
     }
@@ -315,6 +511,15 @@ impl ArrayContents {
         self.depth[slot] = depth
         self.noteLow(slot, lo)
         self.noteHigh(slot, hi)
+    }
+}
+
+
+impl ArrayContents {
+    // A list's declaration ran, holding nothing yet.
+    internal fn declareEmpty(self, slot: Int, family: Int, depth: Int) {
+        self.family[slot] = family
+        self.depth[slot] = depth
     }
 }
 
@@ -424,6 +629,9 @@ impl ArrayContents {
     internal fn settle(self) {
         for slot in 0..<self.names.length {
             if (self.family[slot] == 0) { self.failed[slot] = 1 }
+        }
+        for i in 0..<self.siteNodes.length {
+            if (self.siteSeen[i] == false) { self.failed[self.siteSlots[i]] = 1 }
         }
         // An array too narrow for its family's bound fails alone, and what read it
         // after it; the rest settle again without it. Each round fails one more array

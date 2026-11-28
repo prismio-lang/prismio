@@ -37,6 +37,7 @@
 import symbols.bindings
 import symbols.declarations
 import symbols.facts
+import sema.references
 import ast.nodes
 import ast.types
 import common.text
@@ -61,12 +62,18 @@ const NOWRAP_WIDEN_ROUND = 2
 const NOWRAP_DROP_ROUND = 5
 
 // Literals this reads stay far from the edge of the i64 intervals are computed in.
-const NOWRAP_LITERAL_DIGITS = 9
+const NOWRAP_LITERAL_DIGITS = 10
+
+// How far from zero an interval may reach: a sum of two stays inside an i64, and a product
+// is tested before it is taken. A fact past this is no fact.
+internal fn nowrapFactLimit() -> I64 {
+    return (1 as I64) << (61 as I64)
+}
 
 struct NowrapFacts {
     // `names[i]` lies in [los[i], his[i]] at the walk's point. A dropped fact keeps
     // its slot with an empty interval.
-    names: Vec<String>,
+    internal names: Vec<String>,
     internal los: Vec<I64>,
     internal his: Vec<I64>,
     // False once every path to the walk's point has left the block: a `return`,
@@ -106,13 +113,17 @@ struct NowrapWalk {
     calls: NowrapCallSites,
     // Set while an expression already walked is walked again: no call is recorded.
     internal quiet: Bool,
+    // The function takes an address, so its locals keep no facts a call may read.
+    internal pinned: Bool,
     // Congruences of the immutable `let`s in scope, and its literal arrays
     // (ir/strides.psm), and the congruence the last nowrapStride call found.
     internal strides: IndexStrides,
     internal stride: I64,
     internal residue: I64,
     // The function's body, which a literal array's no-store check reads.
-    body: Ptr
+    body: Ptr,
+    // What each division `let` is tied to (ir/residues.psm).
+    divisions: DivisionLets
 }
 
 // The calls one record walk saw to watched functions. Each call is one entry of
@@ -163,12 +174,16 @@ internal fn nowrapAnalyse(func: ASTNode, entry: NowrapFacts) -> Int {
 // holding the caller's borrowed `sites` in the walk would have released them too.
 internal fn nowrapRecordCalls(func: ASTNode, entry: NowrapFacts, sites: NowrapCallSites) {
     if (nodeIsNull(func.child2)) { return }
+    // No walk can bound a local a pointer may write, so no call here bounds anything: seen
+    // and with no interval, it takes the range away from what it calls.
+    let pinned = semaRefsAnyTaken() and semaRefsTakesAddress(func.child2)
     let own = nowrapCallSitesNew()
     for i in 0..<sites.watched.length {
         let symbol: String = sites.watched[i]
         own.watched.push(symbol.clone())
     }
     let w = nowrapWalkNew(func, own)
+    w.pinned = pinned
     nowrapBlock(w, entry.copy(), func.child2)
     for i in 0..<w.calls.seen.length {
         let symbol: String = w.calls.seen[i]
@@ -183,12 +198,25 @@ internal fn nowrapRecordCalls(func: ASTNode, entry: NowrapFacts, sites: NowrapCa
     }
 }
 
+// What `func`'s body, one `return` of an integer, answers, into [out.lo, out.hi]; false when
+// the facts do not bound it. `entry` holds at the first statement.
+internal fn nowrapReturnRange(func: ASTNode, entry: NowrapFacts, out: ResidueRange) -> Bool {
+    let only = ptr_to_node(ptr_to_node(func.child2).child1)
+    let w = nowrapWalkNew(func, nowrapCallSitesNew())
+    if (nowrapInterval(w, entry, only.child1) == false) { return false }
+    out.lo = w.lo
+    out.hi = w.hi
+    return true
+}
+
 private fn nowrapWalkNew(func: ASTNode, sites: NowrapCallSites) -> NowrapWalk {
     return NowrapWalk {
         mode: NOWRAP_RECORD, pass: ir_range_proof_new(), loops: [], trips: [], loopDepth: 0,
         loopCount: 0, block: 0, blockCount: 0, leaf: 0, contents: contentsCollect(func),
         blockedNames: [], blockedLoops: [], lo: 0 as I64, hi: 0 as I64, probes: 0, calls: sites, quiet: false,
-        strides: indexStridesNew(), stride: 1 as I64, residue: 0 as I64, body: func.child2
+        pinned: false,
+        strides: indexStridesNew(), stride: 1 as I64, residue: 0 as I64, body: func.child2,
+        divisions: divisionLetsCollect(func)
     }
 }
 
@@ -239,23 +267,13 @@ impl NowrapFacts {
 
 
 impl NowrapFacts {
-    // The name is an integer of at most 32 bits, so a bound past every such type's
-    // edge says nothing more.
     private fn set(self, name: String, lo: I64, hi: I64) {
         self.kill(name)
+        if (lo < 0 - nowrapFactLimit() or hi > nowrapFactLimit()) { return }
         self.names.push(name.clone())
-        self.los.push(nowrapClamp(lo))
-        self.his.push(nowrapClamp(hi))
+        self.los.push(lo)
+        self.his.push(hi)
     }
-}
-
-
-private fn nowrapClamp(v: I64) -> I64 {
-    let low = (0 - 2147483647 - 1) as I64
-    let high = 4294967295 as I64
-    if (v < low) { return low }
-    if (v > high) { return high }
-    return v
 }
 
 
@@ -277,8 +295,8 @@ impl NowrapFacts {
             self.set(name, lo, hi)
             return
         }
-        if (lo > self.los[at]) { self.los[at] = nowrapClamp(lo) }
-        if (hi < self.his[at]) { self.his[at] = nowrapClamp(hi) }
+        if (lo > self.los[at]) { self.los[at] = lo }
+        if (hi < self.his[at]) { self.his[at] = hi }
     }
 }
 
@@ -401,6 +419,7 @@ private fn nowrapStmt(w: NowrapWalk, f: NowrapFacts, stmtPtr: Ptr) {
             if (known and ir_var_is_global(s.s1) == 0) { f.set(s.s1, w.lo, w.hi) }
             nowrapDeclaredStride(w, f, s, stmtPtr)
             nowrapDeclared(w, f, s)
+            nowrapDeclaredFilled(w, f, s)
             return
         }
         NodeKind.ASSIGNMENT_STATEMENT => {
@@ -475,6 +494,8 @@ private fn nowrapFailStores(w: NowrapWalk, nodePtr: Ptr) {
         let slot = w.contents.slotOfIndex(ptr_to_node(n.child1))
         if (slot >= 0) { w.contents.fail(slot) }
     }
+    let listSlot = w.contents.slotOfListStore(n)
+    if (listSlot >= 0) { w.contents.fail(listSlot) }
     let mut p = n.child1
     while (nodeExists(p)) {
         nowrapFailStores(w, p)
@@ -515,7 +536,7 @@ private fn nowrapAssign(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
         nowrapMarkInRange(w, f, target)
         nowrapExpr(w, f, s.child2)
         nowrapStored(w, f, target, s.child2)
-        nowrapAccessed(f, target)
+        nowrapAccessedAt(f, target.child2, nowrapLastIndex(target))
         return
     }
     nowrapExpr(w, f, s.child1)
@@ -542,6 +563,7 @@ private fn nowrapDeclared(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
         return
     }
     let init = ptr_to_node(s.child2)
+    if (nowrapDeclaredList(w, f, s, slot, init)) { return }
     if (init.kind != NodeKind.ARRAY_LITERAL_EXPR) {
         w.contents.fail(slot)
         return
@@ -559,6 +581,37 @@ private fn nowrapDeclared(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
         p = ptr_to_node(p).next
     }
     w.contents.declare(slot, w.block, w.loopDepth, lo, hi)
+}
+
+// A `Vec` that starts empty, or holding `n` copies of a value the facts bound. Anything
+// else that initialises one is not a declaration this can read.
+private fn nowrapDeclaredList(w: NowrapWalk, f: NowrapFacts, s: ASTNode, slot: Int, init: ASTNode) -> Bool {
+    if (nodeGetType(s).kind != TypeKind.LIST or init.kind != NodeKind.CALL_EXPR) { return false }
+    if (nodeIsNull(init.child1)) { return false }
+    let callee = ptr_to_node(init.child1).s1
+    if (callee.equals("list_new") or callee.equals("list_new_with_capacity")) {
+        w.contents.declareEmpty(slot, w.block, w.loopDepth)
+        return true
+    }
+    if (callee.equals("list_new_filled") == false or nodeIsNull(init.child2)) { return false }
+    let value = ptr_to_node(init.child2).next
+    if (nowrapInterval(w, f, value) == false) { return false }
+    w.contents.declare(slot, w.block, w.loopDepth, w.lo, w.hi)
+    return true
+}
+
+// How long a `Vec<T>.filled(n, x)` is, as far as the facts bound `n`, for what a checked
+// access to it says of its index.
+private fn nowrapDeclaredFilled(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
+    if (nodeIsNull(s.child2) or ptr_to_node(s.child2).kind != NodeKind.CALL_EXPR) { return }
+    let count = ptr_to_node(s.child2).child2
+    let mut lo = (0 - 1) as I64
+    let mut hi = (0 - 1) as I64
+    if (nodeExists(count) and nowrapInterval(w, f, count)) {
+        lo = w.lo
+        hi = w.hi
+    }
+    w.contents.noteFilled(s.s1, lo, hi)
 }
 
 // A store into an array ir/contents.psm follows, with its value's form and how many
@@ -679,7 +732,7 @@ private fn nowrapLoop(w: NowrapWalk, f: NowrapFacts, condPtr: Ptr, bodyPtr: Ptr,
     nowrapKillBound(f, condPtr)
     nowrapKillBound(f, bodyPtr)
     nowrapKeepResidues(f, entry, residues)
-    let invariants = nowrapInvariants(w, f, entry, condPtr, bodyPtr, counter)
+    let invariants = nowrapInvariants(w, f, entry, condPtr, bodyPtr, counter, residues)
     // Without a `break` the loop leaves only from its head, where the invariants hold
     // and the condition is false. A `break` leaves from inside the body.
     let leavesAtHead = nowrapHasBreak(bodyPtr) == false
@@ -762,12 +815,13 @@ struct NowrapCandidates {
 // A `continue` is a way back to the head the walk does not follow, so a loop with one
 // anywhere inside gets no invariants.
 private fn nowrapInvariants(w: NowrapWalk, f: NowrapFacts, entry: NowrapFacts, condPtr: Ptr,
-                            bodyPtr: Ptr, counter: NowrapCounter) -> NowrapFacts {
+                            bodyPtr: Ptr, counter: NowrapCounter, residues: LoopResidues) -> NowrapFacts {
     let found = nowrapFactsNew()
     if (nodeIsNull(bodyPtr) or nowrapHasContinue(bodyPtr)) { return found }
     let c = NowrapCandidates { names: [], typeLos: [], typeHis: [], los: [], his: [], live: [] }
     nowrapCollectCandidates(c, f, entry, condPtr)
     nowrapCollectCandidates(c, f, entry, bodyPtr)
+    nowrapCollectResidues(c, entry, residues)
     if (c.names.length == 0) { return found }
     let th = NowrapThresholds { names: [], values: [] }
     nowrapCollectThresholds(th, c, condPtr)
@@ -891,6 +945,27 @@ private fn nowrapCollectCandidates(c: NowrapCandidates, f: NowrapFacts, entry: N
     while (nodeExists(r)) {
         nowrapCollectCandidates(c, f, entry, r)
         r = ptr_to_node(r).next
+    }
+}
+
+// A remainder the loop keeps stays in (-m, m) with no help (nowrapKeepResidues). One that
+// entered at zero or above, and every dividend of which stays there, is in [0, m), which
+// is the difference between a one-sided step and a two-sided one, and between a signed
+// remainder and an unsigned one. That takes induction over the body, so it is a guess.
+private fn nowrapCollectResidues(c: NowrapCandidates, entry: NowrapFacts, residues: LoopResidues) {
+    let range = residueRangeNew()
+    for i in 0..<residues.names.length {
+        let name: String = residues.names[i]
+        let at = entry.find(name)
+        let keeps = at >= 0 and residues.headRange(name, entry.los[at], entry.his[at], range)
+        if (keeps and entry.los[at] >= 0 as I64 and nowrapCandidateOf(c, name) < 0) {
+            c.names.push(name.clone())
+            c.typeLos.push(range.lo)
+            c.typeHis.push(range.hi)
+            c.los.push(entry.los[at])
+            c.his.push(range.hi)
+            c.live.push(true)
+        }
     }
 }
 
@@ -1078,6 +1153,45 @@ private fn nowrapRefine(w: NowrapWalk, f: NowrapFacts, c: ASTNode, holds: Bool) 
         if (bLo == bHi) { nowrapNarrowName(f, a, nowrapPastEdge(aLo, bLo, 1), nowrapPastEdge(aHi, bLo, 0 - 1)) }
         if (aLo == aHi) { nowrapNarrowName(f, b, nowrapPastEdge(bLo, aLo, 1), nowrapPastEdge(bHi, aLo, 0 - 1)) }
     }
+    nowrapRefineDivided(w, f, a)
+    nowrapRefineDivided(w, f, b)
+}
+
+// What a comparison just said of a division `let`, it says of the dividend
+// (ir/residues.psm). For `y = a / c` with `a` at zero or above, `y` in [l, h] puts `a` in
+// [l * c, h * c + c - 1]. For `x = a % c`, `a` is at least `x`, and an edge of `a` whose
+// own remainder is outside `x`'s interval moves to the nearest value whose remainder is
+// inside it.
+private fn nowrapRefineDivided(w: NowrapWalk, f: NowrapFacts, operand: ASTNode) {
+    let mut name = operand
+    if (operand.kind == NodeKind.BINARY_EXPR and nodeExists(operand.child1)) {
+        name = ptr_to_node(operand.child1)
+    }
+    if (name.kind != NodeKind.IDENTIFIER_EXPR) { return }
+    let at = w.divisions.find(name.s1)
+    if (at < 0) { return }
+    let base: String = w.divisions.bases[at]
+    let known = f.find(name.s1)
+    let dividend = f.find(base)
+    if (known < 0 or dividend < 0 or f.los[dividend] < 0 as I64) { return }
+    if (nowrapInterval(w, f, w.divisions.divisors[at]) == false or w.lo != w.hi or w.lo < 1 as I64) { return }
+    let c = w.lo
+    let low = f.los[known]
+    let high = f.his[known]
+    if (w.divisions.remainders[at] == false) {
+        f.narrow(base, low * c, high * c + c - 1 as I64)
+        return
+    }
+    let mut lo = f.los[dividend]
+    let mut hi = f.his[dividend]
+    if (low > lo) { lo = low }
+    let top = hi % c
+    if (top > high) { hi = hi - (top - high) }
+    if (top < low) { hi = hi - top - c + high }
+    let bottom = lo % c
+    if (bottom < low) { lo = lo + low - bottom }
+    if (bottom > high) { lo = lo + c - bottom + low }
+    f.narrow(base, lo, hi)
 }
 
 // `edge`, moved one step by `step` when it is the excluded value.
@@ -1112,8 +1226,17 @@ private fn nowrapOperandRange(w: NowrapWalk, f: NowrapFacts, n: ASTNode) -> Bool
     return true
 }
 
-// Narrows a local operand's fact to [lo, hi] within its type; anything else is left.
+// Narrows a local operand's fact to [lo, hi] within its type; a bounded `x + k` or `x - k`
+// narrows `x`, its range having shown it cannot wrap; anything else is left.
 private fn nowrapNarrowName(f: NowrapFacts, n: ASTNode, lo: I64, hi: I64) {
+    if (nowrapIsSum(n) and nodeExists(n.child1) and nodeExists(n.child2)) {
+        let k = nowrapLiteral(ptr_to_node(n.child2))
+        if (k < 0) { return }
+        let mut shift = k as I64
+        if (n.s1.equals("-")) { shift = 0 - shift }
+        nowrapNarrowName(f, ptr_to_node(n.child1), lo - shift, hi - shift)
+        return
+    }
     if (n.kind != NodeKind.IDENTIFIER_EXPR or nowrapHoldsFacts(n) == false) { return }
     let t = nodeGetType(n)
     let mut low = lo
@@ -1164,7 +1287,7 @@ private fn nowrapExpr(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) {
             if (nowrapIsUnchecked(e)) {
                 nowrapSubscript(w, f, e)
                 nowrapMarkInRange(w, f, e)
-                nowrapAccessed(f, e)
+                nowrapAccessedAt(f, e.child2, nowrapLastIndex(e))
             }
             return
         }
@@ -1178,6 +1301,7 @@ private fn nowrapExpr(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) {
             }
             nowrapExprChain(w, f, e.child2)
             nowrapRecordCall(w, f, e)
+            nowrapListOp(w, f, e)
             // A list subscript is an address too: one left unmarked keeps its
             // counters' updates plain, as an array's does.
             if (w.mode == NOWRAP_RECORD and rangeIsAccess(e)) {
@@ -1218,7 +1342,7 @@ private fn nowrapRecordCall(w: NowrapWalk, f: NowrapFacts, e: ASTNode) {
     while (nodeExists(p)) {
         w.calls.symbols.push(e.s2.clone())
         w.calls.indices.push(index)
-        if (nowrapInterval(w, f, p)) {
+        if (w.pinned == false and nowrapInterval(w, f, p)) {
             w.calls.los.push(w.lo)
             w.calls.his.push(w.hi)
         } else {
@@ -1264,11 +1388,42 @@ internal fn nowrapIndexInRange(access: ASTNode) -> Bool {
     return ir_nowrap_of(node_to_ptr(access)) == irNowrapPass
 }
 
+// What a `Vec` operation that ran says. A read or store had its index in range, or its
+// bounds check would have stopped the program there; a store or push is one more value
+// in the list's contents (ir/contents.psm).
+private fn nowrapListOp(w: NowrapWalk, f: NowrapFacts, e: ASTNode) {
+    let op = contentsListOp(e)
+    if (op == LIST_OP_NONE) { return }
+    let list = ptr_to_node(e.child2)
+    if (op == LIST_OP_READ or op == LIST_OP_STORE) {
+        if (nodeExists(list.next)) {
+            nowrapMarkListInRange(w, f, e, list)
+            nowrapAccessedAt(f, list.next, w.contents.lastIndexOf(list))
+        }
+    }
+    if (w.mode != NOWRAP_RECORD) { return }
+    let slot = w.contents.slotOfListStore(e)
+    if (slot < 0) { return }
+    w.contents.siteRecorded(e)
+    let mut value = list.next
+    if (op == LIST_OP_STORE and nodeExists(value)) { value = ptr_to_node(value).next }
+    let form = nowrapForm(w, f, value, slot)
+    w.contents.store(slot, form, nowrapExecutions(w, w.contents.depth[slot]))
+}
+
+// A list access whose index the facts already put below the list's shortest length needs
+// no bounds check.
+private fn nowrapMarkListInRange(w: NowrapWalk, f: NowrapFacts, e: ASTNode, list: ASTNode) {
+    if (w.mode != NOWRAP_MARK) { return }
+    if (nowrapInterval(w, f, list.next) == false) { return }
+    if (w.lo < 0 as I64 or w.hi >= w.contents.shortestLength(list)) { return }
+    ir_nowrap_mark(node_to_ptr(e), w.pass)
+}
+
 // What an access that ran says of its subscript: a name, or a name plus or minus
-// a literal, was inside the array.
-private fn nowrapAccessed(f: NowrapFacts, e: ASTNode) {
-    let last = nowrapLastIndex(e)
-    let mut sub = ptr_to_node(e.child2)
+// a literal, was inside the array, whose last index is `last`.
+private fn nowrapAccessedAt(f: NowrapFacts, subPtr: Ptr, last: I64) {
+    let mut sub = ptr_to_node(subPtr)
     // `x as Int` that was in range was `x`, whatever integer type `x` has: a value past
     // `Int` would have converted to a negative index.
     if (sub.kind == NodeKind.CAST_EXPR and nodeExists(sub.child1)) {
@@ -1383,11 +1538,19 @@ internal fn nowrapInterval(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) -> Bool 
         w.hi = w.contents.hi[slot] as I64
         return true
     }
+    if (contentsListOp(e) == LIST_OP_READ) {
+        let slot = w.contents.slotOfIndex(e)
+        if (w.contents.bounded(slot) == false) { return false }
+        w.lo = w.contents.lo[slot] as I64
+        w.hi = w.contents.hi[slot] as I64
+        return true
+    }
+    if (e.kind == NodeKind.CALL_EXPR) { return nowrapCallInterval(w, e) }
     if (e.kind == NodeKind.CAST_EXPR) { return nowrapCastInterval(w, f, e) }
     if (e.kind != NodeKind.BINARY_EXPR or nowrapIsFactType(e) == false) { return false }
     let divisor = remainderDivisor(e)
     if (divisor > 0) { return nowrapRemainder(w, f, e, divisor) }
-    if (e.s1.equals("%")) { return nowrapUnsignedRemainder(w, f, e) }
+    if (e.s1.equals("%")) { return nowrapDivisorRemainder(w, f, e) }
     if (e.s1.equals(">>")) { return nowrapShiftRight(w, f, e) }
     if (e.s1.equals("&")) { return nowrapMask(w, f, e) }
     if (e.s1.equals("/")) { return nowrapQuotient(w, f, e) }
@@ -1406,9 +1569,9 @@ internal fn nowrapInterval(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) -> Bool 
         w.lo = aLo - w.hi
         w.hi = aHi - bLo
     } else {
-        // Every factor is inside 32 bits, so each corner product is inside an i64.
         let bLo = w.lo
         let bHi = w.hi
+        if (nowrapProductFits(aLo, aHi, bLo, bHi) == false) { return false }
         let p1 = aLo * bLo
         let p2 = aLo * bHi
         let p3 = aHi * bLo
@@ -1417,6 +1580,29 @@ internal fn nowrapInterval(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) -> Bool 
         w.hi = nowrapHigher(nowrapHigher(p1, p2), nowrapHigher(p3, p4))
     }
     return nowrapFitsType(w.lo, w.hi, nodeGetType(e))
+}
+
+// Whether every product of a factor in [aLo, aHi] and one in [bLo, bHi] is inside the limit,
+// which makes each corner product safe to take.
+private fn nowrapProductFits(aLo: I64, aHi: I64, bLo: I64, bHi: I64) -> Bool {
+    let a = nowrapHigher(nowrapMagnitude(aLo), nowrapMagnitude(aHi))
+    let b = nowrapHigher(nowrapMagnitude(bLo), nowrapMagnitude(bHi))
+    return b == 0 as I64 or a <= nowrapFactLimit() / b
+}
+
+private fn nowrapMagnitude(v: I64) -> I64 {
+    if (v < 0 as I64) { return 0 - v }
+    return v
+}
+
+// What a function's one `return` is known to answer (ir/param_ranges.psm).
+private fn nowrapCallInterval(w: NowrapWalk, e: ASTNode) -> Bool {
+    if (e.s2.equals("") or nowrapIsFactType(e) == false) { return false }
+    let key = returnRangeKey(e.s2)
+    if (ir_range_known(key) == false) { return false }
+    w.lo = ir_range_lo(key)
+    w.hi = ir_range_hi(key)
+    return true
 }
 
 // `a / d` with every divisor above zero: truncation is monotone in `a` and shrinks the
@@ -1453,15 +1639,23 @@ private fn nowrapCastInterval(w: NowrapWalk, f: NowrapFacts, e: ASTNode) -> Bool
     return nowrapFitsType(w.lo, w.hi, nodeGetType(e))
 }
 
-// An unsigned `x % m`, `m` a literal or bounded above zero: below the largest `m`, and no
-// larger than `x`.
-private fn nowrapUnsignedRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode) -> Bool {
-    if (nowrapIsUnsigned(nodeGetType(e)) == false) { return false }
+// `x % m` with `m` a literal or bounded above zero: its magnitude is below the largest
+// `m` and no larger than `x`'s, and it has `x`'s sign.
+private fn nowrapDivisorRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode) -> Bool {
     if (nowrapInterval(w, f, e.child2) == false or w.lo < 1 as I64) { return false }
     let bound = w.hi - 1 as I64
-    if (nowrapInterval(w, f, e.child1) and w.hi <= bound) { return true }
-    w.lo = 0 as I64
-    w.hi = bound
+    let unsigned = nowrapIsUnsigned(nodeGetType(e))
+    if (nowrapInterval(w, f, e.child1) == false) {
+        w.lo = 0 - bound
+        if (unsigned) { w.lo = 0 as I64 }
+        w.hi = bound
+        return true
+    }
+    if (w.lo >= 0 as I64 and w.hi <= bound) { return true }
+    if (w.hi > bound) { w.hi = bound }
+    if (w.hi < 0 as I64) { w.hi = 0 as I64 }
+    if (w.lo > 0 as I64) { w.lo = 0 as I64 }
+    if (w.lo < 0 - bound) { w.lo = 0 - bound }
     return true
 }
 
@@ -1521,13 +1715,30 @@ private fn nowrapRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode, m: Int) ->
 }
 
 // A `%` by a literal whose dividend the facts bound tightly enough to drop the
-// remainder for a conditional add or subtract (ir/residues.psm).
+// remainder for a conditional add or subtract (ir/residues.psm); failing that, a `%` or
+// `/` the facts put at zero or above, whose sign needs no code.
 private fn nowrapMarkRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode) {
     if (w.mode != NOWRAP_MARK) { return }
+    if (e.s1.equals("%") == false and e.s1.equals("/") == false) { return }
+    if (nowrapIsSignedDivision(e) == false or nowrapInterval(w, f, e.child1) == false) { return }
+    let aLo = w.lo
+    let aHi = w.hi
     let m = remainderDivisor(e)
-    if (m < 2 or nowrapInterval(w, f, e.child1) == false) { return }
-    let form = remainderForm(w.lo, w.hi, m)
-    if (form != REM_KEEP) { ir_rem_form_mark(node_to_ptr(e), w.pass, form) }
+    if (m >= 2) {
+        let form = remainderForm(aLo, aHi, m)
+        if (form != REM_KEEP) {
+            ir_rem_form_mark(node_to_ptr(e), w.pass, form)
+            return
+        }
+        let reduced = mersenneForm(aLo, aHi, m)
+        if (reduced != REM_KEEP) {
+            ir_rem_form_mark(node_to_ptr(e), w.pass, reduced)
+            return
+        }
+    }
+    if (aLo < 0 as I64) { return }
+    if (nowrapInterval(w, f, e.child2) == false or w.lo < 1 as I64) { return }
+    ir_rem_form_mark(node_to_ptr(e), w.pass, REM_UNSIGNED)
 }
 
 // The form the active pass gave a `%`, or REM_KEEP.
@@ -1691,7 +1902,7 @@ private fn nowrapNegativeLiteral(n: ASTNode) -> I64 {
     return value as I64
 }
 
-// A non-negative integer literal of at most NOWRAP_LITERAL_DIGITS digits, or -1.
+// A non-negative integer literal of at most NOWRAP_LITERAL_DIGITS digits that fits `Int`, or -1.
 internal fn nowrapLiteral(n: ASTNode) -> Int {
     if (n.kind != NodeKind.LITERAL_EXPR) { return 0 - 1 }
     if (n.i1 != TokenType.NUMBER_LITERAL as Int) { return 0 - 1 }
@@ -1701,8 +1912,8 @@ internal fn nowrapLiteral(n: ASTNode) -> Int {
     return value
 }
 
-// An integer type of at most 32 bits, whose every value an i64 holds with room for a
-// sum or product of two: the types a fact can describe.
+// The signed and narrow integer types, whose every value an i64 holds: the types a fact can
+// describe.
 internal fn nowrapIsFactType(n: ASTNode) -> Bool {
     if (nodeHasType(n) == false) { return false }
     return nowrapTypeBits(nodeGetType(n)) > 0
@@ -1711,6 +1922,7 @@ internal fn nowrapIsFactType(n: ASTNode) -> Bool {
 // The width of `t` if it is one of those types, or 0.
 internal fn nowrapTypeBits(t: TypeInfo) -> Int {
     if (t.kind != TypeKind.INT) { return 0 }
+    if (t.name.equals("I64")) { return 64 }
     if (t.name.equals("Int") or t.name.equals("U32")) { return 32 }
     if (t.name.equals("I16") or t.name.equals("U16")) { return 16 }
     if (t.name.equals("I8") or t.name.equals("U8")) { return 8 }
@@ -1729,6 +1941,10 @@ internal fn nowrapTypeMin(t: TypeInfo) -> I64 {
 
 internal fn nowrapTypeMax(t: TypeInfo) -> I64 {
     let bits = nowrapTypeBits(t)
+    if (bits == 64) {
+        let half = (1 as I64) << (62 as I64)
+        return half - 1 as I64 + half
+    }
     let mut top = 1 as I64
     let mut b = 1
     if (nowrapIsUnsigned(t)) { b = 0 }
@@ -1741,8 +1957,18 @@ internal fn nowrapTypeMax(t: TypeInfo) -> I64 {
 
 // Whether every value in [lo, hi] is one `t` holds: an exact result that did not wrap.
 internal fn nowrapFitsType(lo: I64, hi: I64, t: TypeInfo) -> Bool {
-    if (nowrapTypeBits(t) == 0) { return false }
+    let bits = nowrapTypeBits(t)
+    if (bits == 0) { return false }
+    if (bits == 64) { return lo >= 0 - nowrapFactLimit() and hi <= nowrapFactLimit() }
     return lo >= nowrapTypeMin(t) and hi <= nowrapTypeMax(t)
+}
+
+// A node of a signed type a remainder's forms cover, the two that wrap as two's complement
+// and whose `%` is `srem`.
+internal fn nowrapIsSignedDivision(n: ASTNode) -> Bool {
+    if (nodeHasType(n) == false) { return false }
+    let t = nodeGetType(n)
+    return t.kind == TypeKind.INT and (t.name.equals("Int") or t.name.equals("I64"))
 }
 
 // A local of a fact type: a global is not a local a callee cannot change.

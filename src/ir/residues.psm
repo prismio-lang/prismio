@@ -39,6 +39,12 @@ const REM_SUBTRACT = 2
 const REM_ADD = 3
 // In (-2m, 2m): both.
 const REM_BOTH = 4
+// At zero or above, over a divisor above zero, and too far from the result for a step:
+// a `%` or `/` that may ignore signs, `urem`'s or `udiv`'s answer being the same.
+const REM_UNSIGNED = 5
+// A divisor `2^k - 1` and a dividend within 2^(2k - 1) of zero; see mersenneForm.
+const REM_MERSENNE = 6
+const REM_MERSENNE_SIGNED = 7
 
 // The form a remainder by `m` takes on a dividend in [lo, hi].
 internal fn remainderForm(lo: I64, hi: I64, m: Int) -> Int {
@@ -52,11 +58,49 @@ internal fn remainderForm(lo: I64, hi: I64, m: Int) -> Int {
     return REM_KEEP
 }
 
-// The divisor of `x % m` with a literal `m >= 1` on signed `Int`, or 0.
+// A remainder by a Mersenne number needs no multiply. `2^k` is 1 more than `m`, so for
+// `x = q * 2^k + r`, `x` and `q + r` have the same remainder, and `q` and `r` are a shift
+// and a mask:
+//
+//     t = (x >> k) + (x & m)
+//
+// With `x` within 2^(2k - 1) of zero that puts `t` within one step of the answer, and the
+// step depends only on the side of zero `x` is on, since a signed remainder has the
+// dividend's sign: at zero or above `t >= m` subtracts `m`, and below zero `t >= 1` does.
+// Four cycles from `x` to the answer, against nine for `smulh; asr; add; msub`, and the
+// MINSTD generator's state goes round a loop through exactly this. Measured in C on
+// graph_churn_single, whose generator is the benchmark's critical path: 0.87x.
+//
+// The dividend's sign costs a compare and a select where a fact does not settle it, which
+// is why this does not need one: a generator's state starts positive, but no interval walk
+// can see that across the calls it goes through.
+internal fn mersenneForm(lo: I64, hi: I64, m: Int) -> Int {
+    let k = mersenneBits(m)
+    if (k == 0) { return REM_KEEP }
+    let reach = (1 as I64) << ((2 * k - 1) as I64)
+    if (lo >= 0 as I64 and hi <= reach) { return REM_MERSENNE }
+    if (lo >= 0 - reach and hi <= reach) { return REM_MERSENNE_SIGNED }
+    return REM_KEEP
+}
+
+// `k` when `m` is `2^k - 1` with `k` at least 2, otherwise 0.
+internal fn mersenneBits(m: Int) -> Int {
+    if (m < 3) { return 0 }
+    let mut k = 0
+    let mut rest = m
+    while (rest > 0) {
+        if (rest % 2 == 0) { return 0 }
+        rest = rest / 2
+        k = k + 1
+    }
+    return k
+}
+
+// The divisor of `x % m` with a literal `m >= 1` on a signed `Int` or `I64`, or 0.
 internal fn remainderDivisor(e: ASTNode) -> Int {
     if (e.kind != NodeKind.BINARY_EXPR or e.s1.equals("%") == false) { return 0 }
     if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return 0 }
-    if (nowrapIsIntName(e) == false) { return 0 }
+    if (nowrapIsSignedDivision(e) == false) { return 0 }
     return remainderLiteral(ptr_to_node(e.child2))
 }
 
@@ -183,6 +227,151 @@ impl LoopResidues {
             }
         }
         return false
+    }
+}
+
+// The immutable `let`s a division names: `let x = a % c` and `let y = a / c`, with `a` an
+// immutable `let` and `c` a literal or one. Each name's value is tied to `a`'s for as long
+// as the name is in scope, so what a comparison says of `x` or `y` it says of `a`:
+//
+//     let node = queue[head]; let x = node % width; let y = node / width
+//     if (x > 0) { next = node - 1 }                 // node >= 1
+//     if (x + 1 < width) { next = node + 1 }         // node is not the last of its row
+//     if (y > 0) { next = node - width }             // node >= width
+//     if (y + 1 < width) { next = node + width }     // node is not in the last row
+//
+// Every name involved must be bound once in the function, which is what lets a walk that
+// resolves by name read the tie at any mention.
+struct DivisionLets {
+    internal names: Vec<String>,
+    internal bases: Vec<String>,
+    internal divisors: Vec<Ptr>,
+    internal remainders: Vec<Bool>
+}
+
+internal fn divisionLetsCollect(func: ASTNode) -> DivisionLets {
+    let d = DivisionLets { names: [], bases: [], divisors: [], remainders: [] }
+    let c = LetCensus { names: [], counts: [], immutable: [] }
+    c.scan(func.child1)
+    c.scan(func.child2)
+    d.collect(func.child2, c)
+    return d
+}
+
+// How many times the function binds each name, and whether its one binding is a `let`.
+struct LetCensus {
+    internal names: Vec<String>,
+    internal counts: Vec<Int>,
+    internal immutable: Vec<Bool>
+}
+
+impl LetCensus {
+    private fn note(self, name: String, immutable: Bool) {
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name)) {
+                self.counts[i] = self.counts[i] + 1
+                return
+            }
+        }
+        self.names.push(name.clone())
+        self.counts.push(1)
+        self.immutable.push(immutable)
+    }
+}
+
+impl LetCensus {
+    private fn scan(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.VARIABLE_DECL) { self.note(n.s1, n.i1 != 1) }
+            if (n.kind == NodeKind.FUNCTION_PARAMETER) { self.note(n.s1, false) }
+            if (n.kind == NodeKind.FOR_STATEMENT) {
+                self.note(n.s1, false)
+                self.note(n.s2, false)
+            }
+            if (n.kind == NodeKind.MATCH_ARM) { self.scanPattern(n.child1) }
+            self.scan(n.child1)
+            self.scan(n.child2)
+            self.scan(n.child3)
+            p = n.next
+        }
+    }
+}
+
+impl LetCensus {
+    // A pattern may bind any name it mentions.
+    private fn scanPattern(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.IDENTIFIER_EXPR) {
+                self.note(n.s1, false)
+                self.note(n.s1, false)
+            }
+            self.scanPattern(n.child1)
+            self.scanPattern(n.child2)
+            self.scanPattern(n.child3)
+            p = n.next
+        }
+    }
+}
+
+impl LetCensus {
+    // Bound once in the function, as an immutable `let`.
+    private fn fixed(self, name: String) -> Bool {
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name)) { return self.counts[i] == 1 and self.immutable[i] }
+        }
+        return false
+    }
+}
+
+impl DivisionLets {
+    private fn collect(self, head: Ptr, c: LetCensus) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.VARIABLE_DECL and nodeExists(n.child2)) { self.consider(n, c) }
+            self.collect(n.child1, c)
+            self.collect(n.child2, c)
+            self.collect(n.child3, c)
+            p = n.next
+        }
+    }
+}
+
+impl DivisionLets {
+    private fn consider(self, decl: ASTNode, c: LetCensus) {
+        let init = ptr_to_node(decl.child2)
+        if (init.kind != NodeKind.BINARY_EXPR or nodeIsNull(init.child1) or nodeIsNull(init.child2)) { return }
+        let isRemainder = init.s1.equals("%")
+        if (isRemainder == false and init.s1.equals("/") == false) { return }
+        if (nowrapIsIntName(init) == false or c.fixed(decl.s1) == false) { return }
+        let base = ptr_to_node(init.child1)
+        if (base.kind != NodeKind.IDENTIFIER_EXPR or c.fixed(base.s1) == false) { return }
+        let divisor = ptr_to_node(init.child2)
+        if (divisor.kind == NodeKind.IDENTIFIER_EXPR) {
+            if (c.fixed(divisor.s1) == false) { return }
+        } else if (divisor.kind != NodeKind.LITERAL_EXPR) {
+            return
+        }
+        self.names.push(decl.s1.clone())
+        self.bases.push(base.s1.clone())
+        self.divisors.push(init.child2)
+        self.remainders.push(isRemainder)
+    }
+}
+
+impl DivisionLets {
+    internal fn find(self, name: String) -> Int {
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name)) { return i }
+        }
+        return 0 - 1
     }
 }
 

@@ -1,0 +1,7 @@
+// expect-error: which is not declared
+fn main() -> Int {
+    let x = 5
+    let p = &mut x
+    *p = 6
+    return x
+}

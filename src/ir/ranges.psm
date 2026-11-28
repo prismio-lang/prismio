@@ -189,6 +189,7 @@ private fn rangeLoopNew(condPtr: Ptr, bodyPtr: Ptr, arrays: Bool) -> RangeLoop {
 // could be proved; `irLoopRangeProofPending` then holds the proof to activate.
 // `arrays` serves the loop's sized-array accesses instead of its list accesses.
 internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode, arrays: Bool) -> String {
+    if (irFunctionPinsLocals) { return "" }
     let rl = rangeLoopNew(node_to_ptr(cond), node_to_ptr(body), arrays)
     rl.line = cond.line
     rl.file = cond.file
@@ -204,6 +205,7 @@ internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode, arrays: Bool) 
 internal fn generateForRangeGuard(stmt: ASTNode, endVal: String, stepVal: String,
                                   stepIsLiteral: Bool, inclusive: Bool, down: Bool,
                                   arrays: Bool) -> String {
+    if (irFunctionPinsLocals) { return "" }
     let rl = rangeLoopNew(ptr_null(), stmt.child3, arrays)
     rl.line = stmt.line
     rl.file = stmt.file

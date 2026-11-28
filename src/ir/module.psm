@@ -3,6 +3,7 @@
 // before any of them.
 
 import symbols.bindings
+import sema.references
 import symbols.type_registry
 import symbols.declarations
 import symbols.facts
@@ -41,7 +42,7 @@ import sema.decl_index
 // the PLIB and compiled from the interface source by each program. The test runs
 // only for a function a PLIB could supply, so a build from source pays nothing
 // for it.
-private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
+internal fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
     let qualifier = diag_file_module(func.file).clone()
     let emissionModule = libraryEmissionModule()
     if (emissionModule.equals("") == false) {
@@ -66,6 +67,11 @@ private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
         return functionAsksTarget(func)
     }
     return true
+}
+
+// Whether this compilation is a PLIB, whose public functions a later program calls.
+internal fn moduleEmitsLibrary() -> Bool {
+    return libraryEmissionModule().equals("") == false
 }
 
 // Whether `func`'s own body calls a target builtin. Only a direct call counts:
@@ -366,6 +372,7 @@ private fn generateFunction(func: ASTNode) {
     ir_scope_push()
 
     irFunctionHasLoop = moduleTreeHasLoop(func.child2)
+    irFunctionPinsLocals = semaRefsAnyTaken() and semaRefsTakesAddress(func.child2)
 
     let mut paramPtr2 = func.child1
     let mut paramIndex = 0
@@ -420,8 +427,12 @@ private fn generateFunction(func: ASTNode) {
         irFunctionBody = func.child2
         // Only a loop repeats arithmetic often enough for `nsw` to matter, but any
         // fixed-array subscript may have a check the walk's facts make unnecessary.
-        if (irFunctionHasLoop or moduleTreeIndexesArray(func.child2)) {
-            irNowrapPass = nowrapAnalyse(func, paramRangesEntry(func))
+        // And a parameter's range can settle a `%` with no loop in sight: a generator's step is
+        // a function of one line, called from the loop that matters.
+        let entry = paramRangesEntry(func)
+        if (irFunctionPinsLocals == false
+                and (irFunctionHasLoop or moduleTreeIndexesArray(func.child2) or entry.names.length > 0)) {
+            irNowrapPass = nowrapAnalyse(func, entry)
         }
 
         if (irFunctionHasLoop) {

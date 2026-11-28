@@ -28,8 +28,15 @@ fn unbounded(x: Int) -> Int {
     return x * 2
 }
 
-// Public: callers outside this file are possible, so no range.
+// Public, in a program: this module holds every call there is, so it has a range like any
+// other function. A library's public functions have none, which the harness cannot tell
+// from one file: std's are the case.
 public fn exposed(x: Int) -> Int {
+    return x - 1
+}
+
+// Exported: C may call it with anything, so no range.
+export fn reachable(x: Int) -> Int {
     return x - 1
 }
 
@@ -58,6 +65,7 @@ fn main() -> Int {
     if (countDown(10) != 10) { return 3 }
     if (unbounded(seed + 20) != 42) { return 4 }
     if (exposed(5) != 4) { return 5 }
+    if (reachable(5) != 4) { return 5 }
     let offset = seed * 1000
     if (fromClosure(3) != 10) { return 6 }
     if (applyOnce(|v: Int| fromClosure(v + offset), 2) != 1009) { return 7 }

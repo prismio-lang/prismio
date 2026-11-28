@@ -301,7 +301,7 @@ private fn semaPtrReported() -> String { return "reported" }
 // in and out of memory nothing tracks, so what it points at must own nothing: a
 // `String` or `Vec` stored through one would move an owner into memory no release
 // will ever visit. A pointer to a pointer is fine -- a pointer owns nothing.
-private fn semaPtrPointeeRefusal(module: ASTNode, pointee: TypeInfo) -> String {
+internal fn semaPtrPointeeRefusal(module: ASTNode, pointee: TypeInfo) -> String {
     if (typeIsScalarOptionalInner(pointee) or pointee.kind == TypeKind.PTR) { return "" }
     if (pointee.kind == TypeKind.STRUCT) {
         if (semaPtrStructIsPlain(module, pointee.name, 0)) { return "" }

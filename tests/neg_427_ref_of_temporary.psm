@@ -1,0 +1,6 @@
+// expect-error: `&` takes the address of a variable, a field or an element
+fn five() -> Int { return 5 }
+fn main() -> Int {
+    let p = &five()
+    return p.load()
+}
