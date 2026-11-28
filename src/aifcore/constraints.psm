@@ -249,6 +249,8 @@ private fn conAdd(kind: Int, a: Int, b: Int, c: Int) {
 
 public fn aif_con_bind(key: Int, vs: Int) { conAdd(AIF_CON_BIND, key, vs, 0) }
 public fn aif_con_arg(key: Int, vs: Int) { conAdd(AIF_CON_ARG, key, vs, 0) }
+// An argument something else may still name (E-PASS).
+public fn aif_con_arg_named(key: Int, vs: Int) { conAdd(AIF_CON_ARG, key, vs, 1) }
 public fn aif_con_store(key: Int, vs: Int, owners: Int) { conAdd(AIF_CON_STORE, key, vs, owners) }
 public fn aif_con_live_in(vs: Int, scope: Int, fnId: Int) { conAdd(AIF_CON_LIVE_IN, vs, scope, fnId) }
 public fn aif_con_opaque(vs: Int) { conAdd(AIF_CON_OPAQUE, vs, 0, 0) }

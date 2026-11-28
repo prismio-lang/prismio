@@ -1,0 +1,99 @@
+// Which parameters a function may hand back, asked of flow rather than of sites. Answered from the constraints alone, so
+// the fixed point can use it (E-PASS) before any fact exists, and call_results reads the same answer afterwards.
+//
+// A path from PARAM(g, i) to RET(g) along moves g itself makes. **Chains defeat the site question.**
+// `public fn toUpper(self) -> String { return strToUpper(self) }` returns strToUpper's allocation, and in
+// `x.toUpper().toUpper()` the first result is the second call's argument, so strToUpper's one site is in both sets and
+// every chained call looked like it returned its receiver: 2,000 of 3,001 leaked over 1,000 iterations, for every String
+// method written as a one-line wrapper. Asked of flow, a call crosses into the callee only through this same answer for
+// the callee, and comes back out along the uses g makes of its result. A least fixed point over all parameters, since a
+// summary can depend on its own function's.
+
+import std.collections.vec
+import aifcore.constants
+import aifcore.constraints
+import aifcore.keys
+import std.core.option
+
+private struct FlowGraph {
+    to: Vec<Vec<Int>>,    // key -> keys a value held there can move to
+    by: Vec<Vec<Int>>     // ...and the function each of those moves is in
+}
+
+// A container call's store is not a move: where the value goes is the holder, not another key.
+private fn passGraph() -> FlowGraph {
+    let mut to: Vec<Vec<Int>> = []
+    let mut by: Vec<Vec<Int>> = []
+    for k in 0..<keyCount {
+        let a: Vec<Int> = []
+        let b: Vec<Int> = []
+        to.push(a)
+        by.push(b)
+    }
+    for ci in 0..<conCount {
+        let kind = conKind[ci]
+        if (kind != AIF_CON_BIND and kind != AIF_CON_ARG and kind != AIF_CON_STORE) { continue }
+        let vs = conB[ci]
+        let into = conA[ci]
+        if (vs < 0 or vs >= vsCount or into < 0 or into >= keyCount) { continue }
+        for i in 0..<vsItems[vs].length {
+            let item = vsItems[vs][i]
+            if (item % 2 == 0) { continue }
+            let from = item / 2
+            if (from < 0 or from >= keyCount) { continue }
+            to[from].push(into)
+            by[from].push(conFn[ci])
+        }
+    }
+    return FlowGraph { to: to, by: by }
+}
+
+private fn reachesReturn(graph: FlowGraph, passes: Vec<Int>, inout marks: Vec<Int>, start: Int, mark: Int) -> Bool {
+    let g = keyA[start]
+    let rk = keyFind(AIF_KEY_RET, g, 0)
+    if (rk < 0) { return false }
+    let mut work: Vec<Int> = []
+    marks[start] = mark
+    work.push(start)
+    while (work.length > 0) {
+        let k = work.pop() ?? 0
+        for i in 0..<graph.to[k].length {
+            if (graph.by[k][i] != g) { continue }
+            let t = graph.to[k][i]
+            if (t == rk) { return true }
+            let mut next = t
+            if (keyKind[t] == AIF_KEY_PARAM) {
+                // Into a callee: back out only if it hands the argument back.
+                if (passes[t] == 0) { continue }
+                next = keyFind(AIF_KEY_RET, keyA[t], 0)
+                if (next < 0 or next >= keyCount) { continue }
+            } else if (keyKind[t] == AIF_KEY_RET) {
+                continue
+            }
+            if (marks[next] == mark) { continue }
+            marks[next] = mark
+            work.push(next)
+        }
+    }
+    return false
+}
+
+// Per key: 1 for a PARAM key whose function may hand it back.
+internal fn passThroughParams() -> Vec<Int> {
+    let graph = passGraph()
+    let mut passes = Vec<Int>.filled(keyCount + 1, 0)
+    let mut marks = Vec<Int>.filled(keyCount + 1, 0)
+    let mut mark = 0
+    let mut changed = true
+    while (changed) {
+        changed = false
+        for k in 0..<keyCount {
+            if (keyKind[k] != AIF_KEY_PARAM or passes[k] != 0) { continue }
+            mark = mark + 1
+            if (reachesReturn(graph, passes, marks, k, mark) == false) { continue }
+            passes[k] = 1
+            changed = true
+        }
+    }
+    return passes
+}

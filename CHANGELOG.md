@@ -273,6 +273,15 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **A function that returns its parameter no longer lets safe code free a value twice.** `b.push(id(x))` then `a.push(x)` put one box
+  under two owners: `--verify` segfaulted or reported a release of a dead pointer, and the returned `Vec`s read freed memory. The same
+  held through a method, a generic, recursion, a `T?` return, `o ?? x`, and with both pushes into one `Vec`. The ownership analysis now
+  treats the result of a call that may hand back a named argument as a view of it (E-PASS, `src/aifcore/pass_through.psm`, mirrored in
+  the oracle), so the value is counted. The cost is leaks where such a result is stored (`docs/KNOWN_ISSUES.md`): `tests/` goes from
+  3,618 leaked blocks to 3,630 (`test_185` 4 -> 8, `test_186` 0 -> 8), IR changes in 4 programs (those two, `test_269`, and two
+  releases in the compiler that now wait for their `Vec`), and building the compiler costs 1.0% more instructions.
+  `tests/test_405_pass_through_two_owners.psm`, 0 violations.
+
 - **The AIF engine and its oracle agree about two containers holding one site again.** The engine counts a move-only value in two
   containers as shared only when some container stores it through a view (since the `graph_churn` work); the oracle still counted
   every site, so one factory feeding two `Vec`s read T2 in the engine and T3 in the oracle. The oracle now applies the engine's

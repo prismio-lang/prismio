@@ -305,6 +305,26 @@ as two bodies for the same reason (one shared `strCaseConverted` leaked 30 more 
 `test_205`). **The fix is context-sensitive sites for library producers** (`MEMORY_PLAN.md`
 §2.3); the same fix would split `vecOf`'s sites (see [Codegen](#codegen-and-performance)).
 
+### A value a function hands back, once stored, is counted and leaks
+
+A call to a function that may return its parameter answers a view of the argument
+(`src/aifcore/pass_through.psm`), which is what stops `b.push(id(x)); a.push(x)` from being a
+double free. The price is precision, in the leak direction, wherever the argument is one something
+else could name (a binding, a field, an `??`; a call result or a struct literal handed straight in
+is not):
+
+- `let s = big(i); v.push(same(s))` over 100 iterations leaks 100 strings (the push copies, and the
+  original has no owner), even though `s` is never used again.
+- A struct that owns a `Vec` goes to the counted tier, which cannot release it.
+- **The answer is per function, not per call.** One named argument anywhere makes every caller's
+  result a view (`test_186` leaks 8 for `unwrapOr`).
+- **A counted owner takes the shared sites of its fields with it.** One literal site serves every
+  `Vec` literal of an element type, so one struct stored twice through a pass-through, holding a
+  `Vec<Int>` literal, stops every `Vec<Int>` literal of that shape being released (355 blocks
+  instead of 5 in `../tests/test_405_pass_through_two_owners.psm` before its control types moved
+  to `I64`). The same happens, and did before, to a struct held twice through an element read.
+  Context-sensitive library sites would end it.
+
 ### Struct fields that may hold a string literal are never released
 
 **Not re-run.** `Process()` defaults `program` to `""`, and a field a program ever stores a
@@ -399,36 +419,34 @@ explicit worklist (`RESULTS-recursive-release-depth.md`).
 ## The AIF analysis and its oracle
 
 `../tools/aif_oracle/aif.py` is the oracle: an independent implementation that
-`../tools/aif_differential.py` compares with the in-compiler engine. **They agree on all 17
-default sources (re-run 2026-10-09)**, in both collection models: `[owned]`, the default, and
-`[as-is]`, the pre-Level-4 `--copyable-collections` model that stays as the second arm. Two
-sources outside that set disagree, and one inside it, `src/main.psm`, has since come to:
+`../tools/aif_differential.py` compares with the in-compiler engine. **They agree on all 23
+default sources (re-run 2026-11-28)**, in both collection models: `[owned]`, the default, and
+`[as-is]`, the pre-Level-4 `--copyable-collections` model that stays as the second arm, and
+with `--plan`. Two programs outside that set still disagree:
 
-### `src/main.psm`: three struct sites are T3 in the oracle and T2 in the engine
+### An enum payload matched twice and stored twice reads freed memory
 
-Found 2026-10-24, and the same on the sources of `HEAD`, so it predates the working tree. The oracle tiers
-`UmsAstValue` (`ums/parser/parser.psm`, `parseValue`), `UmsLinkInput` and `UmsNativeInput`
-(`ums/targets/target.psm`) T3 with `E=Caller A=Shared`, where the engine says T2: each is returned to a
-caller that pushes it into a container or reads an element back into a binding. One more site is T0 in the
-engine and T1 in the oracle. The other sixteen default sources agree. `--why` on the engine's side names
-`E-BIND ums/model/lowering.psm` as the cause of the escape and nothing about sharing, which puts the
-difference in how an element read bound to a name is counted as a holder (`A-CONTAIN`), not in a tier clause.
+**Unsound.** Found 2026-11-28, on the compiler before that day's changes too. A flat struct is stored
+inline, so the first push copies the payload's box and releases it, and the second push reads it:
 
-### `benchmarks/hosted/prismio/suite.psm`, in the default (owned) model
+```prismio
+struct State { world: Int }
+enum Wrap { One(State), Nothing }
 
-The six benchmark modules agree between the engine and the oracle in both models, but
-`suite.psm`, which imports all of them, does not in the owned one (it agrees as-is): the
-compiler reports **T2=138, T3=0**, the oracle **T2=136, T3=2** (162/0 against 160/2 when this was
-found on 2026-10-07; the modules have changed since, the disagreement has not). Two sites tier
-differently once the modules are analysed together, which points at a cross-module fact (a
-shared producer, or an import-order effect) rather than a tier clause; `--why` on the two
-differing sites is where to start. It is therefore not a default source.
+let e = Wrap.One(State { world: 1 })
+match e { Wrap.One(s) => { a.push(s) } _ => {} }
+match e { Wrap.One(t) => { b.push(t) } _ => {} }   // a[0].world and b[0].world read 0
+```
+
+`--verify` reports 0 violations (one block leaked), since a read is not in the ledger. With a payload
+that owns a `Vec` the values read correctly and one block leaks. The engine and the oracle also tier it
+differently (engine T3, oracle T2). Sema lets one payload be bound and stored by each `match`.
 
 ### A struct pushed into a Vec in a loop (`test_164_array_fields`)
 
 Recorded on 2026-10-07 as the oracle tiering it T3 (A=Shared) against the compiler's T1. **That
-has narrowed**: on 2026-10-09 every tier count agrees and the only difference is the fixpoint,
-**one more oracle round (compiler 7, oracle 8)**, in *both* models. It is not a default source.
+has narrowed**: on 2026-11-28 every tier count agrees and the only difference is the fixpoint,
+**one more oracle round (compiler 6, oracle 7)**, in *both* models. It is not a default source.
 A round is not a tier, but it is the same shape of disagreement (an extra propagation step in the
 oracle) and worth a look the next time either file is touched.
 

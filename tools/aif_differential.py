@@ -292,6 +292,9 @@ def main():
         sources.append(Path("tests/aif_two_vecs_factory.psm"))
         sources.append(Path("tests/test_302_struct_in_two_vecs.psm"))
         sources.append(Path("tests/test_256_string_view_pushed_twice.psm"))
+        # E-PASS: a parameter handed back is a view of the argument. Nothing above
+        # passes a named value through a function and stores the result.
+        sources.append(Path("tests/test_405_pass_through_two_owners.psm"))
 
     dumps = {}
     failures = []

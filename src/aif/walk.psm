@@ -288,6 +288,21 @@ private fn aifSitesOfChain(head: Ptr, fnId: Int, scope: Int) -> Int {
     return out
 }
 
+// Whether an argument is a value only this call holds: a struct built here, or the result of a call this compilation
+// can see, which says for itself what it may be a view of. Everything else may be named again -- a binding, a field, an
+// `??`, an extern that hands an argument back.
+private fn aifArgIsTemporary(a: ASTNode) -> Bool {
+    if (a.kind == NodeKind.STRUCT_LITERAL_EXPR) { return true }
+    if (a.kind != NodeKind.CALL_EXPR) { return false }
+    let mut callee = a.s2
+    if (callee.equals("") and nodeExists(a.child1)) {
+        let target = ptr_to_node(a.child1)
+        callee = target.s1
+    }
+    let calleeId = aif_fn_lookup(callee)
+    return calleeId >= 0 and aif_fn_is_sealed(calleeId) == 0
+}
+
 // A call is where interprocedural flow happens, and where it stops: a function
 // whose body this compilation can see gets real parameter and return edges,
 // while an extern -- or a sealed function, which is the same situation (PIR 5)
@@ -316,10 +331,13 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     // creates allocation sites and a contract may name another argument by
     // index. Re-walking to find argument k would duplicate every site inside it.
     let base = aif_argv_begin()
+    // Which arguments denote a value something else may still name: E-PASS asks.
+    let mut named: Vec<Bool> = []
     let mut aPtr = e.child2
     while (nodeExists(aPtr)) {
         let a = ptr_to_node(aPtr)
         aif_argv_push(aifSitesOf(aPtr, fnId, scope))
+        named.push(aifArgIsTemporary(a) == false)
         aPtr = a.next
     }
     let argc = aif_argv_count(base)
@@ -362,7 +380,11 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     for i in 0..<argc {
         let av = aif_argv_get(base, i)
         if (known) {
-            aif_con_arg(aif_key_param(calleeId, i), av)
+            if (named[i]) {
+                aif_con_arg_named(aif_key_param(calleeId, i), av)
+            } else {
+                aif_con_arg(aif_key_param(calleeId, i), av)
+            }
         } else {
             let contract = aifFfiContract(plain, i)
             if (contract >= AIF_FFI_RETAIN_IN_BASE or contract == AIF_FFI_RETAIN

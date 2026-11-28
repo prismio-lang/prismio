@@ -3125,13 +3125,20 @@ def run_aif_verify_test():
         # 4 since 2026-10-07 (was 13): `lookup` answers a `String?`, a pointer, where
         # it answered an `Option<String>`, a tagged struct holding one -- so the
         # fixture no longer pays an `Option` allocation per kept lookup.
-        "test_185_view_outlives_binding": 4,
+        # 8 since E-PASS (2026-11-28): `unwrapOr(o, d)` may answer `o` itself, so its
+        # result is a view, the push copies it, and the binding is kept off the drop.
+        "test_185_view_outlives_binding": 8,
         # The same, pushed with no binding in between, including a temporary the
         # hoist gave one. 18 until the push copied the view (2026-10-01): each Vec
         # was declined for a view that might be a literal, so neither freed its
         # elements; a copy is an owned block and is freed. A rise is that copy
         # no longer being made, and the violations would follow.
-        "test_186_view_pushed_directly": 0,
+        # 8 since E-PASS (2026-11-28), for test_185's reason: the copy is freed with
+        # its Vec and the String `unwrapOr` handed back has no owner left.
+        "test_186_view_pushed_directly": 8,
+        # A parameter handed back put one value under two owners, a double free. The
+        # five boxes held twice are counted and leak; 0 violations is the guard.
+        "test_405_pass_through_two_owners": 5,
         # Copying a Vec<String>: take, skip, concat, reversed, sorted, toVec, clone,
         # filter, extend and a HashMap's keys. 273 leaked until a fresh String stored in
         # two containers stopped counting as one value held twice (A-CONTAIN).

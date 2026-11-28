@@ -25,6 +25,7 @@ import aifcore.constants
 import aifcore.constraints
 import aifcore.keys
 import aifcore.nominals
+import aifcore.pass_through
 import aifcore.sites
 import aifcore.structure
 import std.core.option
@@ -321,7 +322,19 @@ private fn raiseThread(site: Int, level: Int) -> Bool {
     return true
 }
 
+// E-PASS. A call to a function that may hand a parameter back answers a value that may *be* its argument, so the
+// result is a view of it: `b.push(id(x))` stores `x`'s value a second time, and without this nothing says the value
+// `x` still names is the one `b` holds. Said of the return key, which every caller's result reads, and only of an
+// argument something else may name: a temporary handed straight in has no second holder.
+private fn solvePassView(passes: Vec<Int>, param: Int) -> Bool {
+    if (passes[param] == 0) { return false }
+    let rk = keyFind(AIF_KEY_RET, keyA[param], 0)
+    if (rk < 0 or rk >= ptLen) { return false }
+    return bitsOr(keyViews[rk], scratchVal)
+}
+
 private fn solvePointsTo(maxRounds: Int) -> Bool {
+    let passes = passThroughParams()
     let mut r = 0
     while (r < maxRounds) {
         solveRounds = solveRounds + 1
@@ -334,6 +347,9 @@ private fn solvePointsTo(maxRounds: Int) -> Bool {
 
             vsResolve(conB[ci], scratchVal)
             if (bitsOr(pt[key], scratchVal)) { changed = true }
+            if (kind == AIF_CON_ARG and conC[ci] != 0) {
+                if (solvePassView(passes, key)) { changed = true }
+            }
 
             // SPEC 8.4. View provenance flows with the value, into the key it is bound, passed or stored into.
             // Grown here rather than in the fact loop because it reads only value sets and pt, so it is a

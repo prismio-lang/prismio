@@ -740,6 +740,7 @@ class Engine:
         self.has_tasks = False
         self.holders = defaultdict(set)   # site -> {holder keys}, for A-COPY
         self.constraints = []             # deferred (kind, args) edges
+        self.constraint_fn = []           # the function each was walked in
         self.rounds = 0
         self.pt_rounds = 0                # of rounds, how many points-to used
         self.delta = set()                # sites whose facts moved last round
@@ -786,6 +787,19 @@ class Engine:
             for b in fn['c2']:
                 self.walk(b, sym, root)
             self.env_marks.pop()
+            # Which function each constraint's move is in, for pass_through.
+            self.constraint_fn.extend(
+                [sym] * (len(self.constraints) - len(self.constraint_fn)))
+
+    def arg_is_temporary(self, a):
+        """A value only the call holds: a struct built here, or the result of
+        a call this compilation can see. Mirrors aifArgIsTemporary."""
+        if a['k'] == 'STRUCT_LITERAL_EXPR':
+            return True
+        if a['k'] != 'CALL_EXPR':
+            return False
+        callee = a['s2'] or (a['c1'][0]['s1'] if a['c1'] else '')
+        return callee in self.m.functions and callee not in self.m.sealed
 
     def new_site(self, ty, fn, scope, node):
         # REQUIREMENTS 4, src/aif/model.psm's aifSiteType: a site typed `T?`
@@ -942,7 +956,9 @@ class Engine:
 
             for i, av in enumerate(argvals):
                 if known:
-                    self.constraints.append(('arg', ('param', callee, i), av))
+                    # Whether something else may still name the value (E-PASS).
+                    named = not self.arg_is_temporary(e['c2'][i])
+                    self.constraints.append(('arg', ('param', callee, i), av, named))
                     continue
                 c = self.declared_contract(plain, i)
                 if c is None:
@@ -1492,11 +1508,54 @@ class Engine:
                 any_moved = True
         return any_moved
 
+    def pass_through_params(self):
+        """The ('param', g, i) keys whose function may hand them back: a path to
+        ('ret', g) along moves g itself makes, crossing a call only through the
+        same answer for the callee. A least fixed point. Mirrors
+        src/aifcore/pass_through.psm."""
+        succ = defaultdict(list)
+        for c, fn in zip(self.constraints, self.constraint_fn):
+            if c[0] not in ('bind', 'arg', 'store'):
+                continue
+            for src in c[2][1]:
+                succ[src].append((c[1], fn))
+        params = [k for k in set(succ) if k[0] == 'param']
+        passes, changed = set(), True
+        while changed:
+            changed = False
+            for start in params:
+                if start in passes:
+                    continue
+                g = start[1]
+                seen, work, found = {start}, [start], False
+                while work and not found:
+                    for t, by in succ.get(work.pop(), ()):
+                        if by != g:
+                            continue
+                        if t == ('ret', g):
+                            found = True
+                            break
+                        nxt = t
+                        if t[0] == 'param':
+                            if t not in passes:
+                                continue
+                            nxt = ('ret', t[1])
+                        elif t[0] == 'ret':
+                            continue
+                        if nxt not in seen:
+                            seen.add(nxt)
+                            work.append(nxt)
+                if found:
+                    passes.add(start)
+                    changed = True
+        return passes
+
     def solve_points_to(self, max_rounds):
         """Every rule that writes pt or holders reads only pt, so points-to has
         a least fixed point independent of the facts. Reaching it first changes
         no answer; it changes the frontier a truncated fact phase leaves behind
         (see widen_unconverged). Mirrors solvePointsTo in src/aifcore/."""
+        passes = self.pass_through_params()
         for _ in range(max_rounds):
             self.rounds += 1
             changed = False
@@ -1509,6 +1568,13 @@ class Engine:
                 if not v <= self.pt[key]:
                     self.pt[key] |= v
                     changed = True
+                # E-PASS: a call to a function that may hand a parameter back
+                # answers a view of a named argument. Mirrors solvePassView.
+                if kind == 'arg' and c[3] and key in passes:
+                    ret = ('ret', key[1])
+                    if not v <= self.key_views[ret]:
+                        self.key_views[ret] |= v
+                        changed = True
                 # SPEC 8.4. View provenance flows with the value, into the key
                 # it is bound, passed or stored into. Grown here rather than in
                 # the fact loop because it reads only value sets and pt, so the
@@ -1591,7 +1657,7 @@ class Engine:
                                 changed = self.delta_pt = True
 
                 elif kind == 'arg':
-                    _, key, val = c
+                    _, key, val, _named = c
                     v = self.resolve(val)
                     if not v <= self.pt[key]:
                         self.pt[key] |= v

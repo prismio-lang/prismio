@@ -16,6 +16,7 @@ import aifcore.constraints
 import aifcore.dispositions
 import aifcore.keys
 import aifcore.nominals
+import aifcore.pass_through
 import aifcore.sites
 import aifcore.solver
 import aifcore.structure
@@ -73,7 +74,6 @@ private let mut heldViews = -1
 
 // The value-flow graph.
 private let mut flowSucc: Vec<Vec<Int>>      // key -> keys a value held there can move to
-private let mut flowSuccFn: Vec<Vec<Int>>    // ...and the function each of those moves is in
 private let mut flowPred: Vec<Vec<Int>>
 private let mut paramReturns: Vec<Int>       // PARAM key: its function may hand it back
 private let mut flowHolder: Vec<Int>         // key: a holder (a released field, or a container element)
@@ -115,7 +115,6 @@ internal fn callResultsOpen() {
     fnHoldsView = []
     fieldKeyNext = []
     flowSucc = []
-    flowSuccFn = []
     flowPred = []
     paramReturns = []
     flowHolder = []
@@ -316,7 +315,7 @@ private fn fnMayReturnParam(f: Int) -> Bool {
     for pi in paramKeyStart(f)..<paramKeyEnd(f) {
         let k = paramKeyList[pi]
         if (k >= ptLen) { break }
-        // A shared site is not a path; see `paramReturnsBuild`.
+        // A shared site is not a path; see aifcore/pass_through.psm.
         if (paramMayReturn(k) == false) { continue }
         let n = minOf(bitsWordCount(pt[rk]), bitsWordCount(pt[k]))
         for w in 0..<n {
@@ -343,7 +342,7 @@ private fn siteMayBeParamOf(f: Int, s: Int) -> Bool {
         if (k >= ptLen) { break }
         // A move, not a borrow: see `aif_note_param_consuming`. The caller cannot free what it no longer owns.
         if (bitsTest(paramConsuming, k)) { continue }
-        // No path from this parameter to the return: the site is shared with one, the chain case `paramReturnsBuild` exists for.
+        // No path from this parameter to the return: the site is shared with one, the chain case aifcore/pass_through.psm exists for.
         if (paramMayReturn(k) == false) { continue }
         if (bitsTest(pt[k], s)) { return true }
     }
@@ -470,10 +469,9 @@ private fn keyIsRet(k: Int) -> Bool {
     return k >= 0 and k < flowKeys and keyKind[k] == AIF_KEY_RET
 }
 
-private fn flowEdge(from: Int, to: Int, fnId: Int) {
+private fn flowEdge(from: Int, to: Int) {
     if (from < 0 or to < 0 or from >= flowKeys or to >= flowKeys) { return }
     flowSucc[from].push(to)
-    flowSuccFn[from].push(fnId)
     flowPred[to].push(from)
 }
 
@@ -486,64 +484,9 @@ private fn conValueVs(ci: Int) -> Int {
     return -1
 }
 
-// Whether a function may hand back what it was given as parameter `start`: a path from PARAM(g, i) to RET(g) along moves g itself makes.
-// This is the question the pass-through guard asks, and it used to be asked of sites: a site in both the parameter's set and the return's.
-// **Chains defeat that.** `public fn toUpper(self) -> String { return strToUpper(self) }` returns strToUpper's allocation, and in
-// `x.toUpper().toUpper()` the first result is the second call's argument, so strToUpper's one site is in both sets and every chained call
-// looked like it returned its receiver: 2,000 of 3,001 leaked over 1,000 iterations, for every String method written as a one-line wrapper.
-// Asked of flow, a call crosses into the callee only through this same answer for the callee, and comes back out along the uses g makes of its
-// result. A least fixed point over all parameters, since a summary can depend on its own function's.
-private fn paramReachesRet(g: Int, start: Int, mark: Int) -> Bool {
-    let rk = keyFind(AIF_KEY_RET, g, 0)
-    if (rk < 0) { return false }
-    let mut work: Vec<Int> = []
-    keyMark[start] = mark
-    work.push(start)
-    let mut found = false
-    while (work.length > 0 and found == false) {
-        let k = work.pop() ?? 0
-        for i in 0..<flowSucc[k].length {
-            if (flowSuccFn[k][i] != g) { continue }
-            let t = flowSucc[k][i]
-            if (t == rk) {
-                found = true
-                break
-            }
-            if (t >= keyCount) { continue }
-            let mut next = t
-            if (keyKind[t] == AIF_KEY_PARAM) {
-                // Into a callee: back out only if it hands the argument back.
-                if (paramReturns[t] == 0) { continue }
-                next = keyFind(AIF_KEY_RET, keyA[t], 0)
-                if (next < 0 or next >= flowKeys) { continue }
-            } else if (keyKind[t] == AIF_KEY_RET) {
-                continue
-            }
-            if (keyMark[next] == mark) { continue }
-            keyMark[next] = mark
-            work.push(next)
-        }
-    }
-    return found
-}
-
 private fn paramMayReturn(k: Int) -> Bool {
     flowBuild()
     return k >= 0 and k < flowKeys and paramReturns[k] != 0
-}
-
-private fn paramReturnsBuild() {
-    let mut changed = true
-    while (changed) {
-        changed = false
-        for k in 0..<flowKeys {
-            if (keyKind[k] != AIF_KEY_PARAM or paramReturns[k] != 0) { continue }
-            flowGeneration = flowGeneration + 1
-            if (paramReachesRet(keyA[k], k, flowGeneration) == false) { continue }
-            paramReturns[k] = 1
-            changed = true
-        }
-    }
 }
 
 private fn flowBuild() {
@@ -556,11 +499,9 @@ private fn flowBuild() {
     flowVsets = vsCount
     flowFns = fnCount
     flowSucc = []
-    flowSuccFn = []
     flowPred = []
     for k in 0..<(flowKeys + 1) {
         flowSucc.push(freshInts())
-        flowSuccFn.push(freshInts())
         flowPred.push(freshInts())
     }
     vsConsumers = []
@@ -569,7 +510,6 @@ private fn flowBuild() {
         vsConsumers.push(freshInts())
         vsDerived.push(freshInts())
     }
-    paramReturns = Vec<Int>.filled(flowKeys + 1, 0)
     flowHolder = Vec<Int>.filled(flowKeys + 1, 0)
     flowReaches = Vec<Int>.filled(flowKeys + 1, 0)
     fnResultHeld = Vec<Int>.filled(flowFns + 1, -1)
@@ -602,7 +542,7 @@ private fn flowBuild() {
             if (conKind[ci] == AIF_CON_RETAIN_IN) {
                 if (from < flowKeys and keyIsRet(from) == false) { flowHolder[from] = 1 }
             } else {
-                flowEdge(from, conA[ci], conFn[ci])
+                flowEdge(from, conA[ci])
             }
         }
     }
@@ -630,7 +570,7 @@ private fn flowBuild() {
         }
     }
 
-    paramReturnsBuild()
+    paramReturns = passThroughParams()
 }
 
 // Whether `k` is a field the values in `cone` leave only by being moved out of it (pir.plan): the object they were

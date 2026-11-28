@@ -1,0 +1,146 @@
+// A function that returns its parameter hands the caller a second way to name the
+// value. `b.push(id(x))` and then `a.push(x)` put one box under two owners, and
+// each released it: a double free in a program sema accepts. The result is now a
+// view of the argument (E-PASS), so such a value is counted instead.
+//
+// Run under --verify by the aif suite: 0 violations is the guard, and the leaked
+// count is pinned there. What leaks is each doubly held box and what it owns,
+// which the counted tier cannot release. The control and temporary types keep
+// their Vecs at another element type on purpose: one literal site serves every
+// `Vec` literal of a type, and a counted owner takes that site with it
+// (KNOWN_ISSUES). With that, they leak nothing, and neither does a temporary
+// handed straight into a pass-through.
+
+import std.io
+import std.string
+
+struct Held { world: Int, items: Vec<Int> }
+struct Nested { world: Int, items: Vec<Int> }
+struct Method { world: Int, items: Vec<Int> }
+struct Single { world: Int, items: Vec<Int> }
+struct Fresh { world: Int, items: Vec<I64> }
+struct Control { world: Int, items: Vec<I64> }
+
+impl Method {
+    fn itself(self) -> Method { return self }
+}
+
+fn held(w: Int) -> Held { return Held { world: w, items: [w, w, w] } }
+fn nested(w: Int) -> Nested { return Nested { world: w, items: [w, w, w] } }
+fn method(w: Int) -> Method { return Method { world: w, items: [w, w, w] } }
+fn single(w: Int) -> Single { return Single { world: w, items: [w, w, w] } }
+fn fresh(w: Int) -> Fresh { return Fresh { world: w, items: [w as I64, w as I64, w as I64] } }
+fn control(w: Int) -> Control { return Control { world: w, items: [w as I64, w as I64, w as I64] } }
+
+fn sameHeld(x: Held) -> Held { return x }
+fn sameNested(x: Nested) -> Nested { return x }
+fn sameSingle(x: Single) -> Single { return x }
+fn sameFresh(x: Fresh) -> Fresh { return x }
+fn same<T>(x: T) -> T { return x }
+
+fn text(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
+fn sameText(s: String) -> String { return s }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// Two Vecs, one value, returned so that whatever one teardown freed is read back.
+fn twoVecs(inout out: Vec<Held>) -> Vec<Held> {
+    let mut first: Vec<Held> = []
+    let x = held(7)
+    first.push(sameHeld(x))
+    out.push(x)
+    return first
+}
+
+fn twoLevels(inout out: Vec<Nested>) -> Vec<Nested> {
+    let mut first: Vec<Nested> = []
+    let x = nested(8)
+    first.push(sameNested(sameNested(x)))
+    out.push(x)
+    return first
+}
+
+fn viaMethodAndGeneric(inout out: Vec<Method>) -> Vec<Method> {
+    let mut first: Vec<Method> = []
+    let x = method(9)
+    let y = method(10)
+    first.push(x.itself())
+    out.push(x)
+    first.push(same(y))
+    out.push(y)
+    return first
+}
+
+// Both stores into one Vec: no second container for A-CONTAIN to count.
+fn oneVec() -> Vec<Single> {
+    let mut only: Vec<Single> = []
+    let x = single(11)
+    only.push(sameSingle(x))
+    only.push(x)
+    return only
+}
+
+fn strings(inout out: Vec<String>) -> Vec<String> {
+    let mut first: Vec<String> = []
+    let s = text(12)
+    first.push(sameText(s))
+    out.push(s)
+    return first
+}
+
+// Temporaries have no second holder: moved straight in, released with the Vec.
+fn temporaries() -> I64 {
+    let mut kept: Vec<Fresh> = []
+    for i in 0..<50 { kept.push(sameFresh(fresh(i))) }
+    return kept[49].items[2]
+}
+
+// No pass-through at all: one factory, two Vecs, two values.
+fn controls() -> I64 {
+    let mut first: Vec<Control> = []
+    let mut second: Vec<Control> = []
+    for i in 0..<50 {
+        first.push(control(i))
+        second.push(control(i + 100))
+    }
+    return first[49].items[0] + second[49].items[0]
+}
+
+fn main() -> Int {
+    let mut outHeld: Vec<Held> = []
+    let mut outNested: Vec<Nested> = []
+    let mut outMethod: Vec<Method> = []
+    let mut outText: Vec<String> = []
+    let a = twoVecs(outHeld)
+    let b = twoLevels(outNested)
+    let c = viaMethodAndGeneric(outMethod)
+    let d = oneVec()
+    let e = strings(outText)
+
+    // Allocate over whatever was freed before reading anything back.
+    let mut noise: Vec<Vec<I64>> = []
+    let mut words: Vec<String> = []
+    for i in 0..<200 {
+        noise.push([-1 as I64, -1 as I64, -1 as I64])
+        words.push(text(-i))
+    }
+
+    if (a[0].world != 7 or a[0].items[2] != 7) { return fail("two Vecs, first") }
+    if (outHeld[0].world != 7 or outHeld[0].items[2] != 7) { return fail("two Vecs, second") }
+    if (b[0].items[2] != 8 or outNested[0].items[2] != 8) { return fail("two levels") }
+    if (c[0].items[2] != 9 or outMethod[0].items[2] != 9) { return fail("method") }
+    if (c[1].items[2] != 10 or outMethod[1].items[2] != 10) { return fail("generic") }
+    if (d[0].items[2] != 11 or d[1].items[2] != 11) { return fail("one Vec") }
+    if (e[0].equals("a string longer than twelve bytes 12") == false) { return fail("string, first") }
+    if (outText[0].equals("a string longer than twelve bytes 12") == false) { return fail("string, second") }
+    if (temporaries() != 49) { return fail("temporaries") }
+    if (controls() != 198) { return fail("controls") }
+    if (noise[199][2] != -1) { return fail("noise") }
+
+    println("ok")
+    return 0
+}
