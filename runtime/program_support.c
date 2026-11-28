@@ -2436,33 +2436,231 @@ void prismio_task_release(void* handle) {
     if (--t->refs <= 0) tmp_free(t);
 }
 
-// `bytes` is the in-place ring a plain-data channel uses instead of `slots`:
-// `cap` messages of `elem_size` bytes, allocated by whichever of the first
-// chan_send_copy or chan_recv_copy runs first. A channel is one or the other
-// for its whole life -- sema decides from the element type -- so the two rings
-// share `head` and `len` and never hold messages at once.
+// A bounded channel: Vyukov's array queue, as crossbeam and Rust's std::sync::mpsc have it.
+//
+// **A lock on every message is what this replaces, and it was the whole of
+// graph_churn_transfer's gap.** Every send and receive took a pthread mutex and signalled
+// under it, so a pipeline stage spent more time in `psynch_mutexwait`, `psynch_cvwait` and
+// `psynch_mutexdrop` than in its own work. Spinning in front of that lock made one benchmark
+// faster and channel_pipeline 7x slower, because small messages then contend for the lock
+// once each.
+//
+// `tail` and `head` count messages for the channel's whole life, each on its own cache line.
+// A position's slot is its count modulo the capacity, and the slot's stamp, in front of the
+// message so that one cache line carries both, says whose turn it is: `2 * pos` when the
+// sender of `pos` may fill it, `2 * pos + 1` when the receiver of `pos` may empty it, and
+// `2 * (pos + cap)` when it has gone round to the next sender. Doubled, because with a
+// capacity of 1 Vyukov's `pos + 1` means both "full for this receiver" and "empty for the next
+// sender". A side claims its position by CAS on its own counter, and the stamp store is what
+// publishes the message.
+//
+// The lock and the two conditions are only for sleeping. A thread backs off for a few
+// microseconds first, then sleeps. A side about to sleep counts itself and looks
+// again, and a side that published looks at the count, one of them seeing the other (a
+// Dekker pair of sequentially consistent accesses, which AArch64 does with `stlr` and `ldar`
+// and no barrier); so a message with nobody asleep makes no system call.
+//
+// The ring is allocated by the first message: a pointer's width for a channel of owning
+// messages, and the element's for a plain-data one, which is decided by sema and is one or
+// the other for the channel's whole life.
+#define CHAN_CACHE_LINE 128
+// Set in `tail` by close, so that a claim and a close are one atomic order: no send can
+// claim a position after a receiver has seen the channel closed and empty.
+#define CHAN_CLOSED ((uint64_t)1 << 63)
+// Steps of back-off before a thread sleeps, each a square number of spins up to a limit: the
+// schedule std::sync::mpmc settled on, on top of a first pause it does not have.
+#define CHAN_SPIN_LIMIT 6
+#define CHAN_BACKOFF_STEPS 10
+// How long a thread leaves a slot alone after finding it not ready, about a microsecond of
+// `isb`. **A look is not free**: it takes the slot's cache line from the side about to write it, so a
+// receiver polling as fast as it can makes the sender pay a coherence miss per message and
+// neither gets ahead. Long enough a pause and the sender runs on, and the receiver comes back
+// to a batch. channel_pipeline in a C model of it: 2.52 ms with no pause, 1.19 at 32 spins, 0.82
+// at 128, 1.02 at 256, and Rust's channel, with no pause, is 2.20.
+//
+// **A batch cannot outgrow the ring, so neither does the pause.** Request and reply over a
+// capacity of 1 has nothing to wait for, and 128 spins made its round trip 5x longer. So it is
+// two spins a slot, up to the most that paid.
+#define CHAN_PAUSE_PER_SLOT 2
+#define CHAN_PAUSE_MOST 128
+
 typedef struct {
+    uint64_t tail;
+    char tail_line[CHAN_CACHE_LINE - sizeof(uint64_t)];
+    uint64_t head;
+    char head_line[CHAN_CACHE_LINE - sizeof(uint64_t)];
+    // Read by every message and written by none, so a sleeper's lock must not share its line.
+    unsigned char* ring;
+    size_t stride;
+    int elem_size;
+    int cap;
+    // `cap - 1` for a power of two, which most capacities are; 0 means divide.
+    uint64_t mask;
+    int pause;
+    char read_line[CHAN_CACHE_LINE - 2 * sizeof(size_t) - 3 * sizeof(int) - sizeof(uint64_t)];
+    int senders_waiting, receivers_waiting;
     PRISMIO_MUTEX_T lock;
     PRISMIO_COND_T not_empty;
     PRISMIO_COND_T not_full;
-    void** slots;
-    unsigned char* bytes;
-    int elem_size;
-    int cap, head, len;
-    int closed;
 } PrismioChan;
+
+static inline uint64_t* chan_stamp(const PrismioChan* c, uint64_t pos) {
+    size_t slot = (size_t)(c->mask ? pos & c->mask : pos % (uint64_t)c->cap);
+    return (uint64_t*)(c->ring + slot * c->stride);
+}
+
+static inline void* chan_message(const PrismioChan* c, uint64_t pos) {
+    return chan_stamp(c, pos) + 1;
+}
+
+static inline void chan_relax(void) {
+#if defined(__aarch64__)
+    __asm__ volatile("isb");
+#elif defined(__x86_64__)
+    __asm__ volatile("pause");
+#endif
+}
+
+// Claims the next position to fill: 1 with it in `pos`, 0 when the channel is full, -1
+// when it is closed.
+static int chan_claim_send(PrismioChan* c, uint64_t* pos) {
+    uint64_t t = __atomic_load_n(&c->tail, __ATOMIC_RELAXED);
+    for (;;) {
+        if (t & CHAN_CLOSED) return -1;
+        uint64_t stamp = __atomic_load_n(chan_stamp(c, t), __ATOMIC_ACQUIRE);
+        int64_t turn = (int64_t)(stamp - 2 * t);
+        if (turn < 0) return 0;
+        if (turn == 0 && __atomic_compare_exchange_n(&c->tail, &t, t + 1, 1,
+                                                     __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            *pos = t;
+            return 1;
+        }
+        if (turn > 0) t = __atomic_load_n(&c->tail, __ATOMIC_RELAXED);
+    }
+}
+
+// Claims the next position to empty: 1 with it in `pos`, 0 when no message is ready, -1
+// when the channel is closed and drained. A send that has claimed and not yet published
+// reads as "not ready": its publish will wake this side.
+static int chan_claim_recv(PrismioChan* c, uint64_t* pos) {
+    uint64_t h = __atomic_load_n(&c->head, __ATOMIC_RELAXED);
+    for (;;) {
+        uint64_t stamp = __atomic_load_n(chan_stamp(c, h), __ATOMIC_ACQUIRE);
+        int64_t turn = (int64_t)(stamp - (2 * h + 1));
+        if (turn < 0) {
+            uint64_t t = __atomic_load_n(&c->tail, __ATOMIC_ACQUIRE);
+            if ((t & ~CHAN_CLOSED) == h && (t & CHAN_CLOSED)) return -1;
+            return 0;
+        }
+        if (turn == 0 && __atomic_compare_exchange_n(&c->head, &h, h + 1, 1,
+                                                     __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            *pos = h;
+            return 1;
+        }
+        if (turn > 0) h = __atomic_load_n(&c->head, __ATOMIC_RELAXED);
+    }
+}
+
+// Whether the other side has claimed a position and not yet published it, so that what a
+// claim is waiting for is already on its way.
+static int chan_in_flight(PrismioChan* c, int sending) {
+    uint64_t h = __atomic_load_n(&c->head, __ATOMIC_ACQUIRE);
+    uint64_t t = __atomic_load_n(&c->tail, __ATOMIC_ACQUIRE) & ~CHAN_CLOSED;
+    return sending ? (int64_t)(t - h) < c->cap : t != h;
+}
+
+// A claim, waiting for one as long as the channel is full or empty. `claim` is one of the
+// two above, and `waiting` and `cond` are the side's own.
+//
+// **Nobody sleeps while a position is in flight.** A publish wakes one sleeper, and positions
+// can be published out of order: with two receivers asleep, the one woken for the second
+// message found the first not ready and slept again, and the publish of the first woke only
+// one, which left a message queued beside a sleeping receiver. So a sleeper needs the
+// channel really empty (or full), and otherwise yields to whoever holds the position.
+static int chan_claim(PrismioChan* c, int (*claim)(PrismioChan*, uint64_t*), uint64_t* pos,
+                      int* waiting, PRISMIO_COND_T* cond) {
+    for (int step = 0;; step++) {
+        int got = claim(c, pos);
+        if (got != 0) return got;
+        if (step <= CHAN_BACKOFF_STEPS) {
+            int root = step < CHAN_SPIN_LIMIT ? step : CHAN_SPIN_LIMIT;
+            for (int i = 0; i < c->pause + root * root; i++) chan_relax();
+        } else {
+            PRISMIO_MUTEX_LOCK(&c->lock);
+            __atomic_add_fetch(waiting, 1, __ATOMIC_SEQ_CST);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            got = claim(c, pos);
+            int in_flight = got == 0 && chan_in_flight(c, claim == chan_claim_send);
+            if (got == 0 && !in_flight) PRISMIO_COND_WAIT(cond, &c->lock);
+            __atomic_sub_fetch(waiting, 1, __ATOMIC_SEQ_CST);
+            PRISMIO_MUTEX_UNLOCK(&c->lock);
+            if (got != 0) return got;
+            if (in_flight) PRISMIO_YIELD();
+            step = CHAN_BACKOFF_STEPS;
+        }
+    }
+}
+
+// A message just went in or came out: wakes one sleeper it lets go, if there is one. Under
+// the lock, so a sleeper that looked before the publish is in its wait by now.
+static void chan_wake(PrismioChan* c, int* waiting, PRISMIO_COND_T* cond) {
+    if (__atomic_load_n(waiting, __ATOMIC_SEQ_CST) == 0) return;
+    PRISMIO_MUTEX_LOCK(&c->lock);
+    PRISMIO_COND_SIGNAL(cond);
+    PRISMIO_MUTEX_UNLOCK(&c->lock);
+}
+
+static inline int chan_claim_full(PrismioChan* c, uint64_t* pos) {
+    return chan_claim(c, chan_claim_send, pos, &c->senders_waiting, &c->not_full);
+}
+
+static inline int chan_claim_empty(PrismioChan* c, uint64_t* pos) {
+    return chan_claim(c, chan_claim_recv, pos, &c->receivers_waiting, &c->not_empty);
+}
+
+static inline void chan_published(PrismioChan* c, uint64_t pos) {
+    __atomic_store_n(chan_stamp(c, pos), 2 * pos + 1, __ATOMIC_SEQ_CST);
+    chan_wake(c, &c->receivers_waiting, &c->not_empty);
+}
+
+static inline void chan_consumed(PrismioChan* c, uint64_t pos) {
+    __atomic_store_n(chan_stamp(c, pos), 2 * (pos + (uint64_t)c->cap), __ATOMIC_SEQ_CST);
+    chan_wake(c, &c->senders_waiting, &c->not_full);
+}
 
 void* chan_new(int capacity) {
     if (capacity < 1) capacity = 1;
     PrismioChan* c = (PrismioChan*)calloc(1, sizeof(PrismioChan));
     if (!c) return NULL;
-    c->slots = (void**)calloc((size_t)capacity, sizeof(void*));
-    if (!c->slots) { tmp_free(c); return NULL; }
     c->cap = capacity;
+    if ((capacity & (capacity - 1)) == 0) c->mask = (uint64_t)capacity - 1;
+    c->pause = capacity < CHAN_PAUSE_MOST / CHAN_PAUSE_PER_SLOT ? capacity * CHAN_PAUSE_PER_SLOT : CHAN_PAUSE_MOST;
     PRISMIO_MUTEX_INIT(&c->lock);
     PRISMIO_COND_INIT(&c->not_empty);
     PRISMIO_COND_INIT(&c->not_full);
     return c;
+}
+
+// The ring, for messages of `size` bytes. 0 when it cannot be allocated, which the callers
+// report the way a closed channel is reported. The pointer's release publishes the stride
+// and the stamps written before it.
+static int chan_ring_ready(PrismioChan* c, int size) {
+    if (__atomic_load_n(&c->ring, __ATOMIC_ACQUIRE)) return 1;
+    PRISMIO_MUTEX_LOCK(&c->lock);
+    if (!c->ring) {
+        if (size < 1) size = 1;
+        size_t stride = sizeof(uint64_t) + (((size_t)size + 7) & ~(size_t)7);
+        unsigned char* ring = (unsigned char*)calloc((size_t)c->cap, stride);
+        if (ring) {
+            for (int i = 0; i < c->cap; i++) *(uint64_t*)(ring + (size_t)i * stride) = 2 * (uint64_t)i;
+        }
+        c->stride = stride;
+        c->elem_size = size;
+        __atomic_store_n(&c->ring, ring, __ATOMIC_RELEASE);
+    }
+    int ready = c->ring != NULL;
+    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    return ready;
 }
 
 // Blocks while the channel is full. Sending on a closed channel drops the
@@ -2470,19 +2668,11 @@ void* chan_new(int capacity) {
 // channel is a race the receiver won rather than a defect in the sender.
 int chan_send(void* handle, void* msg) {
     PrismioChan* c = (PrismioChan*)handle;
-    if (!c) return 0;
-    PRISMIO_MUTEX_LOCK(&c->lock);
-    while (c->len == c->cap && !c->closed) {
-        PRISMIO_COND_WAIT(&c->not_full, &c->lock);
-    }
-    if (c->closed) {
-        PRISMIO_MUTEX_UNLOCK(&c->lock);
-        return 0;
-    }
-    c->slots[(c->head + c->len) % c->cap] = msg;
-    c->len++;
-    PRISMIO_COND_SIGNAL(&c->not_empty);
-    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    if (!c || !chan_ring_ready(c, (int)sizeof(void*))) return 0;
+    uint64_t pos;
+    if (chan_claim_full(c, &pos) < 0) return 0;
+    *(void**)chan_message(c, pos) = msg;
+    chan_published(c, pos);
     return 1;
 }
 
@@ -2490,20 +2680,11 @@ int chan_send(void* handle, void* msg) {
 // drained, which is how a receiving loop terminates without a sentinel value.
 void* chan_recv(void* handle) {
     PrismioChan* c = (PrismioChan*)handle;
-    if (!c) return NULL;
-    PRISMIO_MUTEX_LOCK(&c->lock);
-    while (c->len == 0 && !c->closed) {
-        PRISMIO_COND_WAIT(&c->not_empty, &c->lock);
-    }
-    if (c->len == 0) {
-        PRISMIO_MUTEX_UNLOCK(&c->lock);
-        return NULL;
-    }
-    void* msg = c->slots[c->head];
-    c->head = (c->head + 1) % c->cap;
-    c->len--;
-    PRISMIO_COND_SIGNAL(&c->not_full);
-    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    if (!c || !chan_ring_ready(c, (int)sizeof(void*))) return NULL;
+    uint64_t pos;
+    if (chan_claim_empty(c, &pos) < 0) return NULL;
+    void* msg = *(void**)chan_message(c, pos);
+    chan_consumed(c, pos);
     return msg;
 }
 
@@ -2515,37 +2696,16 @@ void* chan_recv(void* handle) {
 // value (docs/CHANNELS_PLAN.md). Sema routes a channel here when every field of
 // its element type is a scalar (chan_send_copy, chan_recv_copy); a message that
 // owns anything still travels as a pointer.
-//
-// Called with the lock held. 0 when the ring cannot be allocated, which the
-// callers report the way a closed channel is reported.
-static int chan_bytes_ready(PrismioChan* c, int size) {
-    if (c->bytes) return 1;
-    if (size < 1) size = 1;
-    c->bytes = (unsigned char*)calloc((size_t)c->cap, (size_t)size);
-    if (!c->bytes) return 0;
-    c->elem_size = size;
-    return 1;
-}
 
 // 1 delivered, 0 dropped because the channel was closed -- chan_send's
 // contract. The source stays the sender's: this copies it.
 int chan_send_copy(void* handle, const void* src, int size) {
     PrismioChan* c = (PrismioChan*)handle;
-    if (!c) return 0;
-    PRISMIO_MUTEX_LOCK(&c->lock);
-    while (c->len == c->cap && !c->closed) {
-        PRISMIO_COND_WAIT(&c->not_full, &c->lock);
-    }
-    if (c->closed || !chan_bytes_ready(c, size)) {
-        PRISMIO_MUTEX_UNLOCK(&c->lock);
-        return 0;
-    }
-    int tail = c->head + c->len;
-    if (tail >= c->cap) tail -= c->cap;
-    memcpy(c->bytes + (size_t)tail * (size_t)c->elem_size, src, (size_t)c->elem_size);
-    c->len++;
-    PRISMIO_COND_SIGNAL(&c->not_empty);
-    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    if (!c || !chan_ring_ready(c, size)) return 0;
+    uint64_t pos;
+    if (chan_claim_full(c, &pos) < 0) return 0;
+    memcpy(chan_message(c, pos), src, (size_t)c->elem_size);
+    chan_published(c, pos);
     return 1;
 }
 
@@ -2555,30 +2715,21 @@ int chan_send_copy(void* handle, const void* src, int size) {
 // the stack when the value stays in the frame.
 int chan_recv_copy(void* handle, void* dst, int size) {
     PrismioChan* c = (PrismioChan*)handle;
-    if (!c) return 0;
-    PRISMIO_MUTEX_LOCK(&c->lock);
-    while (c->len == 0 && !c->closed) {
-        PRISMIO_COND_WAIT(&c->not_empty, &c->lock);
-    }
-    if (c->len == 0 || !chan_bytes_ready(c, size)) {
-        PRISMIO_MUTEX_UNLOCK(&c->lock);
-        return 0;
-    }
-    memcpy(dst, c->bytes + (size_t)c->head * (size_t)c->elem_size, (size_t)c->elem_size);
-    if (++c->head == c->cap) c->head = 0;
-    c->len--;
-    PRISMIO_COND_SIGNAL(&c->not_full);
-    PRISMIO_MUTEX_UNLOCK(&c->lock);
+    if (!c || !chan_ring_ready(c, size)) return 0;
+    uint64_t pos;
+    if (chan_claim_empty(c, &pos) < 0) return 0;
+    memcpy(dst, chan_message(c, pos), (size_t)c->elem_size);
+    chan_consumed(c, pos);
     return 1;
 }
 
-// Wakes every blocked party. Both waits above re-test `closed`, so a broadcast
-// is enough and no waiter can be left holding the old predicate.
+// Wakes every blocked party. Both claims re-test `tail`'s closed bit, so a broadcast
+// is enough and no sleeper can be left holding the old predicate.
 void chan_close(void* handle) {
     PrismioChan* c = (PrismioChan*)handle;
     if (!c) return;
+    __atomic_fetch_or(&c->tail, CHAN_CLOSED, __ATOMIC_SEQ_CST);
     PRISMIO_MUTEX_LOCK(&c->lock);
-    c->closed = 1;
     PRISMIO_COND_BROADCAST(&c->not_empty);
     PRISMIO_COND_BROADCAST(&c->not_full);
     PRISMIO_MUTEX_UNLOCK(&c->lock);
@@ -2607,13 +2758,15 @@ void* chan_share(void* handle) {
     return handle;
 }
 
+// Claimed and not yet emptied. A snapshot of two counters, so a moving channel can read one
+// side's claim ahead of the other's.
 int chan_len(void* handle) {
     PrismioChan* c = (PrismioChan*)handle;
     if (!c) return 0;
-    PRISMIO_MUTEX_LOCK(&c->lock);
-    int n = c->len;
-    PRISMIO_MUTEX_UNLOCK(&c->lock);
-    return n;
+    uint64_t h = __atomic_load_n(&c->head, __ATOMIC_ACQUIRE);
+    uint64_t t = __atomic_load_n(&c->tail, __ATOMIC_ACQUIRE) & ~CHAN_CLOSED;
+    if (t <= h) return 0;
+    return t - h > (uint64_t)c->cap ? c->cap : (int)(t - h);
 }
 
 // Freeing a channel someone is still blocked on is a program defect this cannot
@@ -2626,8 +2779,7 @@ void chan_free(void* handle) {
     PRISMIO_MUTEX_DESTROY(&c->lock);
     PRISMIO_COND_DESTROY(&c->not_empty);
     PRISMIO_COND_DESTROY(&c->not_full);
-    tmp_free(c->slots);
-    tmp_free(c->bytes);
+    tmp_free(c->ring);
     tmp_free(c);
 }
 

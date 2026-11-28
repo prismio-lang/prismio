@@ -287,8 +287,10 @@ long long rt_workload_stub(const char* name);
 #define PRISMIO_COND_WAIT(c, m)    SleepConditionVariableCS(c, m, INFINITE)
 #define PRISMIO_COND_SIGNAL(c)     WakeConditionVariable(c)
 #define PRISMIO_COND_BROADCAST(c)  WakeAllConditionVariable(c)
+#define PRISMIO_YIELD()            SwitchToThread()
 #else
 #include <pthread.h>
+#include <sched.h>
 #define PRISMIO_THREAD_T           pthread_t
 #define PRISMIO_MUTEX_T            pthread_mutex_t
 #define PRISMIO_COND_T             pthread_cond_t
@@ -301,6 +303,7 @@ long long rt_workload_stub(const char* name);
 #define PRISMIO_COND_WAIT(c, m)    pthread_cond_wait(c, m)
 #define PRISMIO_COND_SIGNAL(c)     pthread_cond_signal(c)
 #define PRISMIO_COND_BROADCAST(c)  pthread_cond_broadcast(c)
+#define PRISMIO_YIELD()            sched_yield()
 #endif
 
 

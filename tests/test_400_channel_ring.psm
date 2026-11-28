@@ -1,0 +1,158 @@
+// The channel's lock-free ring (runtime/program_support.c) under what it has to survive: more
+// senders and receivers than one, a capacity of one and capacities that are not powers of
+// two, messages copied and messages owned, and a close with messages still in the ring.
+// test: cache=never
+
+import std.io
+
+struct Value {
+    n: Int
+}
+
+struct Owned {
+    items: Vec<Int>,
+    n: Int
+}
+
+struct Range {
+    from: Int,
+    to: Int
+}
+
+fn sendValues(out: Channel<Value>, range: Range) -> Int {
+    for i in range.from..<range.to {
+        out.send(Value { n: i })
+    }
+    return range.to - range.from
+}
+
+fn receiveValues(from: Channel<Value>) -> Int {
+    let mut sum = 0
+    loop {
+        let taken = from.receive()
+        if (taken == none) { break }
+        sum = (sum + expect(taken).n) % 1000003
+    }
+    return sum
+}
+
+fn sendOwned(out: Channel<Owned>, range: Range) -> Int {
+    for i in range.from..<range.to {
+        let mut items: Vec<Int> = Vec<Int>.withCapacity(2)
+        items.push(i)
+        items.push(i * 2)
+        out.send(Owned { items: items, n: i })
+    }
+    return range.to - range.from
+}
+
+fn receiveOwned(from: Channel<Owned>) -> Int {
+    let mut sum = 0
+    loop {
+        let taken = from.receive()
+        if (taken == none) { break }
+        let got = expect(taken)
+        sum = (sum + got.items[0] + got.items[1] - got.n) % 1000003
+    }
+    return sum
+}
+
+// Four senders and three receivers: every message arrives once.
+fn values(capacity: Int, each: Int) -> Int {
+    let ch = Channel<Value>(capacity)
+    let s1 = spawn sendValues(ch.share(), Range { from: 0, to: each })
+    let s2 = spawn sendValues(ch.share(), Range { from: each, to: each * 2 })
+    let s3 = spawn sendValues(ch.share(), Range { from: each * 2, to: each * 3 })
+    let s4 = spawn sendValues(ch.share(), Range { from: each * 3, to: each * 4 })
+    let r1 = spawn receiveValues(ch.share())
+    let r2 = spawn receiveValues(ch.share())
+    let r3 = spawn receiveValues(ch.share())
+    let sent = join s1 + join s2 + join s3 + join s4
+    ch.close()
+    let sum = (join r1 + join r2 + join r3) % 1000003
+    ch.free()
+    if (sent != each * 4) { return 0 - 1 }
+    return sum
+}
+
+fn owned(capacity: Int, each: Int) -> Int {
+    let ch = Channel<Owned>(capacity)
+    let s1 = spawn sendOwned(ch.share(), Range { from: 0, to: each })
+    let s2 = spawn sendOwned(ch.share(), Range { from: each, to: each * 2 })
+    let r1 = spawn receiveOwned(ch.share())
+    let r2 = spawn receiveOwned(ch.share())
+    let sent = join s1 + join s2
+    ch.close()
+    let sum = (join r1 + join r2) % 1000003
+    ch.free()
+    if (sent != each * 2) { return 0 - 1 }
+    return sum
+}
+
+// A close leaves what is in the ring to be received, in order, and then none. One thread, so
+// nothing blocks: the ring holds what fits, and its length says so.
+fn closeDrains() -> Bool {
+    let ch = Channel<Value>(3)
+    ch.send(Value { n: 1 })
+    ch.send(Value { n: 2 })
+    if (ch.length != 2) { return false }
+    ch.close()
+    ch.send(Value { n: 3 })
+    if (expect(ch.receive()).n != 1) { return false }
+    if (expect(ch.receive()).n != 2) { return false }
+    if (ch.receive() != none) { return false }
+    if (ch.receive() != none) { return false }
+    ch.free()
+    return true
+}
+
+// Round and round a small ring, on one thread, past the first wrap of every counter.
+fn wraps() -> Bool {
+    let ch = Channel<Value>(3)
+    for i in 0..<100 {
+        ch.send(Value { n: i })
+        ch.send(Value { n: i + 1 })
+        if (expect(ch.receive()).n != i or expect(ch.receive()).n != i + 1) { return false }
+    }
+    ch.close()
+    ch.free()
+    return true
+}
+
+fn sumTo(n: Int) -> Int {
+    let mut sum = 0
+    for i in 0..<n {
+        sum = (sum + i) % 1000003
+    }
+    return sum
+}
+
+fn ownedSum(n: Int) -> Int {
+    return (sumTo(n) * 2) % 1000003
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    for capacity in [1, 2, 3, 7, 16, 100] {
+        let each = 2000
+        if (values(capacity, each) != sumTo(each * 4)) {
+            println("FAIL: values")
+            bad = bad + 1
+        }
+        if (owned(capacity, each) != ownedSum(each * 2)) {
+            println("FAIL: owned")
+            bad = bad + 1
+        }
+    }
+    if (closeDrains() == false) {
+        println("FAIL: closeDrains")
+        bad = bad + 1
+    }
+    if (wraps() == false) {
+        println("FAIL: wraps")
+        bad = bad + 1
+    }
+    if (bad != 0) { return 1 }
+    println("PASS: channel ring")
+    return 0
+}
