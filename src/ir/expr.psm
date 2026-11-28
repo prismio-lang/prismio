@@ -4977,7 +4977,7 @@ private fn generateDivision(expr: ASTNode, opType: String, leftVal: String, righ
         }
         if (form != REM_KEEP) { return reducedRemainder(form, opType, leftVal, rightVal) }
     }
-    let divisor = ptr_to_node(expr.child2)
+    let divisor = knownDivisor(ptr_to_node(expr.child2))
     let mut checkZero = 1
     if (isNonzeroLiteral(divisor)) { checkZero = 0 }
     let mut guardMin = 1
@@ -4994,6 +4994,21 @@ private fn generateDivision(expr: ASTNode, opType: String, leftVal: String, righ
     let file = diag_file_path(expr.file)
     return ir_int_division(opType, leftVal, rightVal, rem, unsigned, checkZero, guardMin,
                            trapMin, file, expr.line)
+}
+
+// The literal a divisor is known to be: itself, or what a module's immutable `let` it
+// names was given. LLVM only learns the second once the whole program is optimized, and
+// by then a check emitted here has already shaped what it did with the loop around it.
+private fn knownDivisor(node: ASTNode) -> ASTNode {
+    if (node.kind != NodeKind.IDENTIFIER_EXPR or ir_var_is_global(node.s1) != 1) { return node }
+    let count = ir_decl_count(node.s1)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(node.s1, i))
+        if (decl.kind == NodeKind.VARIABLE_DECL and decl.i1 == 0 and nodeExists(decl.child2)) {
+            return ptr_to_node(decl.child2)
+        }
+    }
+    return node
 }
 
 // A written integer other than zero, `-1` included.

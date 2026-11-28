@@ -6,6 +6,7 @@
 // expect-trap: compound => runtime error: division by zero
 // expect-trap: constant => runtime error: division by zero
 // expect-trap: loop => runtime error: division by zero
+// expect-trap: mutable => runtime error: division by zero
 // A divisor that is zero when the program runs stops it, for `/` and `%`, signed and
 // unsigned, at every width. With no argument every divisor is nonzero and each case
 // answers its value.
@@ -14,6 +15,9 @@ import std.io
 import std.process
 
 const NOTHING: Int = 0
+// Immutable and not zero, so its divisions need no check; mutable, so its own do.
+let SEVEN: Int = 7
+let mut changing: Int = 7
 
 fn quotient(a: Int, b: Int) -> Int { return a / b }
 fn remainder(a: Int, b: Int) -> Int { return a % b }
@@ -33,6 +37,10 @@ fn main() -> Int {
         println(x)
     }
     if (name.equals("constant")) { println(7 / NOTHING) }
+    if (name.equals("mutable")) {
+        changing = process.args.count - 2
+        println(7 / changing)
+    }
     if (name.equals("loop")) {
         let mut sum = 0
         for i in 0..<10 { sum += 100 / (5 - i) }
@@ -44,6 +52,7 @@ fn main() -> Int {
         return 1
     }
     if (quotient(7, 2) != 3 or remainder(7, 2) != 1) { println("FAIL value") return 1 }
+    if (50 / SEVEN != 7 or 50 % SEVEN != 1 or 50 / changing != 7) { println("FAIL global divisor") return 1 }
     if ((7 as U64) / (2 as U64) != 3 or (7 as I8) % (2 as I8) != 1) { println("FAIL narrow value") return 1 }
     return 0
 }

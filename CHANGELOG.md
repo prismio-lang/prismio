@@ -320,8 +320,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   outside `0..<width` (`P4114`) are compile errors; in a generic instance only a negative literal amount is, so `x << 40`
   valid for `I64` still builds for `Int`. The PIR interpreter follows the same rules. Cost: a compare and branch for a
   divisor not proved nonzero, a compare and two selects for a signed divisor not proved clear of -1, and one `and` for a
-  run-time shift amount (folded into the instruction on 32 and 64 bits). No check for a literal divisor, for an unsigned
-  type beyond the zero one, or where the loop facts bound the divisor. `tests/test_409_integer_edges`,
+  run-time shift amount (folded into the instruction on 32 and 64 bits). No check for a literal divisor or a module's
+  immutable `let` of one, for an unsigned type beyond the zero one, or where the loop facts bound the divisor. Hosted
+  benchmarks, 73 workloads: median 0.999 of the compiler before (C++ and Rust controls 0.999); `binary_codec` was 7.1%
+  slower while its immutable-global modulus was still checked, and is level now. `flat_bitset` reads 6% slower with
+  identical instructions at a different address. `tests/test_409_integer_edges`,
   `test_410_divide_by_zero`, `neg_437`-`neg_439`.
 
 - **A program that names `F32` no longer compiles the `F16`, `BF16` and `F128` formatters, and `as F32` in the
