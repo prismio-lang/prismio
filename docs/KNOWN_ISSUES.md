@@ -465,6 +465,27 @@ through a null buffer and crashes, so a module that keeps one assigns `= []` bef
 
 ## PIR
 
+PIR generates no code in 0.3; what it offers and refuses is the developer docs' *PIR* page.
+
+### `--pir=plan` is opt-in because it costs too much to compile with
+
+On `src/main.psm`, with the plan against without: 8.8% more instructions, about 12% more wall time and 16% more peak memory
+(2026-11-28, median of 7). The default-on bar is 5%. Building PIR for the whole program, then rebuilding 1,375 functions in the
+"may answer a view" fixed point, is most of it: the plan reads a small part of what is built.
+
+### `--pir=plan` leaves most of what PIR sees die
+
+Of 4,472 values in the compiler that PIR would end and today's code does not release (2026-11-28), the analysis answers "counted as
+shared" for 3,014 and "held" for 1,219: another holder may exist, and PIR cannot disprove it while AST nodes are held by raw pointer.
+The plan releases none of the compiler's values. Also left: a local allocation (not a call's result) returned under another name,
+and a field read off a temporary or a temporary `Vec` literal on the right of `and`/`or`.
+
+### PIR refuses closures called as values, trait objects, tasks, regions and functions that take an address
+
+A refused function is skipped by `--pir=plan`, and a program that reaches one is `pir ineligible` under `--pir-run`.
+`--pir-coverage` names each. On 2026-11-28: 11 of 4,759 functions of the compiler (indirect calls) and 126 of 2,528 of the tests'
+own.
+
 ### The interpreter disagrees with the compiled program on `test_287_multi_statement_fill`
 
 `build tests/test_287_multi_statement_fill.psm --pir-run` exits 1 with

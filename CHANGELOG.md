@@ -9,7 +9,8 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
-- **PIR stage P3, first slice: drops on exit edges (`--pir=plan`, `docs/PIR_PLAN.md` §20.3).** Two shapes today's codegen leaks and PIR
+- **PIR stage P3, first slice: drops on exit edges (`--pir=plan`, `docs/PIR_PLAN.md` §20.3).** In 0.3 `--pir=plan` is an **opt-in,
+  experimental leak fix**: off by default because of what it costs to compile with (below). Two shapes today's codegen leaks and PIR
   can prove (`src/pir/drops.psm`). An owned temporary on the right of `and`/`or` that an element is read off, or whose callee may hand
   it back, is released at the end of that arm (`words(i)[0].length`: 300 of 601 blocks leaked, now 0). A binding some `return` carries
   out under another name (`let t = a; return t`) is released on every other path (`test_205`: 10 -> 0). Codegen releases only where it
@@ -18,7 +19,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   the probes move (`test_205`, `test_273`, `test_399`, `field_out_of_dying_struct`), taking them from 3,635 to 785 leaked blocks under
   `--verify`, 0 violations. `test_406` (910 -> 0) and `test_407` (386 -> 146, the shapes that must be declined) are in the `pir_plan`
   check. Building the compiler with the plan on costs 8.8% more instructions than with it off (10.5% before the view
-  fixed point rebuilt each caller once a round instead of once per view it calls: 1,775 -> 1,375 rebuilds, same PIR).
+  fixed point rebuilt each caller once a round instead of once per view it calls: 1,775 -> 1,375 rebuilds, same PIR), about 12%
+  more wall time and 16% more peak memory. `--pir-coverage`, measured again with references refused (`address of a place`): 4,748 of
+  4,759 functions of the compiler (the 11 are indirect calls), all 985 of `std`, 2,402 of 2,528 of the tests' own functions, 282 of 288
+  of the hosted benchmarks'.
 
 - **`&x`, `&mut x`, `*p` and `p[i]`: a pointer to a program's own variable** (`src/sema/references.psm`). `&x` is a `Ptr<T>` and
   `&mut x` a `Ptr<mut T>`, of a local, a global, a field, or an element of an array or `Vec`; `*p` is `p.load()`, `*p = v` and `*p += v`
