@@ -138,7 +138,9 @@ def check_ir(compiler, count, seed):
         plain_root = Path(tmp) / "plain"
         formatted_root = Path(tmp) / "formatted"
         for root in (plain_root, formatted_root):
-            shutil.copytree(ROOT / "tests", root / "tests", ignore=shutil.ignore_patterns("*.py", "__pycache__"))
+            shutil.copytree(ROOT / "tests", root / "tests",
+                        # `.prismio-*`: a concurrent build's temporaries, gone before they are copied.
+                        ignore=shutil.ignore_patterns("*.py", "__pycache__", ".prismio-*"))
         moved = False
         for source in (formatted_root / "tests").rglob("*.psm"):
             source.write_bytes(run_fmt(compiler, [str(source)]).stdout)

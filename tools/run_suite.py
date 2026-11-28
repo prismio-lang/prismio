@@ -1,123 +1,18 @@
 #!/usr/bin/env python3
-"""Run the compiler suite against a *copy* of the compiler.
+"""Run the compiler tests against a *copy* of the compiler: `prismio suite`.
 
-`prismio suite` runs this rather than `tests/test_runner.py` directly, and the
-copy is the whole point. Three fixtures make the difference:
+    python3 tools/run_suite.py [profile] [patterns] [--compiler PATH] [options]
 
-- the ums fixture deletes and rebuilds `.prismio/build/debug/prismio` to exercise
-  host routing, so a runner pointed at that path loses its compiler mid-run;
-- it also copies the compiler under test to a temporary launcher and expects it
-  to behave as the *global parent* in a stage-0 -> project-local promotion,
-  which the binary currently executing the command cannot also be; and
-- the object-cache and cold-build fixtures assert what a build recompiles, which
-  a compiler already running in this process tree perturbs.
-
-What is copied is the *toolchain*, not the binary: the compiler, the runtime
-bitcode beside it and the compiled standard modules, in the layout it resolves
-them from. A few megabytes once, and it removes all three interactions. Every
-argument is forwarded to the runner, so `prismio suite -k foo --list` works.
-
-    python tools/run_suite.py [--compiler PATH] [runner args...]
-
-`--compiler` defaults to the project host, falling back to the packaged
-toolchain. Exits with the runner's status.
+The engine is tools/testkit (docs/TEST_ORCHESTRATION_PLAN.md); this name stays because
+scripts, CI and the documentation call it. Every argument is forwarded, so
+`prismio suite -k foo --list` works, and the profile defaults to `dev`. The compiler defaults
+to the project host, falling back to the packaged toolchain, and what is tested is always a
+copy of its toolchain (testkit/toolchain.py says why). Exits with the run's status.
 """
-import argparse
-import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-from executable import resolve_executable
-
-REPO = Path(__file__).resolve().parent.parent
-# The project host first, because it is the compiler the working tree just built.
-DEFAULT_CANDIDATES = (
-    REPO / ".prismio" / "build" / "debug" / ("prismio.exe" if os.name == "nt" else "prismio"),
-    REPO / "dist" / "Prismio" / "bin" / ("prismio.exe" if os.name == "nt" else "prismio"),
-)
-
-
-def shown_root(path: Path):
-    try:
-        return path.relative_to(REPO)
-    except ValueError:
-        return path
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--compiler", help="compiler to copy and test")
-    args, forwarded = parser.parse_known_args()
-
-    if args.compiler:
-        # Resolved, because the banner below reports the path relative to the
-        # repository and a relative --compiler raised ValueError there rather
-        # than running anything.
-        source = resolve_executable(args.compiler)
-        if not source.is_file():
-            print(f"run_suite: --compiler is not a file: {source}")
-            return 1
-    else:
-        source = next((c for c in DEFAULT_CANDIDATES if c.is_file()), None)
-        if source is None:
-            names = ", ".join(str(c.relative_to(REPO)) for c in DEFAULT_CANDIDATES)
-            print(f"run_suite: no compiler found. Looked for: {names}")
-            print("Build one with `prismio build`.")
-            return 1
-
-    with tempfile.TemporaryDirectory(prefix="prismio-suite-") as tmp:
-        # **A compiler is a layout, not a file.** It finds runtime bitcode at
-        # `<exe>/../lib/runtime` and compiled standard modules at
-        # `<exe>/../stdlib`, so a lone copy of one builds nothing at all -- it
-        # reports "Missing runtime module" for a toolchain the developer never
-        # installed. Both candidates above sit in such a layout: `dist/Prismio`
-        # is one because packaging made it, and `.prismio/build` is one because
-        # `prismio build` now leaves the runtime and standard library beside the
-        # host it built. So the copy reproduces the shape rather than the file.
-        #
-        # Named `suite-compiler` and not `prismio`, because a binary called
-        # `prismio` redirects to build.ums's project host -- which silently
-        # tested an older compiler than `--compiler` named. The UMS fixture makes
-        # its own `prismio` launcher when it is specifically testing routing.
-        prefix = Path(tmp)
-        copy = prefix / "bin" / ("suite-compiler.exe" if sys.platform == "win32" else "suite-compiler")
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, copy)
-        copy.chmod(0o755)
-
-        # The language server is launched from beside the compiler (`prismio lsp`), so a copy of
-        # the compiler without it cannot run it.
-        server = source.parent / ("prismio-lsp.exe" if sys.platform == "win32" else "prismio-lsp")
-        if server.is_file():
-            shutil.copy2(server, copy.parent / server.name)
-
-        toolchain = source.parent.parent
-        missing = [str(d) for d in ("lib", "stdlib")
-                   if not (toolchain / d).is_dir()]
-        if missing:
-            print(f"run_suite: {shown_root(source)} is not in a toolchain layout; "
-                  f"no {', '.join(missing)} beside it.")
-            print("Build one with `prismio build`, or package one with tools/package.py.")
-            return 1
-        for directory in ("lib", "stdlib", "third_party"):
-            if (toolchain / directory).is_dir():
-                shutil.copytree(toolchain / directory, prefix / directory)
-
-        print(f"suite: testing a copy of {shown_root(source)}")
-        result = subprocess.run(
-            # -X utf8: the compiler and every program under test write UTF-8, and
-            # on Windows Python otherwise reads and writes with the ANSI code page,
-            # so a diagnostic with a combining mark read as "no diagnostic" and a
-            # test that wrote U+017F crashed the harness.
-            [sys.executable, "-X", "utf8", "-u", str(REPO / "tests" / "test_runner.py"),
-             "--compiler", str(copy), *forwarded],
-            cwd=str(REPO),
-        )
-        return result.returncode
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    engine = Path(__file__).resolve().parent / "testkit"
+    sys.exit(subprocess.call([sys.executable, "-X", "utf8", "-u", str(engine), *sys.argv[1:]]))

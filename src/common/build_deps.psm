@@ -1,0 +1,29 @@
+// `--emit-deps=<file>`: every file the compiler read to build a program, one line each, appended
+// as it is read so that a build that stops at a diagnostic still names what it had read.
+//
+//     source <path>    a source file read as text (an overlay's real file is named too)
+//     plib <path>      a compiled library module
+//     dir <path>       a directory whose modules were listed: a file added to it changes the answer
+//     absent <path>    a file or directory looked for and not found: creating it changes the answer
+//
+// The test orchestrator keys a cached result on these (docs/TEST_ORCHESTRATION_PLAN.md, K1).
+
+import std.collections.vec
+import std.fs
+import std.string
+
+private let mut depsFile: Vec<String>
+private let mut depsOpened = false
+
+public fn depsStart(path: String) {
+    depsFile = []
+    depsFile.push(path.clone())
+    depsOpened = true
+    writeFile(path, "")
+}
+
+// `kind` is one of the four above; nothing happens unless the flag was given.
+public fn depsNote(kind: String, path: String) {
+    if (depsOpened == false) { return }
+    appendFile(depsFile[0], kind.concat(" ", path, "\n"))
+}

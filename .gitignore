@@ -37,7 +37,8 @@ Thumbs.db
 # Build output (bootstrap generations and their intermediates)
 build/
 
-# Project-local UMS build state and artifacts.
+# Project-local UMS build state and artifacts, the test engine's results store
+# (.prismio/test-cache/results.sqlite) and its toolchain copies among them.
 .prismio/
 
 # Build temporaries the compiler writes beside the source it is compiling:
@@ -101,13 +102,12 @@ tests/*/*
 # The package and sealing fixtures nest further (tests/sealed/pkg/_hidden/).
 !tests/sealed/**/
 !tests/sealed/**/*.psm
+# The harness tests, one module per suite (tools/testkit), and a fixture's `expect-output`.
+!tests/harness/*.py
+!tests/*.out
 # The C half of run_produce_deallocator_test's fixture: a library with its own deallocator.
 !tests/produce_deallocators/*.c
 
-# ...except this one, which is generated: run_workload_test writes it from
-# workload_static.psm with the `workload` block stripped, as the control the
-# measured build is compared against.
-tests/workload_static_control.psm
 scratch/
 docs/porting/decode_example
 

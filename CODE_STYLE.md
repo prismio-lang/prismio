@@ -207,8 +207,7 @@ python3 tools/bootstrap.py -Compiler build/g1.exe -Out build/g2.exe
 Then:
 
 ```bash
-cd tests
-python test_runner.py
+prismio suite full
 ```
 
 and:

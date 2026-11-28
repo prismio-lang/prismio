@@ -20,6 +20,7 @@ from std.core import {option}
 from ast import {nodes, dump}
 import common.native
 import common.diag_codes
+import common.build_deps
 
 // The compiler's version is `project.version` in build.ums, read through
 // `import build`: bumped there per release, and nowhere else. The LLVM major version
@@ -106,6 +107,9 @@ let USAGE_DEVELOPER =
       prismio aif <source.psm> --why=<ID|symbol>   explain one allocation decision
       prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate
       prismio build <source.psm> --verify | --debug
+      prismio build <source.psm> [--emit-deps=<file>] [--emit-link-key=<file>]
+                                   write every source and .plib read, or a hash of everything
+                                   handed to the linker (the test orchestrator's cache keys)
 
       prismio build <source.psm> [--emit-pir[=<file>]] [--pir-coverage] [--pir-run] [--pir=plan]
 
@@ -789,6 +793,20 @@ fn main() -> Int {
             if (options.emitPir.equals("")) {
                 diag_error_code(DIAG_CLI_EMIT_PIR_NEEDS_PATH, "`--emit-pir=` takes a file to write")
                 return 1
+            }
+            argIndex = argIndex + 1
+        } else if (arg.startsWith("--emit-deps=") or arg.startsWith("--emit-link-key=")) {
+            let equals = arg.indexOf("=")
+            let flag = arg.substring(0, equals)
+            let file = arg.substring(equals + 1, arg.length - equals - 1)
+            if (file.equals("")) {
+                diag_error_code(DIAG_CLI_EMIT_FILE_NEEDS_PATH, "`".concat(flag, "=` takes a file to write"))
+                return 1
+            }
+            if (flag.equals("--emit-deps")) {
+                depsStart(file)
+            } else {
+                compiler_set_link_key(file)
             }
             argIndex = argIndex + 1
         } else if (arg.equals("--pir-coverage")) {

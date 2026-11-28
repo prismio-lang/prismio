@@ -42,6 +42,8 @@ public extern fn compiler_native_flag(flag: String borrow) -> Int
 // runtime/prismio_runtime.h for what the token means and when it moves.
 public extern fn compiler_host_abi() -> String alias
 public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
+// `--emit-link-key=<file>`: the next link writes a hash of everything it hands the linker.
+public extern fn compiler_set_link_key(path: String borrow)
 public extern fn compiler_installed_runtime_hash() -> String produce(rt_free)
 // Starts a program with the arguments queued by compiler_spawn_arg, as an
 // argument vector -- never a shell line -- in `directory` ("" keeps this

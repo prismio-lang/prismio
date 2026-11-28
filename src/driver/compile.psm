@@ -30,6 +30,7 @@ import pir.run
 import pir.plan
 import common.native
 import common.diag_codes
+import common.build_deps
 import common.library_emission
 import ast.lang_marks
 import common.prelude_needs
@@ -379,6 +380,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
         outFile = compiler_temp_ir_path(path)
     }
 
+    depsNote("source", path)
     let content = readFile(path)
     if (content.equals("") and fileExists(path) == false) {
         diag_error_code(DIAG_DRIVER_SOURCE_UNREADABLE, "cannot read ".concat(path))

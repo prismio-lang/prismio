@@ -30,6 +30,7 @@ import std.fs
 import std.platform
 import common.native
 import common.diag_codes
+import common.build_deps
 import common.lang_items
 import ast.lang_marks
 import ast.module_header
@@ -130,16 +131,37 @@ public fn sourceOverlayRead(path: String) -> Bool {
 
 public fn readSource(path: String) -> String {
     overlaysOpen()
+    depsNote("source", path)
     if (overlayPaths.length > 0) {
         let absolute = overlayKey(path)
         for i in 0..<overlayPaths.length {
             if (overlayPaths[i].equals(absolute)) {
                 overlayReads[i] = true
+                depsNote("source", overlayFiles[i])
                 return readFile(overlayFiles[i])
             }
         }
     }
     return readFile(path)
+}
+
+// Every question the resolver asks the file system, noted for `--emit-deps`: an answer of "no"
+// is an input too, since the file that would change it can appear later.
+private fn probeFile(path: String) -> Bool {
+    let found = fileExists(path)
+    if (found == false) { depsNote("absent", path) }
+    return found
+}
+
+private fn probeDirectory(path: String) -> Bool {
+    let found = directoryExists(path)
+    if (found == false) { depsNote("absent", path) }
+    return found
+}
+
+private fn modulesIn(directory: String) -> Vec<String> {
+    depsNote("dir", directory)
+    return listModules(directory)
 }
 
 // Two same-named top-level declarations of the same kind are duplicates, with one
@@ -354,14 +376,14 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // The record goes in before the memo check below, not after. A module is
     // merged once however many files import it, so a second file selecting from
     // an already-merged module would otherwise take everything.
-    if (fileExists(importPath) == false) {
+    if (probeFile(importPath) == false) {
         // A directory with no file of its name is its modules: `import std.io` reads `std/io/*`
         // when there is no `std/io.psm`, exactly as `import std.io.*` does. A file and a
         // directory of one name coexist, and then the name means the file alone.
         let directory = resolvePackageDirectory(baseDir, moduleName)
-        if (listModules(directory).length > 0) {
+        if (modulesIn(directory).length > 0) {
             if (packageIsLazy(site, moduleName)) {
-                return mergeLibraryPackage(merged, site, moduleName, listModules(directory), "".clone(), baseDir, visited)
+                return mergeLibraryPackage(merged, site, moduleName, modulesIn(directory), "".clone(), baseDir, visited)
             }
             return mergePackageDirectory(merged, site, moduleName, directory, baseDir, visited)
         }
@@ -369,13 +391,13 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
         if (cut > 0) {
             let parent = moduleName.substring(0, cut)
             let selected = moduleName.substring(cut + 1, moduleName.length - cut - 1)
-            if (parent.equals("build") or fileExists(resolveImportPath(baseDir, parent))) {
+            if (parent.equals("build") or probeFile(resolveImportPath(baseDir, parent))) {
                 if (parent.equals("build") == false) { selectionRecord(site, parent, selected) }
                 ir_import_record(site.file, parent)
                 ir_select_record(site.file, parent, selected)
                 return mergeNamedModule(merged, site, parent, baseDir, visited)
             }
-            let members = listModules(resolvePackageDirectory(baseDir, parent))
+            let members = modulesIn(resolvePackageDirectory(baseDir, parent))
             if (members.length > 0) {
                 selectionRecord(site, parent, selected)
                 if (packageIsLazy(site, parent)) {
@@ -396,6 +418,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
 
     let mut content = ""
     if (importPath.endsWith(".plib")) {
+        depsNote("plib", importPath)
         // A freestanding program for a triple the library was not packaged for compiles the module
         // from the source the PLIB carries, with the program, as a source library does.
         if (compiler_is_freestanding() == 1 and compiler_plib_covers_target(importPath, moduleName) == 0) {
@@ -420,7 +443,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     } else {
         content = readSource(importPath)
     }
-    if (content.equals("") and fileExists(importPath) == false) {
+    if (content.equals("") and probeFile(importPath) == false) {
         diag_error_at_code(DIAG_DRIVER_IMPORT_UNREADABLE, site.file, site.line, site.col, site.len,
             "cannot read imported module ".concat(diagQuote(moduleName),
                                                   ": no such file ",
@@ -469,8 +492,8 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
     if (visited.contains(key)) { return visited }
     let seen = visited.concat(key)
 
-    if (fileExists(joinImportPath(baseDir, "build")) or
-        listModules(joinImportDir(baseDir, "build")).length > 0) {
+    if (probeFile(joinImportPath(baseDir, "build")) or
+        modulesIn(joinImportDir(baseDir, "build")).length > 0) {
         diag_error_at_code(DIAG_DRIVER_BUILD_MODULE_RESERVED, site.file, site.line, site.col, site.len,
             "`build` is reserved for the values in build.ums, and this project has a module of that name")
         diag_note("rename that module: `import build` always means the manifest")
@@ -508,7 +531,7 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
 private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
                         visited: String) -> String {
     let directory = resolvePackageDirectory(baseDir, site.s1)
-    let members = listModules(directory)
+    let members = modulesIn(directory)
     if (members.length > 0 and packageIsLazy(site, site.s1)) {
         return mergeLibraryPackage(merged, site, site.s1, members, "".clone(), baseDir, visited)
     }
@@ -592,7 +615,7 @@ private fn mergeCompanions(merged: ASTNode, baseDir: String, visited: String) ->
     let narrow = preludeWideNumberWritten()
     for i in 0..<packageSites.length {
         let site = ptr_to_node(packageSites[i])
-        for name in listModules(resolvePackageDirectory(baseDir, packageNames[i])) {
+        for name in modulesIn(resolvePackageDirectory(baseDir, packageNames[i])) {
             let qualified = packageNames[i].concat(".", name)
             // The trait's name is read from what the part imports, which is where it is declared.
             let mut shows = false
@@ -632,7 +655,7 @@ private fn refusePartImport(stmt: ASTNode) -> Bool {
 // `std/io/` does is this too, since a directory with no file of its name *is* its modules.
 private fn mergePackageDirectory(merged: ASTNode, site: ASTNode, packageName: String, dirPath: String,
                         baseDir: String, visited: String) -> String {
-    let modules = listModules(dirPath)
+    let modules = modulesIn(dirPath)
 
     if (modules.length == 0) {
         diag_error_at_code(DIAG_DRIVER_PACKAGE_HAS_NO_MODULES, site.file, site.line, site.col, site.len,
@@ -733,9 +756,9 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
     }
 
     if (stmt.s1.equals("build") == false and
-        fileExists(resolveImportPath(baseDir, stmt.s1)) == false and
+        probeFile(resolveImportPath(baseDir, stmt.s1)) == false and
         (stmt.s1.startsWith("std.") == false or
-            listModules(resolvePackageDirectory(baseDir, stmt.s1)).length == 0)) {
+            modulesIn(resolvePackageDirectory(baseDir, stmt.s1)).length == 0)) {
         diag_error_at_code(DIAG_DRIVER_IMPORT_ALIAS_NOT_A_MODULE, stmt.file, stmt.line, stmt.col, stmt.len,
             "`as` names a module, and ".concat(diagQuote(stmt.s1), " is not one"))
         diag_note("a selective import names one declaration inside a module; drop the `as`, or alias the module it comes from")
@@ -751,7 +774,7 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
     // answer does not depend on which import the merge reached first. Rejecting a
     // name the file could have imported and did not is the conservative half of
     // that trade, and the fix is to pick another name.
-    if (fileExists(resolveImportPath(baseDir, stmt.s2))) {
+    if (probeFile(resolveImportPath(baseDir, stmt.s2))) {
         diag_error_at_code(DIAG_DRIVER_IMPORT_ALIAS_IS_A_MODULE, stmt.file, stmt.line, stmt.col, stmt.len,
             diagQuote(stmt.s2).concat(" is already the name of a module, so it cannot also be an alias"))
         diag_note("`".concat(stmt.s2, ".f(x)` would have two meanings here; choose a name no module in this project has"))
@@ -826,10 +849,10 @@ private fn refuseImportTier(site: ASTNode, moduleName: String, flags: Int, fromL
 // Answers whether it refused, like refuseImportTier.
 private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
     if (stmt.i2 != 1) { return false }
-    if (fileExists(resolveImportPath(baseDir, stmt.s1))) { return false }
+    if (probeFile(resolveImportPath(baseDir, stmt.s1))) { return false }
     let cut = stmt.s1.lastIndexOf(".")
     let directory = stmt.s1.substring(0, cut)
-    if (fileExists(resolveImportPath(baseDir, directory)) == false) { return false }
+    if (probeFile(resolveImportPath(baseDir, directory)) == false) { return false }
     diag_error_at_code(DIAG_DRIVER_IMPORT_GROUP_NAMES_DECLARATION, stmt.file, stmt.line, stmt.col, stmt.len,
         "an import group names modules, and ".concat(diagQuote(stmt.s1), " is a declaration inside ",
                                                      diagQuote(directory)))
@@ -980,9 +1003,9 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
 public fn libraryRoot() -> String {
     let beside = executableDirectory()
     let installed = joinPath(directoryOf(beside), "stdlib")
-    if (directoryExists(installed)) { return installed }
+    if (probeDirectory(installed)) { return installed }
     let local = joinPath(beside, "stdlib")
-    if (directoryExists(local)) { return local }
+    if (probeDirectory(local)) { return local }
     return "".clone()
 }
 
@@ -1063,8 +1086,8 @@ private fn standardCandidate(library: String, relative: String, suffix: String) 
 }
 
 private fn standardExists(path: String, directory: Bool) -> Bool {
-    if (directory) { return directoryExists(path) }
-    return fileExists(path)
+    if (directory) { return probeDirectory(path) }
+    return probeFile(path)
 }
 
 // The directory a package import reads: the library's for `std`, the project's beside the entry

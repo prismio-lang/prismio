@@ -261,7 +261,7 @@ WebAssembly triples; WebAssembly IR can be emitted but has no runtime yet. See
 | [`runtime/`](runtime/) | The C runtime, and the LLVM C API backend the compiler calls through `src/ir/bridge.psm` |
 | [`ums/`](ums/README.md) | UMS, the build manifest and its resolver |
 | [`docs/aif/`](docs/aif/README.md) | The memory model's specification and design record |
-| [`tests/`](tests/) | The compiler suite, `tests/test_runner.py` |
+| [`tests/`](tests/) | The compiler suite: `.psm` fixtures and `harness/`, run by `prismio suite` |
 | [`benchmarks/`](benchmarks/README.md) | Prismio, C++ and Rust versions of each workload |
 | [`bootstrap/`](bootstrap/) | The seed (`seed.ll`) a machine with no Prismio builds its first compiler from |
 | [`tools/`](tools/) | Bootstrap, packaging, release gate, lint, LLVM setup, and the AIF oracle (`aif_oracle/`) |

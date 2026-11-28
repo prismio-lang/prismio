@@ -182,7 +182,7 @@ a different executable to run the checks (tests, or an editor that wants another
 checking). Exit status follows the protocol: 0 after `shutdown` and `exit`, 1 otherwise. It keeps
 no document text in memory (each open document's text lives in a scratch file, which is also the
 overlay the compiler reads), so its memory stays flat however long it runs and however large the
-file; `tests/test_runner.py` (`lsp`) holds it to that.
+file; `tests/harness/tooling.py` (`lsp`) holds it to that.
 
 **Writing a client.** The test client `tests/lsp_client.py` is a complete example of the wire
 format. A client needs: spawn `prismio lsp`, `initialize` / `initialized`, `didOpen` for each open

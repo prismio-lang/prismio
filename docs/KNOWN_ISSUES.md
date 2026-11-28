@@ -442,6 +442,18 @@ through a null buffer and crashes, so a module that keeps one assigns `= []` bef
 
 ---
 
+## PIR
+
+### The interpreter disagrees with the compiled program on `test_287_multi_statement_fill`
+
+`build tests/test_287_multi_statement_fill.psm --pir-run` exits 1 with
+`FAIL: growth was not prepared`; the compiled program passes. Reproduced 2026-11-28 with the
+compiler at `1eee4fe`. The fixture's `growth` asks about the capacity a loop prepared ahead of its
+pushes, so the likely cause is that the interpreter does not model the preparation; not
+investigated. `tools/pir_differential.py` reports it as the one mismatch of 316 eligible
+programs, and the `verify`/`gate` check carries it in `PIR_KNOWN` (`tools/testkit/checks.py`),
+which fails on any other disagreement and on this one going away.
+
 ## Codegen and performance
 
 ### The module has no data layout while its IR is built, so `i64` is aligned to 4
@@ -1026,13 +1038,6 @@ steps: teach the frontend, cut a seed (`prismio seed`), have the maintainer comm
 is feasible (the archive has native `LLVM*.lib` and `llvm-config.exe`) but built `/MT`, so the
 Windows compiler would change C runtime too; not started (`docs/LLVM_BRIDGE_PLAN.md`, step 2).
 
-**`prismio suite` cannot run the ums host-routing fixture.** That fixture deletes and re-promotes
-the project host to exercise stage-0 -> project-local promotion, and the `prismio` process running
-the command is using that file. `python3 tools/run_suite.py` tests a *copy* of the compiler, which
-fixed the other three fixtures with the same shape, and is the release gate; this one needs the
-outer process not to be the compiler at all (`build.ums` carries the same note above its `suite`
-command).
-
 **Linking needs the platform's C toolchain**: `cc` on macOS and Linux, MSVC's `link.exe` with the
 Windows SDK on Windows (`PRISMIO_CC` overrides both). It is where the C library and the SDK come
 from, so shipping a linker would not remove it. **Embedding LLD was tried and stopped
@@ -1066,7 +1071,7 @@ null for it answered correctly out of tree; that is one probe, not an argument.
 **A bare `tools/bootstrap.py` generation in `../build` is not a complete compiler.** A compiler is a
 layout (`bin/`, `lib/runtime/*.bc`, `stdlib/**/*.plib`), not a file, and a generation builds the
 compiler and a copy of `std/` as source, with no runtime bitcode. `prismio build` leaves the full toolchain beside the project host;
-point `tests/test_runner.py --compiler` at that, or at a packaged `dist`, or package the generation
+point `python3 tools/run_suite.py --compiler` at that, or at a packaged `dist`, or package the generation
 first.
 
 **Which library modules a program reads is decided from its tokens** (`src/common/prelude_needs.psm`),

@@ -12,7 +12,7 @@ clang against the runtime *sources* with -fsanitize=address, which also leaves t
 allocator out of the runtime. The packaged archives are compiled without the sanitizer,
 so linking them would report nothing.
 
-Without paths it runs the fixtures below and `tests/test_runner.py`'s ownership probes,
+Without paths it runs the fixtures below and `tests/harness/aif.py`'s ownership probes,
 each of which must exit 0. A path (a file, or a directory of `.psm` files) adds programs
 that are only checked for a sanitizer report or a signal. `--build-flag` passes a flag to every
 build (`--build-flag=--pir=plan`).
@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
 
 sys.path.insert(0, str(REPO / "tests"))
-from test_runner import OWNERSHIP_PROBES  # noqa: E402
+from harness.aif import OWNERSHIP_PROBES  # noqa: E402
 
 # Recursive release and channels must also be leak-free. The provenance fixture
 # intentionally retains unbound temporaries (documented in the fixture), so its

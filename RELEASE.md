@@ -65,11 +65,11 @@ the corpus built and run, the `--verify` sweep, the JIT, the cross target, and
 packaging with toolchain separation. Every check must be green.
 
 Record the run in the release commit's message; it carries its own evidence.
-`prismio verify` is the cheaper subset for the fast loop. Two fixtures cannot be
-trusted through the `prismio` command itself, because they replace the compiler
-the command is running on: the suite's ums host-routing test reports one failure
-there that `python3 tools/run_suite.py` does not, so use the direct form as the
-final word.
+`prismio verify` is the cheaper subset for the fast loop. Both are profiles of the
+test engine (`tools/testkit/profiles.py`), and neither takes anything from its result
+cache. `python3 tools/testkit release` adds the checks only some machines can run (the
+Linux sanitizer smoke, the benchmark smoke, the documentation examples of
+`../website`) and reminds you of the CI matrix.
 
 ## 2 · The three-platform matrix — **needs authorisation**
 

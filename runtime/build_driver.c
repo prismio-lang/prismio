@@ -32,6 +32,8 @@ void diag_progress_clear(void);
 #ifndef _WIN32
 #include <ftw.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #endif
 
 // Every libc `free`/`realloc` in this file is spelled `tmp_free`/`tmp_realloc` (prismio_runtime.h),
@@ -222,12 +224,6 @@ char* compiler_temp_ir_path(const char* source_path) {
     char suffix[32];
     snprintf(suffix, sizeof(suffix), "%d.ll", PRISMIO_GETPID());
     return compiler_temp_path(source_path, suffix);
-}
-
-static char* compiler_temp_obj_path(const char* exe_file, const char* role) {
-    char suffix[96];
-    snprintf(suffix, sizeof(suffix), "%s-%d.obj", role, PRISMIO_GETPID());
-    return compiler_temp_path(exe_file, suffix);
 }
 
 static int ensure_directory_exists(const char* directory) {
@@ -936,6 +932,60 @@ static unsigned long long fnv1a_raw(unsigned long long hash,
         hash *= PRISMIO_FNV_PRIME;
     }
     return hash;
+}
+
+// Whether this process may name its objects for `exe_file` without its pid in them.
+//
+// **A link records where its inputs were**: with debug info a Mach-O executable names every
+// object by path, so a pid in the name made two builds of one program differ. The name is
+// therefore fixed -- and only one process may hold it for one output at a time. The lock is
+// released when the process ends, so a killed build leaves nothing to clean up; a second
+// build of the same output at the same moment keeps the pid-qualified names it had before.
+static int claim_object_names(const char* exe_file) {
+#ifdef _WIN32
+    // link.exe is passed /Brepro and records no object name in the image.
+    (void)exe_file;
+    return 0;
+#else
+    static unsigned long long held_key = 0;
+    static int held = -1;
+
+    char cwd[4096];
+    unsigned long long key = PRISMIO_FNV_OFFSET;
+    if (exe_file[0] != '/' && getcwd(cwd, sizeof(cwd))) {
+        key = fnv1a_bytes(key, (const unsigned char*)cwd);
+        key = fnv1a_bytes(key, (const unsigned char*)"/");
+    }
+    key = fnv1a_bytes(key, (const unsigned char*)exe_file);
+    if (held >= 0 && held_key == key) return 1;
+
+    // Not under TMPDIR: two builds with different TMPDIRs must still see each other.
+    char directory[64];
+    snprintf(directory, sizeof(directory), "/tmp/prismio-locks-%lu", (unsigned long)getuid());
+    PRISMIO_MKDIR(directory);
+    char path[128];
+    snprintf(path, sizeof(path), "%s/%016llx.lock", directory, key);
+    int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd < 0) return 0;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        return 0;
+    }
+    if (held >= 0) close(held);
+    held = fd;
+    held_key = key;
+    return 1;
+#endif
+}
+
+static char* compiler_temp_obj_path(const char* exe_file, const char* role) {
+    char suffix[96];
+    if (claim_object_names(exe_file)) {
+        snprintf(suffix, sizeof(suffix), "%s.obj", role);
+    } else {
+        snprintf(suffix, sizeof(suffix), "%s-%d.obj", role, PRISMIO_GETPID());
+    }
+    return compiler_temp_path(exe_file, suffix);
 }
 
 // Hash of the sources that make up the runtime bitcode modules, in table order. Returns a malloc'd
@@ -2185,10 +2235,33 @@ static int target_splits_libc(void) {
 // The runtime has already been linked into the program's LLVM module before
 // optimisation. The native link therefore receives one program object plus any
 // explicit UMS inputs; there is no opaque runtime archive at this boundary.
+// A list of strings: a linker line being cached, and the libraries a link key looks up.
+typedef struct {
+    char** items;
+    int count;
+    int cap;
+} LinkArgs;
+
+static void link_args_push(LinkArgs* args, const char* text, size_t len) {
+    if (args->count == args->cap) {
+        args->cap = args->cap ? args->cap * 2 : 32;
+        args->items = (char**)tmp_realloc(args->items, (size_t)args->cap * sizeof(char*));
+    }
+    char* copy = (char*)malloc(len + 1);
+    memcpy(copy, text, len);
+    copy[len] = '\0';
+    args->items[args->count++] = copy;
+}
+
+static void link_args_free(LinkArgs* args) {
+    free_string_list(&args->items, &args->count, &args->cap);
+}
+
+static int host_identity(const char* path, char* out, size_t size);
+
 #ifndef _WIN32
 static int spawn_and_wait(const char* program, char** arguments, int count,
                           const char* directory, int quiet);
-static int host_identity(const char* path, char* out, size_t size);
 
 // The link without the two processes in front of it.
 //
@@ -2210,27 +2283,6 @@ static int host_identity(const char* path, char* out, size_t size);
 // failure here, takes the driver path, which is also the one that reports errors.
 #define LINK_OBJECT_MARK "<prismio-link-object>"
 #define LINK_OUTPUT_MARK "<prismio-link-output>"
-
-typedef struct {
-    char** items;
-    int count;
-    int cap;
-} LinkArgs;
-
-static void link_args_push(LinkArgs* args, const char* text, size_t len) {
-    if (args->count == args->cap) {
-        args->cap = args->cap ? args->cap * 2 : 32;
-        args->items = (char**)tmp_realloc(args->items, (size_t)args->cap * sizeof(char*));
-    }
-    char* copy = (char*)malloc(len + 1);
-    memcpy(copy, text, len);
-    copy[len] = '\0';
-    args->items[args->count++] = copy;
-}
-
-static void link_args_free(LinkArgs* args) {
-    free_string_list(&args->items, &args->count, &args->cap);
-}
 
 // The last command a `-###` run printed, which for a link is `ld`'s: clang writes
 // each one on a line of its own, indented by a space, every argument quoted with
@@ -2511,7 +2563,202 @@ static char* driver_link_command(const char* program_obj, const char* exe_file) 
     return command;
 }
 
+// `--emit-link-key=<file>`: one hash over everything this build hands the linker, so that two
+// builds with equal keys link the same program (docs/TEST_ORCHESTRATION_PLAN.md, K3).
+static char* g_link_key_path = NULL;
+
+void compiler_set_link_key(const char* path) {
+    tmp_free(g_link_key_path);
+    g_link_key_path = NULL;
+    if (!path || !path[0]) return;
+    size_t n = strlen(path) + 1;
+    g_link_key_path = (char*)malloc(n);
+    if (g_link_key_path) memcpy(g_link_key_path, path, n);
+}
+
+typedef struct {
+    unsigned long long hash;
+    const char* program_obj;
+    const char* exe_file;
+    LinkArgs search;
+    LinkArgs libraries;
+} LinkKey;
+
+static void link_key_text(LinkKey* key, const char* text) {
+    // With the terminator, so that two tokens are not one token spelled differently.
+    key->hash = fnv1a_raw(key->hash, (const unsigned char*)text, strlen(text) + 1);
+}
+
+// The bytes of a regular file; 0 when `path` is not one.
+static int link_key_file(LinkKey* key, const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0 || (st.st_mode & S_IFMT) != S_IFREG) return 0;
+    FILE* file = fopen(path, "rb");
+    if (!file) return 0;
+    unsigned char buffer[16384];
+    size_t got;
+    unsigned long long size = 0;
+    while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        key->hash = fnv1a_raw(key->hash, buffer, got);
+        size += got;
+    }
+    fclose(file);
+    char length[32];
+    snprintf(length, sizeof(length), "%llu", size);
+    link_key_text(key, length);
+    return 1;
+}
+
+static void link_key_line(LinkKey* key, const char* line, int depth);
+
+// One word of the link: its text, or -- where it names a file -- the file's bytes, since a
+// temporary's path is not part of what is linked.
+static void link_key_word(LinkKey* key, const char* word, int depth) {
+    if (strcmp(word, key->exe_file) == 0) {
+        link_key_text(key, "<output>");
+        return;
+    }
+    if (strcmp(word, key->program_obj) == 0) {
+        link_key_text(key, "<object>");
+        link_key_file(key, word);
+        return;
+    }
+    for (int p = 1; p <= g_link_partitions; p++) {
+        char path[1200];
+        ir_partition_object_path(key->program_obj, p, path, sizeof(path));
+        if (strcmp(word, path) == 0) {
+            link_key_text(key, "<partition>");
+            link_key_file(key, word);
+            return;
+        }
+    }
+    if (word[0] == '@' && depth == 0) {
+        char* text = read_file(word + 1);
+        if (text) {
+            link_key_text(key, "<response>");
+            link_key_line(key, text, 1);
+            rt_free(text);
+            return;
+        }
+    }
+    if (strncmp(word, "-Wl,", 4) == 0) {
+        link_key_text(key, "-Wl");
+        char* copy = (char*)malloc(strlen(word + 4) + 1);
+        if (!copy) return;
+        strcpy(copy, word + 4);
+        char* part = copy;
+        while (part) {
+            char* comma = strchr(part, ',');
+            if (comma) *comma = '\0';
+            link_key_word(key, part, depth);
+            part = comma ? comma + 1 : NULL;
+        }
+        tmp_free(copy);
+        return;
+    }
+    if (word[0] == '-' && word[1] == 'L' && word[2]) link_args_push(&key->search, word + 2, strlen(word + 2));
+    if (word[0] == '-' && word[1] == 'l' && word[2]) link_args_push(&key->libraries, word + 2, strlen(word + 2));
+    if (word[0] != '-' && link_key_file(key, word)) return;
+    link_key_text(key, word);
+    // A directory the link searches or builds against (an SDK): its own identity.
+    char identity[160];
+    struct stat st;
+    if (stat(word, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR
+            && host_identity(word, identity, sizeof(identity))) {
+        link_key_text(key, identity);
+    }
+}
+
+// Splits a command line the way command_quote_arg wrote it.
+static void link_key_line(LinkKey* key, const char* line, int depth) {
+    char* word = (char*)malloc(strlen(line) + 1);
+    if (!word) return;
+    const char* p = line;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (!*p) break;
+        size_t n = 0;
+        char quote = 0;
+        for (; *p && (quote || (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')); p++) {
+            if ((*p == '"' || *p == '\'') && (!quote || quote == *p)) {
+                quote = quote ? 0 : *p;
+                continue;
+            }
+#ifdef _WIN32
+            if (*p == '\\' && p[1] == '"') p++;
+#else
+            if (*p == '\\' && quote != '\'' && p[1]) p++;
+#endif
+            word[n++] = *p;
+        }
+        word[n] = '\0';
+        link_key_word(key, word, depth);
+    }
+    tmp_free(word);
+}
+
+// The linker itself: the driver the command starts, and what selects the toolchain behind it.
+static void link_key_linker(LinkKey* key, const char* driver) {
+    char identity[160];
+    if (host_identity(driver, identity, sizeof(identity))) link_key_text(key, identity);
+#ifndef _WIN32
+    const char* search = getenv("PATH");
+    while (!strchr(driver, '/') && search && *search) {
+        const char* end = strchr(search, ':');
+        size_t length = end ? (size_t)(end - search) : strlen(search);
+        char candidate[4096];
+        snprintf(candidate, sizeof(candidate), "%.*s/%s", (int)length, search, driver);
+        if (access(candidate, X_OK) == 0) {
+            link_key_text(key, candidate);
+            if (host_identity(candidate, identity, sizeof(identity))) link_key_text(key, identity);
+            break;
+        }
+        search = end ? end + 1 : NULL;
+    }
+    if (host_identity("/var/db/xcode_select_link", identity, sizeof(identity))) link_key_text(key, identity);
+#endif
+    const char* steering[] = {"DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "PRISMIO_CC", "LIB"};
+    for (size_t i = 0; i < sizeof(steering) / sizeof(steering[0]); i++) {
+        const char* value = getenv(steering[i]);
+        link_key_text(key, steering[i]);
+        link_key_text(key, value ? value : "");
+    }
+}
+
+static int write_link_key(const char* command, const char* program_obj, const char* exe_file) {
+    LinkKey key = {0};
+    key.hash = PRISMIO_FNV_OFFSET;
+    key.program_obj = program_obj;
+    key.exe_file = exe_file;
+    link_key_text(&key, "prismio-link-key 1");
+    link_key_text(&key, ir_target_is_explicit() ? ir_target_triple() : "host");
+    link_key_line(&key, command, 0);
+    link_key_linker(&key, link_driver_command());
+    // A library named with -l is a file the linker will read from one of the -L directories.
+    const char* shapes[] = {"%s/lib%s.a", "%s/lib%s.dylib", "%s/lib%s.so", "%s/lib%s.tbd", "%s/%s.lib"};
+    for (int l = 0; l < key.libraries.count; l++) {
+        for (int d = 0; d < key.search.count; d++) {
+            for (size_t s = 0; s < sizeof(shapes) / sizeof(shapes[0]); s++) {
+                char path[4096];
+                snprintf(path, sizeof(path), shapes[s], key.search.items[d], key.libraries.items[l]);
+                link_key_file(&key, path);
+            }
+        }
+    }
+    link_args_free(&key.search);
+    link_args_free(&key.libraries);
+    char text[64];
+    snprintf(text, sizeof(text), "%016llx\n", key.hash);
+    return write_text_file(g_link_key_path, text);
+}
+
 static int link_program_object(const char* program_obj, const char* exe_file) {
+    char* command = driver_link_command(program_obj, exe_file);
+    if (g_link_key_path && write_link_key(command, program_obj, exe_file) != 0) {
+        fprintf(stderr, "ERROR: cannot write the link key to %s\n", g_link_key_path);
+        tmp_free(command);
+        return 1;
+    }
 #ifdef _WIN32
     // Native objects, a response file and an export table are all spelled for a
     // clang driver, so a target with any of them links through one.
@@ -2519,10 +2766,10 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
                        g_export_dynamic;
     const char* chosen = getenv("PRISMIO_CC");
     if ((!chosen || !*chosen) && !ir_target_is_explicit() && !needs_driver) {
+        tmp_free(command);
         return link_program_msvc(program_obj, exe_file);
     }
 #endif
-    char* command = driver_link_command(program_obj, exe_file);
 #ifndef _WIN32
     // With no native objects and no exports, g_link_extra is the program's other
     // codegen partitions or nothing. The key leaves them out -- their paths are
@@ -3572,7 +3819,16 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
     if (result == 0) {
         g_link_extra = extra ? extra : "";
         g_link_partitions = partition_objects;
+#ifdef __APPLE__
+        // ld64 writes each object's modification time into the debug map unless told not
+        // to, and that time is the only thing left that differs between two identical
+        // links. Set for the linker alone: `run` starts the program in this environment.
+        int zero_dates = getenv("ZERO_AR_DATE") == NULL && setenv("ZERO_AR_DATE", "1", 0) == 0;
+#endif
         result = link_program_object(program_obj, exe_file);
+#ifdef __APPLE__
+        if (zero_dates) unsetenv("ZERO_AR_DATE");
+#endif
         g_link_extra = "";
         g_link_partitions = 0;
     }

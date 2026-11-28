@@ -97,7 +97,8 @@ build/gen1 build src/main.psm -o /tmp/a.ll
 build/gen2 build src/main.psm -o /tmp/b.ll
 cmp /tmp/a.ll /tmp/b.ll
 
-PRISMIO=$PWD/build/gen2 python3 tests/test_runner.py
+python3 tools/package.py --compiler build/gen2 --out build/dist
+python3 tools/run_suite.py full --compiler build/dist/bin/prismio
 ```
 
 The repository itself is a Prismio project. For the ordinary edit loop, bare
@@ -243,7 +244,7 @@ prismio/
 │       ├── module.psm     # Functions, structs, whole-module emission
 │       └── bridge.psm     # extern fn declarations for the LLVM C API backend
 ├── tests/
-│   ├── test_runner.py    # Python test runner
+│   ├── harness/          # Programmatic tests, one module per suite (run by tools/testkit)
 │   ├── test_*.psm        # Language test cases (positive)
 │   ├── neg_*.psm         # Language test cases (expected to fail compilation)
 │   └── utils.psm         # Shared test utilities
@@ -271,29 +272,33 @@ is generated.
 
 ## Running the Test Suite
 
-The test runner compiles each `test_*.psm` file with the system `prismio` binary and executes the resulting binary, checking for a clean exit code.
+`prismio suite` runs the test engine (`tools/testkit`) against a copy of the project host: it
+builds and runs every `tests/test_*.psm`, checks that every `tests/neg_*.psm` is rejected for
+the stated reason, and runs the harness tests in `tests/harness/`.
 
 ```bash
-PRISMIO=$PWD/build/gen2 python3 tests/test_runner.py
+prismio suite                       # every test, skipping what is proved unchanged
+prismio suite smoke                 # a quick cross-section
+prismio suite full                  # every test, nothing skipped
 ```
 
-`$PRISMIO` wins over `PATH`, which is what lets a freshly bootstrapped compiler be
-tested without installing it. With neither, the runner resolves `prismio` from
-`PATH` — and that is almost never the compiler you just built.
+A generation built by `tools/bootstrap.py` is not a complete toolchain, so package it first and
+name it:
 
-`PRISMIO_TEST_JOBS=1` runs sequentially, which is what to reach for when a failure
+```bash
+python3 tools/package.py --compiler build/gen2 --out build/dist
+python3 tools/run_suite.py full --compiler build/dist/bin/prismio
+```
+
+`PRISMIO_TEST_JOBS=1` runs one test at a time, which is what to reach for when a failure
 looks like interference rather than a bug.
 
-During development, run one positive or negative file fixture by exact stem:
-
-```bash
-PRISMIO=$PWD/build/gen2 python3 tests/test_runner.py test_92_field_view_provenance
-```
-
-Substring filters and repeated `-k` flags select several file fixtures. Use
-`python3 tests/test_runner.py --list` to list them. Filtered runs intentionally
-skip the suite's global integration checks; an unfiltered run remains the final
-check.
+Names, or parts of names, select tests (`prismio suite test_92_field_view_provenance`,
+`prismio suite -k lsp`); `prismio suite --list` lists them. A filtered run says on its last
+line that it was filtered; an unfiltered `prismio gate` remains the final check before a push.
+Profiles, the result cache and how to add a test are described in
+[docs/TEST_ORCHESTRATION_PLAN.md](docs/TEST_ORCHESTRATION_PLAN.md) and on the developer docs'
+testing page.
 
 The repository's dependency-free formatting and lint entry points are:
 

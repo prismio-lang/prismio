@@ -1,5 +1,5 @@
 # Bootstrap the compiler from the committed seed and prove it reaches a fixed
-# point, then run the test suite against the compiler that produced it.
+# point, then run the test engine's profiles against the compiler that produced it.
 #
 # The fixpoint check is the important one and it is cheap: a compiler that does
 # not reproduce its own IR is mid-migration, and freezing that state is how a
@@ -120,49 +120,48 @@ jobs:
           set -e
           python tools/package.py --compiler "build/gen2" --out dist/Prismio
 
-      # run_suite.py tests a *copy* of the packaged toolchain: the ums fixture
-      # rebuilds a project host and the cache fixtures count what a build
-      # recompiles, and neither can be done to the compiler running the suite.
-      # `inline_runtime_default` requires the curated-module merge marker, then
-      # proves PRISMIO_INLINE_RUNTIME=0 avoids it. Keep it in this matrix: a
+      # The `verify` profile (tools/testkit/profiles.py) on the package: every test, against a
+      # *copy* of the toolchain -- the cache tests count what a build recompiles, and that cannot
+      # be asked of the compiler running the suite -- then the source lists, the extern check,
+      # the AIF and PIR differentials and every benchmark workload's checksum. Nothing is taken
+      # from the result cache. `inline_runtime_default` requires the curated-module merge marker,
+      # then proves PRISMIO_INLINE_RUNTIME=0 avoids it: keep it in this matrix, since a
       # successful fail-open build is not portability evidence.
-      - name: Run the test suite
-        shell: bash
-        run: |
-          set -e
-          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
-          python tools/run_suite.py --compiler "dist/Prismio/bin/prismio$EXT"
-
-      # The allocation ledger proves Prismio's inferred releases balance; it
-      # cannot detect a balanced release that happens before the last read.
-      # These programs are therefore linked against the runtime with ASan.
-      - name: Run AddressSanitizer smoke suite
-        if: runner.os == 'Linux'
-        shell: bash
-        run: python tools/sanitizer_smoke.py --compiler build/gen2
-
-      # Build the maintained three-language matrix and validate every supported
-      # workload checksum. Hosted-runner timings are recorded, not gated. Only the
-      # hosted suite: the freestanding one boots bare-metal AArch64 images under
-      # QEMU and needs lld and the Rust source component, which this runner does
-      # not install. `tests/test_runner.py`'s `freestanding_bench` runs it where
-      # they are present.
-      - name: Run benchmark validation smoke
-        if: runner.os == 'Linux'
-        shell: bash
-        run: python benchmarks/run.py --suite hosted --compiler dist/Prismio/bin/prismio --runs 1 --output build/ci-benchmark.json
-
+      #
       # The AIF engine exists twice on purpose: once in the compiler and once as
-      # tools/aif_oracle/aif.py, sharing no code. A transfer function that is subtly
-      # wrong produces a silently wrong tier rather than a crash, so the two
-      # agreeing is the only real check on either -- and it is worth nothing
-      # unless something notices when they stop.
-      - name: AIF engine agrees with the oracle
+      # tools/aif_oracle/aif.py, sharing no code. A transfer function that is subtly wrong
+      # produces a silently wrong tier rather than a crash, so the two agreeing is the only
+      # real check on either -- and it is worth nothing unless something notices when they stop.
+      - name: Run the verify profile
         shell: bash
         run: |
           set -e
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
-          python tools/aif_differential.py --compiler "build/gen2$EXT"
+          python tools/testkit verify --packaged --compiler "dist/Prismio/bin/prismio$EXT" \
+            --keep-going --junit build/junit.xml
+
+      - name: Keep the test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ runner.os }}-${{ runner.arch }}
+          path: build/junit.xml
+          if-no-files-found: ignore
+
+      # Two of the `release` profile's checks, which only Linux can run here. The allocation
+      # ledger proves Prismio's inferred releases balance; it cannot detect a balanced release
+      # that happens before the last read, so the sanitizer smoke links programs against the
+      # runtime with ASan. The benchmark smoke builds the maintained three-language matrix and
+      # validates every supported workload's checksum; hosted-runner timings are not gated. Only
+      # the hosted suite: the freestanding one boots bare-metal AArch64 images under QEMU and
+      # needs lld and the Rust source component, which this runner does not install (the
+      # `freestanding_bench` test runs it where they are present).
+      - name: Run the Linux release checks
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python tools/testkit release --packaged --compiler dist/Prismio/bin/prismio \
+            -k sanitizer_smoke -k benchmark_smoke
 
       # A seed that can no longer build the tree strands anyone starting from a
       # fresh checkout. The bootstrap above already proved this one builds it; this

@@ -258,6 +258,18 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Repository
 
+- **The tests run through one engine (`tools/testkit/`, `docs/TEST_ORCHESTRATION_PLAN.md`).** `prismio suite
+  [profile]` (`smoke`, `dev` by default, `full`, `verify`, `gate`, `release`) runs fixtures and harness tests on one
+  resource-aware pool and, in `smoke` and `dev`, skips what a cache key proves unchanged. On a 10-core M-series host
+  `full` takes 198 s against the old runner's 429 s (849 tests; `PRISMIO_TEST_JOBS=1`: 805 s), an unchanged `dev` run
+  151 s with 735 results cached, and the fixtures alone 4.4 s. The 109 harness tests moved to `tests/harness/`
+  (`ums` and `lsp_features` split into scenarios), a suite run no longer touches the project host, and positive
+  fixtures' standard output is recorded so that a change in it is reported. `prismio build` gains
+  `--emit-deps=<file>` and `--emit-link-key=<file>` (compiler development; `P1144`), and two links of one program to
+  one output are now byte-identical with `-g` too. Emitted IR is unchanged (419 programs and the compiler's own
+  source, old compiler against new).
+
+
 - **The sanitizer gate sees the heap again (`tools/sanitizer_smoke.py`).** Since the slab became the default,
   AddressSanitizer never saw a block of 512 bytes or less being freed. A runtime compiled with ASan or TSan now
   has no slab; the tool compiles `std` from source into each program's IR, marks every function

@@ -115,7 +115,7 @@ makes drift invisible — these were `XEFY_ELEM_*` in `lang_runtime.c` until
 2026-08-23, so a grep for `AIF_ELEM_CYCLE` found two of the three sites and gave
 no sign the third existed. And **a test that compares the tables**, because a
 comment saying they must agree is not a check;
-`run_elem_mode_agreement_test` in `tests/test_runner.py` is.
+`run_elem_mode_agreement_test` in `tests/harness/aif.py` is.
 
 If you add a shared constant, add it to that test.
 
@@ -233,7 +233,7 @@ python3 tools/bootstrap.py --compiler build/g1 --out build/g2
 ```
 
 `g1` and `g2` must emit identical IR for `src/main.psm`. Then
-`PRISMIO=$PWD/build/g2 python3 tests/test_runner.py`, then
+`python3 tools/run_suite.py full --compiler <a packaged build/g2>`, then
 `python3 tools/aif_differential.py --compiler build/g2`.
 
 For anything touching allocation, also build a program with `--verify` and read

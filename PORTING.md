@@ -50,9 +50,8 @@ cmp /tmp/a.ll /tmp/b.ll && echo "fixed point reached"
 ### Test, package, verify
 
 ```sh
-PRISMIO=build/gen2 python3 tests/test_runner.py     # expect 202/202, never fewer
-
 python tools/package.py --compiler build/gen2 --out dist/Prismio
+python tools/run_suite.py full --compiler dist/Prismio/bin/prismio   # every test, 0 failed
 python tools/verify_separation.py --dist dist/Prismio   # expect 11/11
 ```
 
