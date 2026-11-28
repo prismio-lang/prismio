@@ -1,0 +1,248 @@
+// Drops on exit edges (docs/PIR_PLAN.md §4.4, §7.3, A3), for the two shapes today's
+// codegen leaks and this pass can prove. Both run after the moves at last use.
+//
+// An **arm** drop: an owned value a call made on the right of `and`/`or`, which nothing
+// consumes. It lives in that arm alone, so it ends there.
+//
+// A **path** drop: a binding a call made that some `return` carries out, perhaps under
+// another name, and every other path leaves behind. It ends where each such path leaves
+// its region. Only a value with no consumer but those returns and the renames between
+// them qualifies.
+//
+// Either way nothing derived from the value may be stored, consumed or returned. The
+// pass writes a DROP node, which the interpreter runs as the end of the object; whether
+// anything is released is still codegen's own question, asked of the analysis
+// (pir.plan, src/ir/expr.psm).
+
+import std.collections.vec
+import std.string
+import ast.nodes
+import pir.graph
+import pir.builder
+import pir.take
+
+// The values that name the same object as `root`.
+private fn pirNamesOf(f: PirFunc, same: Vec<Vec<Int>>, root: Int) -> Vec<Bool> {
+    let mut member: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut work: Vec<Int> = [root]
+    member[root] = true
+    let mut at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        for i in 0..<same[value].length {
+            let other = same[value][i]
+            if (member[other]) { continue }
+            member[other] = true
+            work.push(other)
+        }
+    }
+    return member
+}
+
+// Whether every name is the value itself or a rename of it. A merge that joins another
+// object in makes the name stand for either, and a drop of it could end the other.
+private fn pirOnlyRenames(f: PirFunc, member: Vec<Bool>, root: Int) -> Bool {
+    for node in 0..<f.op.length {
+        let op = f.op[node]
+        if (op == PirOp.BRANCH or op == PirOp.LOOP or op == PirOp.CAST or op == PirOp.WRAP) { continue }
+        if (op == PirOp.EXIT) {
+            // An exit into a named port or result must carry one of the names.
+            let port = f.nodePort[node]
+            let target = f.nodeTarget[node]
+            for i in 0..<f.opCount[node] {
+                let mut into = -1
+                if (port == PirPort.NEXT as Int and i < f.regPortCount[target]) {
+                    into = pirPortAt(f, target, i)
+                } else if ((port == PirPort.MERGE as Int or port == PirPort.BREAK as Int)
+                        and i < f.resCount[f.regNode[target]]) {
+                    into = pirResultAt(f, f.regNode[target], i)
+                }
+                if (into >= 0 and member[into] and member[pirOperandAt(f, node, i)] == false) { return false }
+            }
+            continue
+        }
+        for i in 0..<f.resCount[node] {
+            let result = pirResultAt(f, node, i)
+            if (member[result] and result != root and f.valFrom[result] < 0) { return false }
+        }
+    }
+    return true
+}
+
+// Whether a view of any name is returned, stored or consumed; with `anyExit`, whether
+// one leaves its region at all.
+private fn pirViewsEscape(f: PirFunc, users: PirUsers, same: Vec<Vec<Int>>, member: Vec<Bool>, anyExit: Bool) -> Bool {
+    let mut seen: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+    let mut work: Vec<Int> = []
+    for value in 0..<f.valDef.length {
+        if (member[value]) {
+            seen[value] = true
+            work.push(value)
+        }
+    }
+    let mut at = 0
+    while (at < work.length) {
+        let value = work[at]
+        at = at + 1
+        let derived = member[value] == false
+        if (derived) {
+            for i in 0..<same[value].length {
+                let other = same[value][i]
+                if (seen[other]) { continue }
+                seen[other] = true
+                work.push(other)
+            }
+        }
+        let mut use = users.first[value]
+        while (use >= 0) {
+            let node = users.node[use]
+            let index = use - f.opStart[node]
+            use = users.next[use]
+            if (derived) {
+                if (f.op[node] == PirOp.EXIT and (anyExit or f.nodePort[node] == PirPort.RETURN as Int)) { return true }
+                if (pirStores(f, node, index) or f.operandUse[f.opStart[node] + index] == PirUse.CONSUME) { return true }
+            }
+            for i in 0..<f.resCount[node] {
+                let result = pirResultAt(f, node, i)
+                if (seen[result]) { continue }
+                if (f.valMode[result] == PirMode.VIEW or f.valWitness[result]) {
+                    seen[result] = true
+                    work.push(result)
+                }
+            }
+        }
+    }
+    return false
+}
+
+private fn pirConsumed(f: PirFunc, users: PirUsers, value: Int) -> Bool {
+    let mut use = users.first[value]
+    while (use >= 0) {
+        if (f.operandUse[use] == PirUse.CONSUME) { return true }
+        use = users.next[use]
+    }
+    return false
+}
+
+// Whether the region's last exit reads `value`: a drop before it would be too early.
+private fn pirExitReads(f: PirFunc, reg: Int, value: Int) -> Bool {
+    let tail = f.regTail[reg]
+    if (tail < 0 or f.op[tail] != PirOp.EXIT) { return true }
+    for i in 0..<f.opCount[tail] {
+        if (pirOperandAt(f, tail, i) == value) { return true }
+    }
+    return false
+}
+
+private fn pirDropAtEnd(f: PirFunc, value: Int, kind: String, ast: Ptr) {
+    let drop = pirNodeNew(f, PirOp.DROP, kind, ptr_to_node(ast))
+    pirOperand(f, drop, value, PirUse.CONSUME)
+    pirInsertBeforeTail(f, f.valRegion[value], drop)
+}
+
+// Whether `reg` is an arm of an `and` or an `or`.
+private fn pirShortCircuitArm(f: PirFunc, reg: Int) -> Bool {
+    if (reg <= 0 or f.regKind[reg] != PirRegionKind.ARM) { return false }
+    let branch = f.regParent[reg]
+    if (branch <= 0) { return false }
+    let at = ptr_to_node(f.nodeAst[f.regNode[branch]])
+    return at.kind == NodeKind.BINARY_EXPR and (at.s1.equals("and") or at.s1.equals("or"))
+}
+
+// The returns that carry the value dropped by `drop` out, under any of its names.
+public fn pirPathKeeps(f: PirFunc, drop: Int) -> Vec<Int> {
+    let same = pirSameObject(f)
+    let member = pirNamesOf(f, same, pirOperandAt(f, drop, 0))
+    let mut keeps: Vec<Int> = []
+    for node in 0..<f.op.length {
+        if (f.op[node] != PirOp.EXIT or f.nodePort[node] != PirPort.RETURN as Int) { continue }
+        for i in 0..<f.opCount[node] {
+            if (member[pirOperandAt(f, node, i)] and f.operandUse[f.opStart[node] + i] == PirUse.CONSUME) {
+                keeps.push(node)
+                break
+            }
+        }
+    }
+    return keeps
+}
+
+// Whether the result of `call` could end by either drop, asked before the lists below
+// are worth building: an owned value that is bound by a `let` or made in an arm.
+private fn pirCandidate(f: PirFunc, call: Int) -> Bool {
+    if (f.resCount[call] == 0 or f.nodeRegion[call] < 0) { return false }
+    let value = pirResultAt(f, call, 0)
+    if (f.valMode[value] != PirMode.OWN or f.valWitness[value] or f.valName[value].equals("") == false) { return false }
+    return f.valBinding[value].equals("") == false or pirShortCircuitArm(f, f.valRegion[value])
+}
+
+// True when it added a drop.
+private fn pirTryDrop(f: PirFunc, users: PirUsers, same: Vec<Vec<Int>>, call: Int) -> Bool {
+    let value = pirResultAt(f, call, 0)
+
+    if (f.valBinding[value].equals("")) {
+        if (pirConsumed(f, users, value)) { return false }
+        let mut alone: Vec<Bool> = Vec<Bool>.filled(f.valDef.length, false)
+        alone[value] = true
+        if (same[value].length > 0 or pirExitReads(f, f.valRegion[value], value)) { return false }
+        if (pirViewsEscape(f, users, same, alone, true)) { return false }
+        pirDropAtEnd(f, value, "arm", f.nodeAst[call])
+        return true
+    }
+
+    // A binding nothing consumes is no per-path one, which is most of them.
+    let member = pirNamesOf(f, same, value)
+    if (pirOnlyRenames(f, member, value) == false) { return false }
+    let mut returned = false
+    let mut ends: Vec<Int> = []
+    for name in 0..<f.valDef.length {
+        if (member[name] == false) { continue }
+        let mut consumed = false
+        let mut use = users.first[name]
+        while (use >= 0) {
+            let node = users.node[use]
+            if (f.operandUse[use] == PirUse.CONSUME) {
+                let op = f.op[node]
+                if (op == PirOp.EXIT) {
+                    let port = f.nodePort[node]
+                    if (port == PirPort.RETURN as Int) {
+                        returned = true
+                    } else if (port != PirPort.MERGE as Int and port != PirPort.BREAK as Int
+                            and port != PirPort.NEXT as Int) {
+                        return false
+                    }
+                } else if (op != PirOp.BRANCH and op != PirOp.LOOP) {
+                    return false
+                }
+                consumed = true
+            }
+            use = users.next[use]
+        }
+        if (consumed == false) {
+            if (pirExitReads(f, f.valRegion[name], name)) { return false }
+            ends.push(name)
+        }
+    }
+    if (returned == false or ends.length == 0 or pirViewsEscape(f, users, same, member, false)) { return false }
+    for name in ends { pirDropAtEnd(f, name, "path", f.nodeAst[call]) }
+    return true
+}
+
+// Adds every drop this pass can prove to `f`. A library function's code may not be this
+// build's, so only the program's own are touched.
+public fn pirDropAtLastUse(program: PirProgram, f: PirFunc) {
+    if (f.refusal.equals("") == false or f.library) { return }
+    let mut calls: Vec<Int> = []
+    for node in 0..<f.op.length {
+        if (f.op[node] == PirOp.CALL and pirCandidate(f, node)) { calls.push(node) }
+    }
+    if (calls.length == 0) { return }
+    let mut same = pirSameObject(f)
+    let mut users = pirUsersOf(f)
+    for call in calls {
+        if (pirTryDrop(f, users, same, call) == false) { continue }
+        // A drop adds an operand, so the lists are rebuilt for the next value.
+        same = pirSameObject(f)
+        users = pirUsersOf(f)
+    }
+}

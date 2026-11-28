@@ -634,15 +634,19 @@ private fn generateVariableDecl(stmt: ASTNode) {
             // block returns the outer allocation under the inner name, and the
             // drop of the outer `a` there freed what the caller received.
             let owned = aif_owns_call_result_at_node(stmt.child2)
+            // `--pir=plan` knows which returns carry this value, under whatever name, so
+            // the two guards that ask it of the name are answered (pir.drops).
+            let onPaths = pirPlanIsPathBinding(stmt.child2)
             if (owned != AIF_ELEM_NONE
                     and nodeGetType(stmt).kind != TypeKind.ARRAY
                     and chainAssignsName(irFunctionBody, varName) == false
                 and chainDropsName(irFunctionBody, varName) == false
-                and chainReturnsAliasBeyondBare(irFunctionBody, varName) == false
-                and (chainReturnsName(irFunctionBody, varName) == false
-                    or chainBindingCount(irFunctionBody, varName) == 1)
+                and (onPaths or (chainReturnsAliasBeyondBare(irFunctionBody, varName) == false
+                    and (chainReturnsName(irFunctionBody, varName) == false
+                        or chainBindingCount(irFunctionBody, varName) == 1)))
                 and chainAssignsAliasOf(irFunctionBody, varName) == false
                 and chainRetainsAliasOf(irFunctionBody, varName) == false) {
+                if (onPaths) { pirPlanBindSlot(stmt.child2, ir_get_var_slot(varName)) }
                 if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
                     ir_mark_droppable(varName, IR_DROP_DATAVIEW)
                 } else if (owned == AIF_ELEM_LIST) {
@@ -886,6 +890,8 @@ private fn generateReturn(stmt: ASTNode) {
             if (source.equals("") == false) { keep = ir_get_var_slot(source) }
         }
     }
+    let kept = pirPlanKeptSlot(node_to_ptr(stmt))
+    if (kept.equals("") == false) { keep = kept }
     if (nodeExists(stmt.child1)) {
         let mut retVal = generateExpression(ptr_to_node(stmt.child1))
         let mut retType = storageType(getExprType(ptr_to_node(stmt.child1)))

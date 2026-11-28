@@ -19,6 +19,7 @@ import pir.verify
 import pir.dump
 import pir.interp
 import pir.take
+import pir.drops
 import pir.plan
 
 // `emit` is "" for no dump, "-" for standard output, and otherwise the file to write.
@@ -50,6 +51,7 @@ public fn pirMakePlan(module: ASTNode, overflowChecks: Bool, report: Bool) -> Bo
     for i in 0..<program.funcs.length {
         if (program.funcs[i].refusal.equals("") == false) { continue }
         for node in 0..<program.funcs[i].op.length {
+            if (program.funcs[i].op[node] == PirOp.DROP) { pirPlanDropNode(program.funcs[i], node) }
             if (program.funcs[i].op[node] != PirOp.TAKE) { continue }
             let read = program.funcs[i].nodeAst[node]
             pirPlanTake(read)
@@ -62,12 +64,25 @@ public fn pirMakePlan(module: ASTNode, overflowChecks: Bool, report: Bool) -> Bo
     }
     if (report) {
         println("pir plan: ".concat(pirPlanTakes().toString(), " read(s) take"))
+        println("pir plan: ".concat(pirPlanArmDrops().toString(), " value(s) end in an `and`/`or` arm, ",
+            pirPlanPathBindings().toString(), " binding(s) end on the paths that do not return them"))
         for i in 0..<declined.declined.length {
             println("    declined ".concat(declined.declined[i], "\t", declined.counts[i].toString()))
         }
         pirPrintTaken(program)
     }
     return true
+}
+
+// A drop pir.drops added, written into the plan codegen reads.
+private fn pirPlanDropNode(f: PirFunc, node: Int) {
+    let made = f.nodeAst[node]
+    if (f.nodeName[node].equals("arm")) {
+        pirPlanArmDrop(made)
+    } else if (f.nodeName[node].equals("path")) {
+        pirPlanPathBinding(made)
+        for exit in pirPathKeeps(f, node) { pirPlanKeep(f.nodeAst[exit], made) }
+    }
 }
 
 private fn pirRaiseFindings(report: PirReport) {

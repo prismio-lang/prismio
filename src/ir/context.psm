@@ -99,6 +99,15 @@ let mut irSpawnArgCounter = 0
 // address to copy from. Dotted like `sc.` for the same reason.
 let mut irElemSpillCounter = 0
 
+// The temporaries that end in the `and`/`or` arm being generated (`--pir=plan`), a
+// stack across nested arms: the call, its value once generated, and how it is released.
+// Empty vectors until the first one, which is what `irArmCount` says.
+let mut irArmCount = 0
+let mut irArmCalls: Vec<U64>
+let mut irArmValues: Vec<String>
+let mut irArmKinds: Vec<Int>
+let mut irArmTypes: Vec<String>
+
 // Names the binding irHoistBorrowedTemporaries gives a temporary. Dotted for the
 // same reason.
 let mut irBorrowedTempCounter = 0

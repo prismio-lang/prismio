@@ -28,6 +28,7 @@ import aifcore.structure
 import common.builtin_names
 import common.lang_items
 import pir.plan
+import std.sys
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
 // answer. Previously both operands were generated unconditionally and combined
@@ -66,13 +67,85 @@ private fn generateShortCircuit(expr: ASTNode) -> String {
     }
 
     ir_label_numbered(rhsLabel)
+    let ends = irArmCount
+    if (pirPlanArmDrops() > 0) { irCollectArmTemporaries(ptr_to_node(expr.child2)) }
     let rightVal = generateExpression(ptr_to_node(expr.child2))
+    if (irArmCount > ends) { irReleaseArmTemporaries(ends) }
     ir_store("i1", rightVal, slot)
     ir_br_numbered(doneLabel)
 
     ir_label_numbered(doneLabel)
     let resultId = ir_load("i1", slot)
     return ir_get_temp_name(resultId)
+}
+
+// `--pir=plan`, A3: an owned temporary on the right of `and`/`or` that codegen would
+// bind ahead of the statement, were it not evaluated only sometimes
+// (irFindBorrowedTemporary stops there). It is released at the end of its arm instead.
+// The same two shapes and the same ownership question as the hoist, where PIR also says
+// the value ends in the arm (pir.drops); a nested `and`/`or` collects its own right side.
+private fn irCollectArmTemporaries(e: ASTNode) {
+    if (e.kind == NodeKind.MEMBER_ACCESS_EXPR or e.kind == NodeKind.UNARY_EXPR) {
+        if (nodeExists(e.child1)) { irCollectArmTemporaries(ptr_to_node(e.child1)) }
+        return
+    }
+    if (e.kind == NodeKind.BINARY_EXPR) {
+        if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return }
+        irCollectArmTemporaries(ptr_to_node(e.child1))
+        if (e.s1.equals("and") or e.s1.equals("or")) { return }
+        irCollectArmTemporaries(ptr_to_node(e.child2))
+        return
+    }
+    if (e.kind != NodeKind.CALL_EXPR) { return }
+    let withholds = irCallWithholdsTemporaries(e)
+    let coalesces = irCallIsCoalesce(e)
+    let scalarRead = irCallIsScalarElementRead(e)
+    let mut first = true
+    let mut a = e.child2
+    while (nodeExists(a)) {
+        // `??` evaluates its second operand only sometimes.
+        if (coalesces and first == false) { return }
+        let arg = ptr_to_node(a)
+        irCollectArmTemporaries(arg)
+        if ((withholds or (scalarRead and first)) and pirPlanIsArmDrop(a)
+                and irArgumentIsOwnedTemporary(arg)) {
+            irPushArmTemporary(a, irOwnedTemporaryKind(arg), irOwnedTemporaryDeclType(arg))
+        }
+        first = false
+        a = arg.next
+    }
+}
+
+private fn irPushArmTemporary(call: Ptr, kind: Int, declType: String) {
+    if (irArmCount == 0) {
+        irArmCalls = []
+        irArmValues = []
+        irArmKinds = []
+        irArmTypes = []
+    }
+    irArmCalls.push(addressOf(call) as U64)
+    irArmValues.push("".clone())
+    irArmKinds.push(kind)
+    irArmTypes.push(declType.clone())
+    irArmCount = irArmCount + 1
+}
+
+private fn irNoteArmTemporary(call: ASTNode, value: String) {
+    let key = addressOf(node_to_ptr(call)) as U64
+    for i in 0..<irArmCount {
+        if (irArmCalls[i] == key) { irArmValues[i] = value.clone() }
+    }
+}
+
+private fn irReleaseArmTemporaries(floor: Int) {
+    while (irArmCount > floor) {
+        let value = irArmValues.pop() ?? "".clone()
+        let kind = irArmKinds.pop() ?? 0
+        let declType = irArmTypes.pop() ?? "".clone()
+        irArmCalls.pop()
+        irArmCount = irArmCount - 1
+        if (value.equals("") == false) { generateOwnedTemporaryRelease(value, kind, declType) }
+    }
 }
 
 // Whether `name` is ever the target of an assignment inside the function being
@@ -1021,6 +1094,10 @@ private fn irOwnedTemporaryKind(argNode: ASTNode) -> Int {
 }
 
 private fn generateOwnedTemporaryRelease(value: String, kind: Int, declType: String) {
+    // Released here already, so its arm must not release it again.
+    for i in 0..<irArmCount {
+        if (irArmValues[i].equals(value)) { irArmValues[i] = "".clone() }
+    }
     if (kind == IR_DROP_LIST) {
         ir_free_list(value)
     } else if (kind == IR_DROP_DATAVIEW) {
@@ -6633,7 +6710,11 @@ internal fn generateExpression(expr: ASTNode) -> String {
         NodeKind.SPAWN_EXPR => { return generateSpawn(expr) }
         NodeKind.JOIN_EXPR => { return generateJoin(expr) }
         NodeKind.BINARY_EXPR => { return generateBinary(expr) }
-        NodeKind.CALL_EXPR => { return generateCall(expr) }
+        NodeKind.CALL_EXPR => {
+            let value = generateCall(expr)
+            if (irArmCount > 0) { irNoteArmTemporary(expr, value) }
+            return value
+        }
         _ => { }
     }
 

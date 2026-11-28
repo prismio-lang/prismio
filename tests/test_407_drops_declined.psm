@@ -1,0 +1,103 @@
+// The shapes next to test_406's that `--pir=plan` must leave alone (src/pir/drops.psm):
+// a view of the value is returned, the value is one side of a merge, or it goes into a
+// struct, a call or a copy. Releasing any of these early would be a read of freed
+// memory, so the values are checked after more allocation, and the pir_plan harness test
+// holds 0 violations under the ledger.
+
+import std.io
+import std.string
+
+struct Box { held: String }
+
+fn text(n: Int) -> String { return "  a string longer than twelve bytes ".concat(n.toString()) }
+fn echo(s: String) -> String { return s }
+
+fn viewReturned(f: Bool) -> String {
+    let a = text(1)
+    let t = a
+    if (f) { return t.trim() }
+    return text(2)
+}
+
+fn merged(f: Bool, g: Bool) -> String {
+    let a = text(3)
+    let t = if (g) { a } else { text(4) }
+    if (f) { return t }
+    return text(5)
+}
+
+fn kept(inout keep: Vec<String>, f: Bool) -> String {
+    let a = text(6)
+    let t = a
+    if (f) { return t }
+    keep.push(t.clone())
+    return text(7)
+}
+
+fn boxed(f: Bool) -> Box {
+    let a = text(8)
+    let t = a
+    if (f) { return Box { held: t } }
+    return Box { held: text(9) }
+}
+
+fn passed(f: Bool) -> String {
+    let a = text(10)
+    let t = a
+    if (f) { return echo(t) }
+    return text(11)
+}
+
+fn remember(inout log: Vec<String>, s: String) -> Bool {
+    log.push(s.clone())
+    return s.length > 1
+}
+
+fn words(n: Int) -> Vec<String> { return [text(n), text(n + 1)] }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut keep: Vec<String> = []
+    let mut log: Vec<String> = []
+    let mut out: Vec<String> = []
+    for i in 0..<40 {
+        out.push(viewReturned(i % 2 == 0))
+        out.push(merged(i % 2 == 0, i % 3 == 0))
+        out.push(kept(keep, i % 2 == 0))
+        out.push(boxed(i % 2 == 0).held)
+        out.push(passed(i % 2 == 0))
+        if (i < 0 or remember(log, words(i)[0]) == false) { return fail("remember") }
+        if (i < 0 or echo(words(i)[1]).length < 2) { return fail("echo") }
+    }
+    let mut noise: Vec<String> = []
+    for i in 0..<400 { noise.push(text(-i)) }
+
+    for i in 0..<40 {
+        let at = i * 5
+        let even = i % 2 == 0
+        if (even) {
+            if (out[at].equals(text(1).trim()) == false) { return fail("view ".concat(i.toString())) }
+        } else if (out[at].equals(text(2)) == false) {
+            return fail("view, other ".concat(i.toString()))
+        }
+        let mut want = 5
+        if (even) {
+            want = 4
+            if (i % 3 == 0) { want = 3 }
+        }
+        if (out[at + 1].equals(text(want)) == false) { return fail("merged ".concat(i.toString())) }
+        if (out[at + 2].equals(text(if (even) { 6 } else { 7 })) == false) { return fail("kept ".concat(i.toString())) }
+        if (out[at + 3].equals(text(if (even) { 8 } else { 9 })) == false) { return fail("boxed ".concat(i.toString())) }
+        if (out[at + 4].equals(text(if (even) { 10 } else { 11 })) == false) { return fail("passed ".concat(i.toString())) }
+        if (log[i].equals(text(i)) == false) { return fail("log ".concat(i.toString())) }
+    }
+    if (keep.length != 20 or keep[19].equals(text(6)) == false) { return fail("keep") }
+
+    println("PASS: drops declined")
+    return 0
+}

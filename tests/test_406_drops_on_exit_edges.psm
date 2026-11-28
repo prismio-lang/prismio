@@ -1,0 +1,127 @@
+// The values `--pir=plan` ends where today's codegen leaks them (src/pir/drops.psm),
+// with every value checked. Without the plan this leaks; with it, nothing is left and
+// nothing is read after it ended (the pir_plan harness test).
+//
+// 1. An owned temporary on the right of `and`/`or` that an element is read off: the
+//    arm runs only sometimes, so nothing can bind it ahead of the statement.
+// 2. A binding that some return carries out under another name, released on every
+//    other path: at a return, a `continue`, a `break` and the end of a block.
+
+import std.io
+import std.string
+
+fn text(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
+fn words(n: Int) -> Vec<String> { return [text(n), text(n + 1)] }
+
+fn aliased(f: Bool) -> String {
+    let a = text(1)
+    let t = a
+    if (f) { return t }
+    return text(2)
+}
+
+fn rebound(f: Bool) -> String {
+    let a = text(3)
+    if (f) {
+        let a = a
+        return a
+    }
+    return text(4)
+}
+
+fn loops(k: Int) -> String {
+    for i in 0..<5 {
+        let a = text(i)
+        let t = a
+        if (i == k) { return t }
+        if (i == 3) { continue }
+        if (i == 4) { break }
+    }
+    return text(99)
+}
+
+fn deep(k: Int) -> String {
+    let a = text(20)
+    let t = a
+    let u = t
+    if (k > 0) {
+        if (k > 1) { return u }
+        return text(21)
+    }
+    while (k < 0) { return u }
+    return text(22)
+}
+
+fn vecs(f: Bool) -> Vec<String> {
+    let a = words(30)
+    let t = a
+    if (f) { return t }
+    return words(40)
+}
+
+fn arms(i: Int) -> Int {
+    let mut hits = 0
+    if (i >= 0 and words(i)[0].length > 2) { hits = hits + 1 }
+    if (i < 0 or words(i)[1].equals("x") == false) { hits = hits + 1 }
+    if (i >= 0 and text(i).split(" ")[0].equals("a")) { hits = hits + 1 }
+    let ok = i < 0 or words(i)[1].concat("y").length > 0
+    if (ok) { hits = hits + 1 }
+    // The left side decides: the arm does not run, and there is nothing to end.
+    if (i < 0 and words(i)[0].length > 0) { hits = hits + 100 }
+    if (i >= 0 and (i < 0 or words(i)[0].length > 0)) { hits = hits + 1 }
+    while (hits < 0 or words(i)[0].length == 0) { break }
+    return hits
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn matches(got: String, n: Int) -> Bool { return got.equals(text(n)) }
+
+// Each result is read where it is made. Kept in a Vec, one allocation site's values
+// would be held there and the analysis would own none of the bindings above.
+fn check(i: Int) -> Int {
+    let even = i % 2 == 0
+    // Allocated first, so that a value ended too early is written over before it is read.
+    let noise = words(-i)
+    let mut first = 2
+    let mut second = 4
+    let mut third = 40
+    if (even) {
+        first = 1
+        second = 3
+        third = 30
+    }
+    if (matches(aliased(even), first) == false) { return 1 }
+    if (matches(rebound(even), second) == false) { return 2 }
+    let k = i % 7
+    let mut looped = k
+    if (k >= 5) { looped = 99 }
+    if (matches(loops(k), looped) == false) { return 3 }
+    let d = i % 4 - 1
+    let mut want = 22
+    if (d < 0 or d > 1) { want = 20 }
+    if (d == 1) { want = 21 }
+    if (matches(deep(d), want) == false) { return 4 }
+    let got = vecs(even)
+    if (matches(got[0], third) == false) { return 5 }
+    if (matches(got[1], third + 1) == false) { return 6 }
+    if (noise.length != 2) { return 7 }
+    return 0
+}
+
+fn main() -> Int {
+    let mut hits = 0
+    for i in 0..<40 {
+        hits = hits + arms(i)
+        let wrong = check(i)
+        if (wrong != 0) { return fail("shape ".concat(wrong.toString(), " at ", i.toString())) }
+    }
+    if (hits != 200) { return fail("arms ".concat(hits.toString())) }
+
+    println("PASS: drops on exit edges")
+    return 0
+}

@@ -48,7 +48,8 @@ public enum PirOp {
     // A6: a read that moves the value out of an owned local that is dead afterwards. It
     // consumes the local and answers the value and the remainder, the local without it.
     TAKE,
-    // A value ended here. The only drops built so far are of remainders.
+    // A value ended here: a take's remainder, or an owned value at the end of the arm or
+    // path that left it behind (pir.drops, whose nodes are named `arm` or `path`).
     DROP
 }
 
@@ -352,6 +353,20 @@ public fn pirInsertAfter(f: PirFunc, after: Int, node: Int) {
     f.nodeRegion[node] = f.nodeRegion[after]
     f.nodeNext[node] = f.nodeNext[after]
     f.nodeNext[after] = node
+}
+
+// Before the exit that ends `reg`, which stays its tail.
+public fn pirInsertBeforeTail(f: PirFunc, reg: Int, node: Int) {
+    let tail = f.regTail[reg]
+    f.nodeRegion[node] = reg
+    f.nodeNext[node] = tail
+    if (f.regHead[reg] == tail) {
+        f.regHead[reg] = node
+        return
+    }
+    let mut before = f.regHead[reg]
+    while (f.nodeNext[before] != tail) { before = f.nodeNext[before] }
+    f.nodeNext[before] = node
 }
 
 public fn pirOperandAt(f: PirFunc, node: Int, index: Int) -> Int {

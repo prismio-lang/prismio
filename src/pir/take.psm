@@ -51,7 +51,7 @@ internal struct PirUsers {
     internal node: Vec<Int>
 }
 
-private fn pirUsersOf(f: PirFunc) -> PirUsers {
+internal fn pirUsersOf(f: PirFunc) -> PirUsers {
     let users = PirUsers {
         first: Vec<Int>.filled(f.valDef.length, -1),
         next: Vec<Int>.filled(f.operands.length, -1),
@@ -72,7 +72,7 @@ private fn pirUsersOf(f: PirFunc) -> PirUsers {
 // The pairs of values that name one object: a value and the port it enters, the merge or
 // loop result it leaves by, the cast or wrap of it, and the `inout` result that hands it
 // back. Both directions.
-private fn pirSameObject(f: PirFunc) -> Vec<Vec<Int>> {
+internal fn pirSameObject(f: PirFunc) -> Vec<Vec<Int>> {
     let mut same: Vec<Vec<Int>> = []
     repeat(f.valDef.length) {
         let others: Vec<Int> = []
@@ -213,7 +213,7 @@ private fn pirMarkWithin(f: PirFunc, inout marked: Vec<Bool>, first: Int) {
 }
 
 // Whether the operand is kept by what it is given to.
-private fn pirStores(f: PirFunc, node: Int, index: Int) -> Bool {
+internal fn pirStores(f: PirFunc, node: Int, index: Int) -> Bool {
     match (f.op[node]) {
         PirOp.PUSH => { return index == 1 }
         PirOp.ELEM_SET => { return index == 2 }

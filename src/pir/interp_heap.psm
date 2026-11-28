@@ -2,9 +2,9 @@
 // object's index; 0 is no object. Contents carry a version that every write advances, and
 // a view remembers the version it was pinned to, which is what the hazard report reads.
 //
-// An object records where it was made and a state. A `drop` node ends it -- the only drops
-// built so far are of what a `take` leaves behind -- and a field of it read or written
-// afterwards stops the run, as does a read of the field the take moved out. Under
+// An object records where it was made and a state. A `drop` node ends it -- what a `take`
+// leaves behind, and the values pir.drops ends in an arm or on a path -- and any later
+// use of it stops the run, as does a read of the field a take moved out. Under
 // `--pir=plan` the objects still `LIVE` when the run ends are listed, grouped by `site`.
 
 import std.collections.vec
@@ -58,7 +58,9 @@ public struct PirHeap {
     internal hazardIds: HashMap<I64, Int>,
     public hazardPin: Vec<Int>,
     public hazardRead: Vec<Int>,
-    public hazardCount: Vec<I64>
+    public hazardCount: Vec<I64>,
+    // The objects a `drop` has ended. While there are none, no operand needs asking.
+    public ends: Int
 }
 
 public fn pirHeapNew() -> PirHeap {
@@ -68,7 +70,8 @@ public fn pirHeapNew() -> PirHeap {
         globalVersions: [],
         pins: PirPins { object: [0], slot: [0], version: [0], site: [0], parent: [0] },
         hazardIds: HashMap<I64, Int>(),
-        hazardPin: [], hazardRead: [], hazardCount: []
+        hazardPin: [], hazardRead: [], hazardCount: [],
+        ends: 0
     }
     // Handle 0.
     pirObjectNew(heap, PirObjectKind.BOX, -1, -1)

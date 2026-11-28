@@ -318,6 +318,21 @@ private fn pirEnded(program: PirProgram, heap: PirHeap, m: PirMachine, f: PirFun
     return true
 }
 
+// Whether `node` uses an object a `drop` ended, which stops the run.
+internal fn pirUsesEnded(program: PirProgram, shapes: PirShapes, heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int) -> Bool {
+    for i in 0..<f.opCount[node] {
+        let value = pirOperandAt(f, node, i)
+        let class = shapes.class[f.valType[value]]
+        if (class != PirClass.REF and class != PirClass.OPT_REF) { continue }
+        let object = m.regs[base + value] as Int
+        if (object <= 0 or object >= heap.objects.length or heap.objects[object].state != PirObjectState.DROPPED) {
+            continue
+        }
+        return pirEnded(program, heap, m, f, node, object, -1)
+    }
+    return false
+}
+
 private fn pirCheckOperand(heap: PirHeap, m: PirMachine, f: PirFunc, base: Int, node: Int, index: Int, site: Int) {
     pirPinCheck(heap, m.pins[base + pirOperandAt(f, node, index)], site)
 }
@@ -329,6 +344,7 @@ private fn pirOperandWord(m: PirMachine, f: PirFunc, base: Int, node: Int, index
 internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, tables: PirTables, m: PirMachine, f: PirFunc, code: PirCode, step: Int, base: Int, site: Int) {
     let node = code.node[step]
     let detail = code.x[step]
+    if (heap.ends > 0 and pirUsesEnded(program, shapes, heap, m, f, base, node)) { return }
     match (f.op[node]) {
         PirOp.BINARY => { pirBinaryNode(program, shapes, heap, m, f, base, node, detail, site) }
         PirOp.UNARY => { pirUnaryNode(program, shapes, m, f, base, node, detail) }
@@ -438,9 +454,13 @@ internal fn pirRunNode(program: PirProgram, shapes: PirShapes, heap: PirHeap, ta
         }
         PirOp.DROP => {
             let object = pirOperandWord(m, f, base, node, 0) as Int
+            // `none` has nothing to end, and what the interpreter made itself is a
+            // literal, whose release the compiled program ignores.
+            if (object == 0 or heap.objects[object].site < 0) { return }
             if (pirEnded(program, heap, m, f, node, object, -1)) { return }
             heap.objects[object].state = PirObjectState.DROPPED
             heap.objects[object].endedAt = site
+            heap.ends = heap.ends + 1
         }
         PirOp.LENGTH => {
             pirCheckOperand(heap, m, f, base, node, 0, site)

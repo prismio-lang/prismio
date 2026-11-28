@@ -28,7 +28,75 @@ private let mut pirSpillField: Vec<String>
 private let mut pirSpillSlot: Vec<String>
 private let mut pirSpillType: Vec<String>
 
+// The values that end in an `and`/`or` arm, by the call that makes them.
+private let mut pirArmDrops: HashMap<U64, Int>
+private let mut pirArmDropCount = 0
+// The bindings released on every path that does not return them, by their initialiser;
+// for each return that carries one out, which; and the slot codegen gave each.
+private let mut pirPathMade: HashMap<U64, Int>
+private let mut pirPathCount = 0
+private let mut pirKeptBy: HashMap<U64, U64>
+private let mut pirPathSlot: HashMap<U64, String>
+
+public fn pirPlanArmDrop(made: Ptr) {
+    if (pirArmDropCount == 0) { pirArmDrops = HashMap<U64, Int>() }
+    let key = addressOf(made) as U64
+    if (pirArmDrops.contains(key)) { return }
+    pirArmDrops.insert(key, 1)
+    pirArmDropCount = pirArmDropCount + 1
+}
+
+public fn pirPlanIsArmDrop(node: Ptr) -> Bool {
+    if (pirArmDropCount == 0) { return false }
+    return pirArmDrops.contains(addressOf(node) as U64)
+}
+
+public fn pirPlanArmDrops() -> Int { return pirArmDropCount }
+
+public fn pirPlanPathBinding(init: Ptr) {
+    if (pirPathCount == 0) {
+        pirPathMade = HashMap<U64, Int>()
+        pirKeptBy = HashMap<U64, U64>()
+        pirPathSlot = HashMap<U64, String>()
+    }
+    let key = addressOf(init) as U64
+    if (pirPathMade.contains(key)) { return }
+    pirPathMade.insert(key, 1)
+    pirPathCount = pirPathCount + 1
+}
+
+public fn pirPlanIsPathBinding(init: Ptr) -> Bool {
+    if (pirPathCount == 0) { return false }
+    return pirPathMade.contains(addressOf(init) as U64)
+}
+
+public fn pirPlanPathBindings() -> Int { return pirPathCount }
+
+public fn pirPlanKeep(returned: Ptr, init: Ptr) {
+    pirKeptBy.insert(addressOf(returned) as U64, addressOf(init) as U64)
+}
+
+// Codegen releases the binding `init` makes from `slot`.
+public fn pirPlanBindSlot(init: Ptr, slot: String) {
+    pirPathSlot.insert(addressOf(init) as U64, slot.clone())
+}
+
+// The slot the `return` at `returned` must leave alone, or "" for none: the value it
+// carries is that binding's, whatever name it is returned under.
+public fn pirPlanKeptSlot(returned: Ptr) -> String {
+    if (pirPathCount == 0) { return "".clone() }
+    let init = pirKeptBy.getOr(addressOf(returned) as U64, 0 as U64)
+    if (init == 0 as U64) { return "".clone() }
+    return pirPathSlot.getOr(init, "".clone())
+}
+
 public fn pirPlanReset() {
+    pirArmDrops = HashMap<U64, Int>()
+    pirArmDropCount = 0
+    pirPathMade = HashMap<U64, Int>()
+    pirPathCount = 0
+    pirKeptBy = HashMap<U64, U64>()
+    pirPathSlot = HashMap<U64, String>()
     pirTaken = HashMap<U64, Int>()
     pirTakenCount = 0
     pirEmitted = HashMap<U64, Int>()

@@ -964,6 +964,24 @@ A move at a `let` that is only used later, and a drop anywhere but the remainder
 `binder_rewrap_probe` (a binder of a parameter) goes to P6, `binder_return_probe` (a literal copied
 into a `String?`, A9) to a slice of its own.
 
+### 20.3 · P3's first slice, as built
+
+`--pir=plan` also adds drops (`pir/drops.psm`), a `DROP` node the interpreter runs as the end of the object, and codegen releases
+only where it released nothing before, asking the analysis the same ownership question it asks of a binding or a temporary.
+
+- **Arm** (A3): a call's owned result on the right of `and`/`or`, consumed by nothing, none of its views leaving the arm. Codegen
+  releases it at the end of the arm in the two shapes the statement hoist handles and stops at: an element read off it, and a callee
+  that may hand it back.
+- **Path** (§4.4): a call's result bound by `let` that some `return` carries out, where every consumer of every name is a return or
+  a rename between ports, and no view of it is returned, stored or consumed. Codegen's two name-based guards (`return` of an alias,
+  the name bound twice) are answered by PIR; its other guards stand.
+
+Left, by what the analysis answers for the value: a site counted as shared or a result it says is held (most of the compiler's own
+disagreements: another holder may exist, which PIR cannot disprove while AST nodes are held by raw pointer), a result with no
+allocation site behind it (nothing to release), and a container whose element release is unknown. Also left: a local allocation
+returned under another name (the engine's per-name `ret_key`), a field read off a temporary in an arm, and a temporary `Vec` literal
+in an arm.
+
 ## 21 · Alternatives considered and rejected
 
 | Alternative | Why not |

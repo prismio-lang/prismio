@@ -72,7 +72,7 @@ Counts from `--verify` on 2026-10-09, after the day's fixes: **463 leaked blocks
 | Program | Leaked | Cause |
 |---|---|---|
 | `test_58_region_serves` | 100 | Values that escape their `region` fall back to the heap and are not released (pinned). |
-| `test_205_return_on_one_path` | 10 | `let t = a; return t` returns `a` under another name, and an inner `let a = a` binds the name twice; both keep the old refusal. |
+| `test_205_return_on_one_path` | 10 | `let t = a; return t` returns `a` under another name, and an inner `let a = a` binds the name twice; both keep the old refusal. 0 under `--pir=plan`. |
 | `test_269_struct_pass_through_escapes` | 9 | A function that returns *one of* its parameters, with the result returned, pushed, carried round a loop or assigned outward: the argument that is not returned has no owner ([below](#the-argument-a-pass-through-function-does-not-return-is-leaked)). |
 | `test_273_match_payload_returned` | 300 | **Pinned on purpose** (300 of 400): a `match` arm that returns the payload it bound keeps the `Result` alive, because a match binder is a view of the scrutinee. Declining the drop is what stops the use-after-free this fixture was written for; the leak is the price. A copy of the payload at the `return` would close it. |
 | `test_127_enum_null_variant` | 6 | Blocks are allocated in `makeTree`, `add` and `makeNested` (recursive enums built by helpers). Once recorded as a `strClone` holder/site conflation when it leaked 1; the cause is **not isolated** at 6. |
@@ -142,6 +142,9 @@ engine, the codegen drop list and `tools/aif_oracle/aif.py`, and it must come wi
 let v: Vec<Int> = [3, 1, 2, 5, 4]
 if (v.toVec().length != 5 or v.sorted()[0] != 1) { println("x") }   // the sorted() Vec leaks
 ```
+
+**Under `--pir=plan`** (off by default) an element read off such a temporary, and one whose callee may hand it back, are released at
+the end of the right operand (`test_406`); a field read off it and a `Vec` literal there still leak.
 
 `irHoistBorrowedTemporaries` binds an owned temporary ahead of its statement, and only where
 that reorders nothing; the right operand of `and`/`or` runs only sometimes, so a binding hoisted

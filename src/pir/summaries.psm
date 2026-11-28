@@ -14,6 +14,7 @@ import pir.types
 import pir.graph
 import pir.builder
 import pir.take
+import pir.drops
 
 private fn pirReturnsView(types: PirTypes, f: PirFunc) -> Bool {
     if (f.refusal.equals("") == false) { return true }
@@ -88,6 +89,7 @@ public fn pirBuildProgram(module: ASTNode, overflowChecks: Bool, takes: Bool) ->
         pirFindFresh(program)
         let counted = pirTakesNew()
         for i in 0..<program.funcs.length { pirTakeAtLastUse(program, program.funcs[i], counted) }
+        for i in 0..<program.funcs.length { pirDropAtLastUse(program, program.funcs[i]) }
     }
     return program
 }

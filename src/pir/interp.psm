@@ -154,6 +154,9 @@ private fn pirExecute(program: PirProgram, shapes: PirShapes, heap: PirHeap, tab
                 }
             }
             PirStep.CALL => {
+                if (heap.ends > 0 and pirUsesEnded(program, shapes, heap, m, program.funcs[func], base, node)) {
+                    break
+                }
                 if (m.frameFunc.length >= pirDepthLimit()) {
                     pirStop(m, "call depth over ".concat(pirDepthLimit().toString()))
                     break
@@ -181,6 +184,9 @@ private fn pirExecute(program: PirProgram, shapes: PirShapes, heap: PirHeap, tab
                 step = 0
             }
             PirStep.RETURN => {
+                if (heap.ends > 0 and pirUsesEnded(program, shapes, heap, m, program.funcs[func], base, node)) {
+                    break
+                }
                 let mut value = 0 as I64
                 let mut pin = 0
                 let mut answered = false
