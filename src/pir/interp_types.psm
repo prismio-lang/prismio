@@ -116,8 +116,8 @@ public fn pirShapesClassify(shapes: PirShapes, types: PirTypes) {
                 if (bits >= 1 and bits <= 64) { class = PirClass.INT }
             }
             PirTypeKind.FLOAT => {
-                // The narrower and wider floats are left out: the compiler cannot compute in
-                // them (an `F32` in its own source links std's `F128` formatter).
+                // The narrower and wider floats are left out: the interpreter computes
+                // only in `Float`.
                 if (types.name[id].equals("Float") or types.name[id].equals("F64")) { class = PirClass.FLOAT }
             }
             PirTypeKind.BOOL => {

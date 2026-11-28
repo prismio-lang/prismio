@@ -288,6 +288,15 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **A program that names `F32` no longer compiles the `F16`, `BF16` and `F128` formatters, and `as F32` in the
+  compiler's own source links.** `std.core.number` formatted every narrow float with one generic, `floatText<T>`, and
+  library pruning keeps every instance of a generic: any program merging the module carried all four, and the `F128`
+  one calls `__extenddftf2` and its kind, which the bootstrap link on arm64 macOS does not have (on x86-64 the `F16`
+  and `BF16` instances add calls too). There is now one ordinary function per type (`f32Text`, `f16Text`, `bf16Text`), dropped
+  when nothing calls it, and an `F128` prints as the `Float` nearest it, as before. `floatText` is gone. A two-generation
+  bootstrap from a tree whose `src/` writes `as F32` succeeds from the committed seed. `tests/test_408_f32_only_text.psm`,
+  `narrow_float_instances`.
+
 - **A function that returns its parameter no longer lets safe code free a value twice.** `b.push(id(x))` then `a.push(x)` put one box
   under two owners: `--verify` segfaulted or reported a release of a dead pointer, and the returned `Vec`s read freed memory. The same
   held through a method, a generic, recursion, a `T?` return, `o ?? x`, and with both pushes into one `Vec`. The ownership analysis now

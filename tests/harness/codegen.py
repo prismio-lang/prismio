@@ -3224,3 +3224,31 @@ def run_args_views_test():
         return False
     print(f"{GREEN}[PASS] an argument is a view, and a write to one is checked first{RESET}")
     return True
+
+
+@harness_test(suite="codegen", reads=["tests/test_408_f32_only_text.psm"])
+def run_narrow_float_instances_test():
+    """A program that names `F32` alone compiles no code for the other narrow or wide floats.
+
+    Library pruning keeps every instance of a generic, so one generic formatter over the
+    float types put its `F128` instance into every program that named any of them -- into a
+    compiler that writes `as F32` too, whose bootstrap link then failed on the `fp128`
+    conversions.
+    """
+    print(f"\n{BLUE}--- Running narrow_float_instances ---{RESET}")
+    out = scratch() / "f32_only.ll"
+    built = run_command([str(PRISMIO_EXE), "build",
+                         str(TEST_DIR / "test_408_f32_only_text.psm"), "-o", str(out)])
+    if built.returncode != 0:
+        print(f"{RED}[FAIL] narrow_float_instances: build exited {built.returncode}{RESET}")
+        print(built.stdout or built.stderr)
+        return False
+    ir = out.read_text(encoding="utf-8", errors="replace")
+    cleanup_files(out)
+    wider = sorted(set(re.findall(r"\b(?:fp128|half|bfloat) %", ir)))
+    if wider or "@toString__F32" not in ir:
+        print(f"{RED}[FAIL] narrow float instances: other widths {wider}, "
+              f"F32 text asked for: {'@toString__F32' in ir}{RESET}")
+        return False
+    print(f"{GREEN}[PASS] a program naming F32 compiles no other float's code{RESET}")
+    return True

@@ -106,43 +106,69 @@ private fn decimalFromDigits(inout digits: Vec<U32>, negative: Bool) -> String {
 // (std/_fmt/float.psm). An `F32` widened to a double is a number with a longer
 // expansion than anyone wrote -- 0.1 as an `F32` is 0.10000000149011612 -- so printing
 // it as a double would show digits the type never had. Instead the search is run
-// against `T`: take the digits one at a time, read each rounding back as a double,
-// narrow it to `T`, and stop at the first that equals the value.
+// against the type: take the digits one at a time, read each rounding back as a double,
+// narrow it, and stop at the first that equals the value. The limit of each loop is how
+// many digits the type can need at most -- 9 for an `F32`, 5 for an `F16`, 4 for a
+// `BF16` -- and the fallback if none matched, so the loop always ends. An `F128` has more
+// precision than the double the formatter works in; it prints as its nearest double.
 //
-// `limit` is how many digits `T` can need at most -- 9 for an `F32`, 5 for an `F16`, 4
-// for a `BF16` -- and the fallback if none matched, so the loop always ends. An `F128`
-// has more precision than the double the formatter works in; it prints as its nearest
-// double, to 17 digits.
-public fn floatText<T>(value: T, limit: Int) -> String {
+// **One function per type, and not one generic over them.** A generic's instance is
+// compiled into every program that merges this module, called or not, and its
+// conversions are calls into compiler-rt or libgcc that not every link has: an `F128`
+// instance does not link on arm64 macOS. A function without type parameters is dropped
+// when nothing calls it.
+
+// NaN, the infinities and zero have no digits to search; the double spells them too.
+private fn floatHasNoDigits(wide: Float) -> Bool {
+    return wide != wide or wide - wide != 0.0 or wide == 0.0
+}
+
+private fn floatReadBack(wide: Float, digits: Int) -> Float {
+    return __builtin_float_from_bits(floatDigitsBits(wide, digits))
+}
+
+public fn f32Text(value: F32) -> String {
     let wide = value as Float
-    // NaN and the infinities, which have no digits; the double spelling is theirs too.
-    if (wide != wide or wide - wide != 0.0) { return strFromFloat(wide) }
-    if (wide == 0.0) { return strFromFloat(wide) }
-    // A double's own digits are already the fewest that read back, and an `F128` is
-    // printed as the double nearest it.
-    if (limit >= 17) { return strFromFloat(wide) }
-    for digits in 1..<limit {
-        let back = __builtin_float_from_bits(floatDigitsBits(wide, digits)) as T
-        if (back == value) { return strFromFloatDigits(wide, digits) }
+    if (floatHasNoDigits(wide)) { return strFromFloat(wide) }
+    for digits in 1..<9 {
+        if (floatReadBack(wide, digits) as F32 == value) { return strFromFloatDigits(wide, digits) }
     }
-    return strFromFloatDigits(wide, limit)
+    return strFromFloatDigits(wide, 9)
+}
+
+public fn f16Text(value: F16) -> String {
+    let wide = value as Float
+    if (floatHasNoDigits(wide)) { return strFromFloat(wide) }
+    for digits in 1..<5 {
+        if (floatReadBack(wide, digits) as F16 == value) { return strFromFloatDigits(wide, digits) }
+    }
+    return strFromFloatDigits(wide, 5)
+}
+
+public fn bf16Text(value: BF16) -> String {
+    let wide = value as Float
+    if (floatHasNoDigits(wide)) { return strFromFloat(wide) }
+    for digits in 1..<4 {
+        if (floatReadBack(wide, digits) as BF16 == value) { return strFromFloatDigits(wide, digits) }
+    }
+    return strFromFloatDigits(wide, 4)
 }
 
 // `toString()` is the digits that read back; `toString(decimals)` is a fixed-point
 // column, formatted as the `Float` it widens to.
 impl F32 {
-    lang("to_string") public fn toString(self) -> String { return floatText(self, 9) }
+    lang("to_string") public fn toString(self) -> String { return f32Text(self) }
     public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
 }
 impl F16 {
-    public fn toString(self) -> String { return floatText(self, 5) }
+    public fn toString(self) -> String { return f16Text(self) }
     public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
 }
 impl BF16 {
-    public fn toString(self) -> String { return floatText(self, 4) }
+    public fn toString(self) -> String { return bf16Text(self) }
     public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
 }
 impl F128 {
-    public fn toString(self) -> String { return floatText(self, 17) }
+    public fn toString(self) -> String { return strFromFloat(self as Float) }
     public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
 }

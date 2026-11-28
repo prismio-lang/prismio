@@ -1,0 +1,31 @@
+// A program that names `F32` and no other narrow or wide float: its text is the digits that
+// read back as an `F32`, and nothing for the other float types is compiled into it. An
+// instance for `F128` once was, and its conversions did not link (the harness test
+// narrow_float_instances reads this file's IR).
+
+import std.io
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let tenth = 0.1 as F32
+    if (tenth.toString() != "0.1") { return fail("0.1 ".concat(tenth.toString())) }
+    let one: F32 = 1.0
+    if ((one / 3.0).toString() != "0.33333334") { return fail("one third") }
+    let twoThirds: F32 = 2.0
+    if ((twoThirds / 3.0).toString() != "0.6666667") { return fail("two thirds") }
+    let big: F32 = 16777216.0
+    if (big.toString() != "16777216") { return fail("2^24") }
+    let negative: F32 = -2.5
+    if (negative.toString() != "-2.5") { return fail("negative") }
+    if (tenth.toString(3) != "0.100") { return fail("fixed decimals") }
+    let zero: F32 = 0.0
+    if (zero.toString() != "0") { return fail("zero") }
+    if ((zero / zero).toString() != "nan") { return fail("nan") }
+    println(tenth, big)
+    return 0
+}
