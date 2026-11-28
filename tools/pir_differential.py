@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     parser.add_argument("--json", type=Path, help="write every result here")
     parser.add_argument("--build-flag", action="append", default=[],
-                        help="passed to both builds, e.g. --build-flag=--pir=plan")
+                        help="passed to both builds, e.g. --build-flag=--pir=off")
     parser.add_argument("--keep", type=Path, help="keep both outputs of each mismatch under here")
     args = parser.parse_args()
     args.compiler = str(Path(args.compiler).resolve())

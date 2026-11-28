@@ -10,8 +10,8 @@ host (`.prismio/build/debug/prismio`, built 2026-10-08; the three commits after 
 AArch64 backend, a benchmark arm and docs, none of the analysis):
 
 - Every runnable program in `../tests` was built with `--verify` and run: 281 programs, 274 of
-  them print a ledger, **0 violations**, and 20 still leak (463 blocks, 300 of them the deliberately
-  pinned `test_273`; see [Ownership](#ownership-leaks)). That is after the fixes made later the same day,
+  them print a ledger, **0 violations**, and 20 still leaked (463 blocks; see [Ownership](#ownership-leaks),
+  which no longer lists the two the PIR plan has fixed since). That is after the fixes made later the same day,
   below: the audit itself read 25 programs and 192 blocks. The other seven print nothing and two harness fixtures
   (`aif_tiers`, `aif_concurrency`) need arguments the suite gives them.
 - Each reproducer below was run on that date and its numbers are the ones it printed. An entry
@@ -112,7 +112,7 @@ allocated (`aif_trace_print` in `../runtime/lang_runtime.c`; symbolise with `ato
 twelve bytes**: a shorter one is stored inline, never reaches the ledger, and reads clean.
 
 ```
-prismio build tests/test_205_return_on_one_path.psm --verify -o /tmp/t && /tmp/t
+prismio build tests/test_269_struct_pass_through_escapes.psm --verify -o /tmp/t && /tmp/t
 ```
 
 A program that starts itself (`test_153`, `test_183`, `test_188`, `test_258`, `test_259`)
@@ -121,14 +121,13 @@ read clean now.
 
 ### What the test suite still leaks
 
-Counts from `--verify` on 2026-10-09, after the day's fixes: **463 leaked blocks in 20 programs, 0 violations** (163 in 19 programs, plus the 300 pinned in `test_273`).
+Counts from `--verify` on 2026-10-09, after the day's fixes, less `test_273` (300) and `test_205` (10), which the PIR plan
+releases since: **153 leaked blocks in 18 programs, 0 violations**. Newer fixtures are not in the table.
 
 | Program | Leaked | Cause |
 |---|---|---|
 | `test_58_region_serves` | 100 | Values that escape their `region` fall back to the heap and are not released (pinned). |
-| `test_205_return_on_one_path` | 10 | `let t = a; return t` returns `a` under another name, and an inner `let a = a` binds the name twice; both keep the old refusal. 0 under `--pir=plan`. |
 | `test_269_struct_pass_through_escapes` | 9 | A function that returns *one of* its parameters, with the result returned, pushed, carried round a loop or assigned outward: the argument that is not returned has no owner ([below](#the-argument-a-pass-through-function-does-not-return-is-leaked)). |
-| `test_273_match_payload_returned` | 300 | **Pinned on purpose** (300 of 400): a `match` arm that returns the payload it bound keeps the `Result` alive, because a match binder is a view of the scrutinee. Declining the drop is what stops the use-after-free this fixture was written for; the leak is the price. A copy of the payload at the `return` would close it. |
 | `test_127_enum_null_variant` | 6 | Blocks are allocated in `makeTree`, `add` and `makeNested` (recursive enums built by helpers). Once recorded as a `strClone` holder/site conflation when it leaked 1; the cause is **not isolated** at 6. |
 | `test_100_reuse_token` | 6 | Nothing in `main` is released (reuse tokens and a collected cycle). |
 | `test_191_option_methods` | 5 | `concat` results through the `T?` and `Result` methods (the `Process()` list it also leaked is released now). |
@@ -197,8 +196,8 @@ let v: Vec<Int> = [3, 1, 2, 5, 4]
 if (v.toVec().length != 5 or v.sorted()[0] != 1) { println("x") }   // the sorted() Vec leaks
 ```
 
-**Under `--pir=plan`** (off by default) an element read off such a temporary, and one whose callee may hand it back, are released at
-the end of the right operand (`test_406`); a field read off it and a `Vec` literal there still leak.
+The PIR plan releases an element read off such a temporary, and one whose callee may hand it back, at the end of the right
+operand (`test_406`); a field read off it and a `Vec` literal there still leak.
 
 `irHoistBorrowedTemporaries` binds an owned temporary ahead of its statement, and only where
 that reorders nothing; the right operand of `and`/`or` runs only sometimes, so a binding hoisted
@@ -476,10 +475,10 @@ explicit worklist (`RESULTS-recursive-release-depth.md`).
 ## The AIF analysis and its oracle
 
 `../tools/aif_oracle/aif.py` is the oracle: an independent implementation that
-`../tools/aif_differential.py` compares with the in-compiler engine. **They agree on all 23
+`../tools/aif_differential.py` compares with the in-compiler engine. **They agree on all 24
 default sources (re-run 2026-11-28)**, in both collection models: `[owned]`, the default, and
-`[as-is]`, the pre-Level-4 `--copyable-collections` model that stays as the second arm, and
-with `--plan`. Two programs outside that set still disagree:
+`[as-is]`, the pre-Level-4 `--copyable-collections` model that stays as the second arm, with
+the PIR plan (the default) and with `--pir-off`. Two programs outside that set still disagree:
 
 ### A struct pushed into a Vec in a loop (`test_164_array_fields`)
 
@@ -503,13 +502,14 @@ through a null buffer and crashes, so a module that keeps one assigns `= []` bef
 
 PIR generates no code in 0.3; what it offers and refuses is the developer docs' *PIR* page.
 
-### `--pir=plan` is opt-in because it costs too much to compile with
+### The plan costs more to compile with than its budget
 
-On `src/main.psm`, with the plan against without: 8.8% more instructions, about 12% more wall time and 16% more peak memory
-(2026-11-28, median of 7). The default-on bar is 5%. Building PIR for the whole program, then rebuilding 1,375 functions in the
-"may answer a view" fixed point, is most of it: the plan reads a small part of what is built.
+On `src/main.psm`, the default build against `--pir=off`: 8.7% more instructions, 11.7% more wall time and 16.2% more peak
+memory (2026-11-28, median of 5). The budget is 5% of instructions; it ships over it by decision (`PIR_PLAN.md` §20.4).
+Building PIR for the whole program, then rebuilding 1,375 functions in the "may answer a view" fixed point, is most of it:
+the plan reads a small part of what is built (§20.5, item 1).
 
-### `--pir=plan` leaves most of what PIR sees die
+### The plan leaves most of what PIR sees die
 
 Of 4,472 values in the compiler that PIR would end and today's code does not release (2026-11-28), the analysis answers "counted as
 shared" for 3,014 and "held" for 1,219: another holder may exist, and PIR cannot disprove it while AST nodes are held by raw pointer.
@@ -518,7 +518,7 @@ and a field read off a temporary or a temporary `Vec` literal on the right of `a
 
 ### PIR refuses closures called as values, trait objects, tasks, regions and functions that take an address
 
-A refused function is skipped by `--pir=plan`, and a program that reaches one is `pir ineligible` under `--pir-run`.
+A refused function is skipped by the plan, and a program that reaches one is `pir ineligible` under `--pir-run`.
 `--pir-coverage` names each. On 2026-11-28: 11 of 4,759 functions of the compiler (indirect calls) and 126 of 2,528 of the tests'
 own.
 

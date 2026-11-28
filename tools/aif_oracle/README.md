@@ -16,7 +16,7 @@ changed here in the same commit.
 ```bash
 python3 tools/aif_differential.py --compiler <compiler>          # every default source, both modes
 prismio dump-ast tests/test_44_aif_region.psm > region.json       # the oracle reads an AST dump
-# with --pir=plan the dump marks the reads PIR moves ("take": true), which the oracle applies
+# unless --pir=off, the dump marks the reads PIR moves ("take": true), which the oracle applies
 python3 tools/aif_oracle/aif.py region.json --owned-collections
 python3 tools/aif_oracle/layout.py region.json --verbose
 ```

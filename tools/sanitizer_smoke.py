@@ -15,7 +15,7 @@ so linking them would report nothing.
 Without paths it runs the fixtures below and `tests/harness/aif.py`'s ownership probes,
 each of which must exit 0. A path (a file, or a directory of `.psm` files) adds programs
 that are only checked for a sanitizer report or a signal. `--build-flag` passes a flag to every
-build (`--build-flag=--pir=plan`).
+build (`--build-flag=--pir=off`).
 
 LeakSanitizer is asked for on Linux, and only of the fixtures that are held leak-free.
 """
@@ -118,7 +118,7 @@ def main() -> int:
     parser.add_argument("--paths-only", action="store_true",
                         help="run only the given paths, not the built-in programs")
     parser.add_argument("--build-flag", action="append", default=[],
-                        help="passed to every `build`, e.g. --build-flag=--pir=plan")
+                        help="passed to every `build`, e.g. --build-flag=--pir=off")
     parser.add_argument("paths", nargs="*", type=Path)
     args = parser.parse_args()
 

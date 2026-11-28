@@ -18,7 +18,8 @@
 // 5. `wrapper` -- a one-line wrapper returning a callee that does (2): the
 //    wrapper's return is another frame's, and must not undo the callee's drop.
 //
-// Refused, and so leaked, because releasing would free what the caller holds:
+// Codegen alone refuses these, since releasing would free what the caller holds;
+// the PIR plan releases them on the other paths (`--pir=off` leaks them):
 // 6. `aliased` -- `let t = a; return t` carries `a` out under another name.
 // 7. `rebound` -- `let a = a` in an inner block binds the name twice.
 

@@ -79,7 +79,7 @@ private fn generateShortCircuit(expr: ASTNode) -> String {
     return ir_get_temp_name(resultId)
 }
 
-// `--pir=plan`, A3: an owned temporary on the right of `and`/`or` that codegen would
+// The PIR plan, A3: an owned temporary on the right of `and`/`or` that codegen would
 // bind ahead of the statement, were it not evaluated only sometimes
 // (irFindBorrowedTemporary stops there). It is released at the end of its arm instead.
 // The same two shapes and the same ownership question as the hoist, where PIR also says
@@ -3851,7 +3851,7 @@ private fn irCallResultIsScalar(call: ASTNode) -> Bool {
     return key.equals("void") or scalarInlineBytes(key) > 0
 }
 
-// A move at last use (`--pir=plan`, pir.plan): the value just loaded leaves its owner, whose
+// A move at last use (pir.plan): the value just loaded leaves its owner, whose
 // release must find nothing in the slot. Every release a slot can name takes null.
 internal fn irEmitTake(node: Ptr, fieldType: String, slot: String, structName: String, field: String) {
     let fieldIndex = ir_get_struct_field_index(structName, field)

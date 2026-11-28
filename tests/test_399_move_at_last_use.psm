@@ -1,8 +1,8 @@
-// Move at last use (`--pir=plan`, docs/PIR_PLAN.md §20 stage P2): a field or a match
+// Move at last use (the PIR plan, docs/PIR_PLAN.md §20 stage P2): a field or a match
 // payload read out of a local that is dead afterwards is moved out of it. The local's
 // release finds a null slot, and whoever the value went to releases it.
 //
-// Every shape here leaked before. The suite builds this with `--pir=plan --verify`,
+// Every shape here leaked before. The suite builds this with `--verify`,
 // holds it at 0 leaked and 0 violations, and it asserts the values: a balanced ledger
 // cannot see a read of memory that was released early.
 

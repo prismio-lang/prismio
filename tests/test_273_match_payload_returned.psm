@@ -11,8 +11,8 @@
 // returned freed memory: the first eight bytes of the String printed as NULs.
 // `--verify` does not show it (its allocator does not reuse the block at once), so
 // this fixture asserts the *values*, and is also run as an ordinary build by the
-// suite. The ledger is pinned below in run_aif_verify_test: the `Result` that must
-// outlive the match is not released, which is a leak and never a free.
+// suite. The ledger is held at 0 in run_aif_verify_test: the PIR plan moves the
+// payload out of the dead `Result`, which `--pir=off` leaks rather than frees.
 //
 // Both spellings are checked and must agree: `match (parse(text))` takes the
 // binding the hoist makes (irHoistBorrowedTemporaries), the other is written out.

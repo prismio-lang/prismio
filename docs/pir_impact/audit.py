@@ -14,14 +14,14 @@ import argparse, concurrent.futures as cf, json, os, re, subprocess, sys, tempfi
 LEDGER = re.compile(r"aif-verify: (\d+) allocated, (\d+) released, (\d+) leaked, (\d+) violation")
 
 
-def one(compiler, src, scratch):
+def one(compiler, src, scratch, flags):
     name = src.stem
     work = pathlib.Path(tempfile.mkdtemp(prefix=name + "-", dir=scratch))
     exe = work / name
     env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
     rec = {"program": str(src), "status": None}
     try:
-        b = subprocess.run([compiler, "build", str(src), "--verify", "-o", str(exe)],
+        b = subprocess.run([compiler, "build", str(src), "--verify", *flags, "-o", str(exe)],
                            cwd=work, env=env, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         rec["status"] = "build-timeout"
@@ -50,6 +50,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--only", nargs="*", help="programs to run instead of tests/ + probes")
+    ap.add_argument("--build-flag", action="append", default=[],
+                    help="passed to every `build`, e.g. --build-flag=--pir=off")
     args = ap.parse_args()
     root = pathlib.Path.cwd()
     compiler = str(pathlib.Path(args.compiler).resolve())
@@ -59,7 +61,7 @@ def main():
         srcs = sorted((root / "tests").glob("*.psm")) + sorted((root / "docs/pir_impact/probes").glob("*.psm"))
     scratch = tempfile.mkdtemp(prefix="pir-impact-")
     with cf.ThreadPoolExecutor(args.jobs) as ex:
-        recs = list(ex.map(lambda s: one(compiler, s, scratch), srcs))
+        recs = list(ex.map(lambda s: one(compiler, s, scratch, args.build_flag), srcs))
     led = [r for r in recs if r["status"] == "ledger"]
     leaking = [r for r in led if r["leaked"] > 0]
     summary = {

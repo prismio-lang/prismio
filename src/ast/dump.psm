@@ -178,8 +178,8 @@ private fn dumpNode(ptr: Ptr) {
         jsonFieldStr("ty", "")
     }
 
-    // Under `--pir=plan`, a field read or payload binder that moves its value out
-    // (pir.plan): the oracle's one input from PIR. Absent everywhere else.
+    // A field read or payload binder that moves its value out (pir.plan): the oracle's
+    // one input from PIR. Absent everywhere else, and everywhere under `--pir=off`.
     if (pirPlanIsTake(node_to_ptr(n))) { print(",\"take\":true") }
 
     print(",\"c1\":")

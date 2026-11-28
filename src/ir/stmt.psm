@@ -641,7 +641,7 @@ private fn generateVariableDecl(stmt: ASTNode) {
             // block returns the outer allocation under the inner name, and the
             // drop of the outer `a` there freed what the caller received.
             let owned = aif_owns_call_result_at_node(stmt.child2)
-            // `--pir=plan` knows which returns carry this value, under whatever name, so
+            // The PIR plan knows which returns carry this value, under whatever name, so
             // the two guards that ask it of the name are answered (pir.drops).
             let onPaths = pirPlanIsPathBinding(stmt.child2)
             if (owned != AIF_ELEM_NONE

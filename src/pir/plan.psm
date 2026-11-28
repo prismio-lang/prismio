@@ -1,6 +1,6 @@
 // The stage-A plan (docs/PIR_PLAN.md §20): what PIR decided about one AST node, for the
-// walk, codegen and the AST dump to read. Empty unless `--pir=plan` ran the pre-pass, and
-// then every answer below is "no" everywhere it was not asked for.
+// walk, codegen and the AST dump to read. Empty under `--pir=off`, which skips the
+// pre-pass: every answer below is then "no".
 //
 // A taken read is a field read, or a match payload binder, that moves the value out of a
 // local that is dead afterwards (A6): the slot is loaded and nulled, the reader owns the

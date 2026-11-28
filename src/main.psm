@@ -101,9 +101,9 @@ let USAGE_DEVELOPER =
                     [--freestanding-target <triple>]... -o <out.plib>
                                    precompile one library module; a freestanding target gets a
                                    section only when the module's header says it is freestanding
-      prismio dump-ast <source.psm> [--pir=plan]
+      prismio dump-ast <source.psm> [--pir=off]
       prismio aif <source.psm> [--manifest] [--summary] [--layout] [--copyable-collections]
-                               [--theta-fields] [--budget=N] [--target <triple>] [--pir=plan]
+                               [--theta-fields] [--budget=N] [--target <triple>] [--pir=off]
       prismio aif <source.psm> --why=<ID|symbol>   explain one allocation decision
       prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate
       prismio build <source.psm> --verify | --debug
@@ -111,15 +111,18 @@ let USAGE_DEVELOPER =
                                    write every source and .plib read, or a hash of everything
                                    handed to the linker (the test orchestrator's cache keys)
 
-      prismio build <source.psm> [--emit-pir[=<file>]] [--pir-coverage] [--pir-run] [--pir=plan]
+      prismio build <source.psm> [--emit-pir[=<file>]] [--pir-coverage] [--pir-run] [--pir=off]
 
           --emit-pir writes the PIR dump (docs/PIR_PLAN.md) to standard output or
           the file, and --pir-coverage reports how many functions PIR can build.
           Both verify what was built, and neither changes the program's code.
           --pir-run interprets `main` over PIR instead of building the program,
-          exits with its status, and reports views read after a write.
-          --pir=plan moves a field or payload out of a local that is dead afterwards
-          instead of viewing it; --pir-coverage then also lists what moved.
+          exits with its status, and reports views read after a write and the
+          objects the plan left live.
+          Every build, `aif` and `dump-ast` follow PIR's plan: a field or payload is
+          moved out of a local that is dead afterwards instead of viewed, and values
+          are dropped on exit edges; --pir-coverage also lists what moved. --pir=off
+          leaves the plan out, to compare against; --pir=plan names the default.
 
           --debug is the zero-analysis level and says nothing about debug info;
           --verify builds with the allocation ledger.
@@ -406,10 +409,12 @@ private fn cliDumpAst() -> Int {
         pointAtUsage()
         return 1
     }
-    let mut plan = false
+    let mut plan = true
     for i in 3..<process.args.count {
         if (process.args[i].equals("--pir=plan")) {
             plan = true
+        } else if (process.args[i].equals("--pir=off")) {
+            plan = false
         } else {
             diag_error_code(DIAG_CLI_DUMP_AST_UNKNOWN_ARGUMENT, "unknown argument ".concat(diagQuote(process.args[i])))
             pointAtUsage()
@@ -443,7 +448,7 @@ private fn cliAif() -> Int {
     let mut aifWhy = ""
     let mut aifLayout = false
     let mut aifManifest = false
-    let mut aifPlan = false
+    let mut aifPlan = true
     let mut aifBudgetArg = AIF_DEFAULT_ROUNDS
     let mut aifArg = 3
 
@@ -496,6 +501,8 @@ private fn cliAif() -> Int {
             aifOwned = true
         } else if (flag.equals("--pir=plan")) {
             aifPlan = true
+        } else if (flag.equals("--pir=off")) {
+            aifPlan = false
         } else if (flag.equals("--copyable-collections")) {
             // The pre-Level-4 language, where only structs were move-only.
             // Kept because it is the differential's second arm, not because
@@ -814,6 +821,9 @@ fn main() -> Int {
             argIndex = argIndex + 1
         } else if (arg.equals("--pir=plan")) {
             options.pirPlan = true
+            argIndex = argIndex + 1
+        } else if (arg.equals("--pir=off")) {
+            options.pirPlan = false
             argIndex = argIndex + 1
         } else if (arg.equals("--pir-run")) {
             options.pirRun = true

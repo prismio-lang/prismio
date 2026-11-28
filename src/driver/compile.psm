@@ -62,7 +62,8 @@ public struct CompileOptions {
     public pirCoverage: Bool,
     // `--pir-run`: interpret the program over PIR instead of emitting it.
     public pirRun: Bool,
-    // `--pir=plan`: PIR's moves at last use reach the analysis and the emitted program.
+    // PIR's moves at last use and exit-edge drops reach the analysis and the emitted
+    // program. On unless `--pir=off`.
     public pirPlan: Bool,
     runDirectory: String
 }
@@ -82,7 +83,7 @@ public fn compileOptions() -> CompileOptions {
         emitPir: "".clone(),
         pirCoverage: false,
         pirRun: false,
-        pirPlan: false,
+        pirPlan: true,
         runDirectory: "".clone()
     }
 }
@@ -298,7 +299,7 @@ public fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaF
         return 1
     }
 
-    // What `build --pir=plan` analyses, so that this command describes it.
+    // What `build` analyses, so that this command describes it.
     pirPlanReset()
     if (plan and pirMakePlan(merged, false, false) == false) {
         diag_finish()
@@ -508,8 +509,9 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     // -- which is the one whose layout ships.
     reportForcedLayouts()
 
-    // PIR (docs/PIR_PLAN.md) runs only when it was asked for, and only reads the tree.
-    // After the analysis, whose answers its leak estimate is measured against.
+    // A PIR dump, coverage report or interpreted run (docs/PIR_PLAN.md), each only when
+    // asked for, and each only reads the tree. After the analysis, whose answers the leak
+    // estimate is measured against.
     if (options.pirRun) {
         let status = pirRunInterpreted(mergedAst, path, options.emitPir, options.pirCoverage,
             options.overflowChecks, outputFile, options.pirPlan)

@@ -2749,11 +2749,11 @@ def run_aif_verify_test():
         # (`v.sorted()[0]`) and a `match` on an owned call result each get a
         # binding now. Before, every use leaked a header and an element block.
         "test_272_temporary_hoists": 0,
-        # 2026-10-09: 300 of 400, pinned. The arm returns the matched payload, so
-        # the `Result` it was bound out of must outlive the match and is not
-        # released -- a leak where the bound spelling used to return freed memory.
-        # If this goes to 0, check the values first: the fixture asserts them.
-        "test_273_match_payload_returned": 300,
+        # The arm returns the matched payload. Without the PIR plan the `Result` it
+        # was bound out of must outlive the match and 300 of 400 leak; the plan moves
+        # the payload out of the dead `Result`. A nonzero count is that move gone;
+        # the fixture asserts the values, which a freed payload would not read back.
+        "test_273_match_payload_returned": 0,
         # 2026-09-30: scalar T? in every container, as values; Vec<Int?> did
         # not pass the LLVM verifier before.
         "test_238_scalar_optionals": 0,
@@ -3108,11 +3108,11 @@ def run_aif_verify_test():
         # before: one `Box { text: make(n) }` in an uncalled function refused
         # the release to every `concat` result in the program.
         "test_184_call_result_ownership": 0,
-        # Ten, and each is deliberate: `aliased` and `rebound` return the value
-        # under a name the drop cannot see, five times each, so they keep the
-        # refusal. Every other shape releases what it does not return. More than
-        # ten is that release gone; a violation is it firing on a returned path.
-        "test_205_return_on_one_path": 10,
+        # Every shape releases what it does not return. `aliased` and `rebound` return
+        # the value under a name codegen's drop cannot see, and leaked 10 until the
+        # PIR plan's path drops. A leak here is a release gone; a violation is one
+        # firing on a returned path.
+        "test_205_return_on_one_path": 0,
         # A view of a binding kept past the binding's scope: pushed into a Vec,
         # or assigned outward. These leak by design -- the binding is kept -- and
         # what the fixture guards is the 0 violations and the strings reading

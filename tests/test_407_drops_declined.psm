@@ -1,4 +1,4 @@
-// The shapes next to test_406's that `--pir=plan` must leave alone (src/pir/drops.psm):
+// The shapes next to test_406's that the PIR plan must leave alone (src/pir/drops.psm):
 // a view of the value is returned, the value is one side of a merge, or it goes into a
 // struct, a call or a copy. Releasing any of these early would be a read of freed
 // memory, so the values are checked after more allocation, and the pir_plan harness test

@@ -1,6 +1,7 @@
-// What `--emit-pir`, `--pir-coverage` and `--pir-run` ask for: build PIR for a checked
-// module, verify it, and report on it or interpret it. Nothing here runs without one of
-// those flags, and nothing it does reaches the AST, the analysis or the emitted program.
+// The two uses of a checked module's PIR. `pirMakePlan` builds, verifies and writes the
+// plan (pir.plan) every build follows unless `--pir=off`. `--emit-pir`, `--pir-coverage`
+// and `--pir-run` build PIR again to report on it or interpret it, and nothing they do
+// reaches the AST, the analysis or the emitted program.
 
 import std.collections.vec
 import std.collections.map
@@ -38,7 +39,7 @@ public fn pirRunInterpreted(module: ASTNode, sourcePath: String, emit: String, c
     return pirInterpret(program, module, argv0, plan)
 }
 
-// `--pir=plan`: builds PIR with its moves at last use, verifies it, and writes each move
+// Builds PIR with its moves at last use, verifies it, and writes each move
 // into the plan (pir.plan) the analysis and codegen read. `report` prints how many were
 // made and why the other candidates were left views.
 public fn pirMakePlan(module: ASTNode, overflowChecks: Bool, report: Bool) -> Bool {

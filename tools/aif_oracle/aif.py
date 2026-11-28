@@ -877,7 +877,7 @@ class Engine:
                 # provenance fix; without the matching oracle rule, returning
                 # `lexer.tokens` left the lexer stack-local here while the
                 # compiler correctly raised it to Caller.
-                # `--pir=plan`: a read PIR moves out of its object (marked
+                # The PIR plan: a read PIR moves out of its object (marked
                 # `take` in the dump; the choice is PIR's and pir_verify's to
                 # check, not re-derived here) is no view of it, so E-VIEW does
                 # not raise the object. It reads through a location of its own,

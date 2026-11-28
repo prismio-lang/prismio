@@ -1,5 +1,5 @@
-// The values `--pir=plan` ends where today's codegen leaks them (src/pir/drops.psm),
-// with every value checked. Without the plan this leaks; with it, nothing is left and
+// The values the PIR plan ends where codegen alone leaks them (src/pir/drops.psm),
+// with every value checked. Under `--pir=off` this leaks; with the plan, nothing is left and
 // nothing is read after it ended (the pir_plan harness test).
 //
 // 1. An owned temporary on the right of `and`/`or` that an element is read off: the

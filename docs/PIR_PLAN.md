@@ -1,6 +1,7 @@
 # PIR: Prismio's middle IR, a layered hybrid
 
-**Status:** stages P0–P3 are built and ship in 0.3 (§20); `--pir=plan` is opt-in there. What 0.3
+**Status:** stages P0–P3 are built and ship in 0.3 (§20), and PIR is a stage of the compiler: its plan
+runs on every build, `aif` and `dump-ast` (`--pir=off` leaves it out, for comparisons). What 0.3
 measured is §20.4, and **where the next release cycle starts is §20.5**. The design was revised
 2026-11-27: the first version (2026-11-22) proposed a pure affine RVSDG. This revision keeps its
 goals, its measured motivation and its migration discipline, and changes the structure: PIR is now
@@ -526,10 +527,10 @@ changes is where constraints come from:
 
 **Take sites (decided at P2).** Which reads take is PIR's choice, made by a pre-pass before the
 analysis from liveness and not by AIF. The pass writes one side table keyed by AST node
-(`pir/plan.psm`), and the walk, codegen and `prismio dump-ast --pir=plan` (`"take": true` on the
+(`pir/plan.psm`), and the walk, codegen and `prismio dump-ast` (`"take": true` on the
 member read or payload binder) all read it. The oracle neither re-derives liveness nor reads
 `--emit-pir`: `aif.py` applies the AIF rule alone (a taken read is no view of its object, so no
-E-VIEW lift), and `tools/aif_differential.py --plan` compares the two on identical take sites.
+E-VIEW lift), and `tools/aif_differential.py` compares the two on identical take sites.
 The choice is therefore checked elsewhere, independently of the pass that makes it: `pir_verify`
 requires that after a `take`, on every path, neither the consumed local nor any view of it is used
 (`pir/verify_take.psm`), and `--pir-run` stops at a read of a dropped remainder or an emptied
@@ -738,7 +739,7 @@ compile-time intrinsics, uncovered functions, floats other than `F64`, integers 
 bits. An integer division by zero, `MIN / -1` and an over-wide shift answer what AArch64 answers.
 Every object keeps its allocation site and a state. The only drops built so far (P2) are of what a
 `take` leaves behind: a `take` empties its field, a `drop` marks the remainder `dropped`, and a
-read or write of either stops the run with both positions (status 126). Under `--pir=plan` the
+read or write of either stops the run with both positions (status 126). With the plan (not `--pir=off`) the
 objects still `live` when the run ends are listed by site (nearly all of them, until P3 on places
 more drops); delegate and leak nodes do not exist yet. `tools/pir_differential.py` is the harness.
 
@@ -907,9 +908,10 @@ replaces its AST implementation and must reproduce its decisions byte for byte:
 
 ## 20 · Migration
 
-Each stage is behind `--pir=plan` or `--pir=emit`, off by default, turned on per function, and
-turned on by default only when the whole suite is byte-identical except for measured fixes, each
-with a fixture.
+Stage A's decisions are the **plan**, on by default since 0.3; `--pir=off` leaves it out, to compare
+against, and `--pir=plan` names the default. A later stage's decisions join the plan only when the
+whole suite is byte-identical except for measured fixes, each with a fixture. Stage B's emission
+(`--pir=emit`) is off by default and turned on per function until it passes the same gate (§22).
 
 | Stage | Scope | Exit criterion | What it retires |
 |---|---|---|---|
@@ -919,7 +921,7 @@ with a fixture.
 | **P3** | `match`, `and`/`or`, `??`, `expect`; exits for `return` | the `and`/`or` temporary, `test_205` and the binder probes at 0 | `nodeReturnsAliasBeyondBare`, `E_held`/`ret_key` in codegen |
 | **P4** | loops; `break`, `continue`, labels | every loop in `tests/` builds and verifies | `ir_loop_drop_floor` for covered functions |
 | **P5** | places, state chains, view repair (A7, §6, §7.4) | `test_317`–`321`, `test_388`, `test_389` give the same verdicts or better; delays measured on `graph_churn` peak RSS | `overwritesMark`, `semaRemovalVerdict`, `columnsMark` |
-| **P6** | signatures for every function; witnesses; `delegate` | the whole compiler builds under `--pir=plan`; the IR fixpoint holds; `test_269` at 0 | `chainRetainsAliasOf`, `chainAssignsAliasOf`, `irValueAliasesName` |
+| **P6** | signatures for every function; witnesses; `delegate` | PIR builds every function of the compiler; the IR fixpoint holds with the signatures in the plan; `test_269` at 0 | `chainRetainsAliasOf`, `chainAssignsAliasOf`, `irValueAliasesName` |
 | **P7** | AIF's constraints from PIR; the oracle reads `--emit-pir` | `tools/aif_differential.py` agrees on every default source | the AST walk in `src/aif/walk.psm` |
 | **P8** | the fact engine, one domain at a time | each domain reproduces its AST pass's marks byte for byte before that pass is deleted | `ranges`, `relations`, `nowrap`, `counters`, `contents`, `residues`, `strides`, `reductions`, `tiling`, as each lands |
 | **P9** | stage B: PIR-L and emission, node kind by node kind; then lifetime markers, alias scopes, result slots, specialisation, reuse | see §22: the gate for a change that is meant to change the IR | the AST statement emitters, as each node kind moves |
@@ -948,7 +950,7 @@ table, and emission's wins (lifetime markers, alias scopes, result slots) are me
 
 ### 20.2 · P2's first slice, as built
 
-`--pir=plan` moves a field or payload out of a dead local (`take`, A6). Off by default. A read takes
+The plan moves a field or payload out of a dead local (`take`, A6). A read takes
 when all of these hold, and otherwise stays a view:
 
 - the base is a struct or enum this function owns (not a parameter, not `own ?w`), defined in the
@@ -972,7 +974,7 @@ into a `String?`, A9) to a slice of its own.
 
 ### 20.3 · P3's first slice, as built
 
-`--pir=plan` also adds drops (`pir/drops.psm`), a `DROP` node the interpreter runs as the end of the object, and codegen releases
+The plan also adds drops (`pir/drops.psm`), a `DROP` node the interpreter runs as the end of the object, and codegen releases
 only where it released nothing before, asking the analysis the same ownership question it asks of a binding or a temporary.
 
 - **Arm** (A3): a call's owned result on the right of `and`/`or`, consumed by nothing, none of its views leaving the arm. Codegen
@@ -991,17 +993,29 @@ in an arm.
 ### 20.4 · What 0.3 measured
 
 PIR in 0.3 is P0–P3: the builder and verifier, the interpreter (`--pir-run`) with its differential
-(`tools/pir_differential.py`), the sanitizer gate, `take` at last use and exit-edge drops behind
-`--pir=plan`. With the plan off the compiler's output is what it was without PIR; the benchmark IR is
-byte-identical with the plan off and on.
+(`tools/pir_differential.py`), the sanitizer gate, and the plan: `take` at last use and exit-edge
+drops, applied by default. The maintainer decided on 2026-11-28 to ship it on and accept its compile
+cost, above the +5% bar set for it: PIR is a stage of the compiler like the AST and LLVM IR, not an
+optional check. Under `--pir=off` the emitted program is what it was without PIR; the benchmark IR
+and the compiler's own are byte-identical with the plan off and on.
 
 | Measure | Before PIR (`c6d7432`) | 0.3 |
 |---|---:|---:|
-| `tests/` + the PIR probes, leaked blocks under `--verify` | 3,635 (with the 0.3 fixtures) | **785** with `--pir=plan`, 0 violations |
+| `tests/` + the PIR probes, leaked blocks under `--verify` | 3,635 (with the 0.3 fixtures) | **785** with the plan, 0 violations ¹ |
 | `field_out_of_dying_struct` / `test_273` / `test_205` / `test_399` | 900 / 300 / 10 / 1,640 | 0 / 0 / 0 / 0 (plan) |
 | PIR coverage of `src/main.psm` | — | 4,373 / 4,383 functions; std 985 / 985 |
 | Interpreter differential over `tests/` | — | 329 / 330 (`test_287`, known) |
-| Compile cost of `src/main.psm`, plan on | — | +12% wall, **+8.8% instructions**, +16% RSS (the bar is +5%) |
+| Compile cost of `src/main.psm`, plan against `--pir=off` ² | — | +11.7% wall, **+8.7% instructions**, +16.2% peak RSS |
+
+¹ Without `test_406` and `test_407`, the fixtures of the drops themselves, and before the safety fixes
+below. On the tree that turned the plan on: 942 with the plan and 4,942 under `--pir=off`, 0
+violations in both; the 942 is the 785, `test_407`'s 146 (shapes the plan must decline) and 11 from
+fixtures the safety fixes added or changed (`test_411`, `test_414`, `test_415`, `test_53`). In
+`tests/` and `benchmarks/hosted/prismio/` the plan moves the IR of five programs, all its fixtures:
+`test_205`, `test_273`, `test_399`, `test_406`, `test_407`.
+
+² `build src/main.psm -o x.ll`, median of 5, 2026-11-28: 2.97 s against 2.66 s, 62.90 G against
+57.87 G instructions, 1,707 MiB against 1,470 MiB.
 
 Bugs PIR surfaced, each reproduced outside PIR and fixed in 0.3:
 
@@ -1028,8 +1042,8 @@ against the 0.3 tag, not `c6d7432`.
 
 In order:
 
-1. **Bring `--pir=plan` under +5% compile instructions, then turn it on by default** (a measured
-   change, gated like any codegen change). The PIR build alone (138 ms) is over budget, so tuning the
+1. **Bring the default under +5% compile instructions** over `--pir=off` (it ships at +8.7%; a
+   measured change, gated like any codegen change). The PIR build alone (138 ms) is over budget, so tuning the
    passes cannot do it; build PIR for fewer functions:
    - pick candidates from the AST (a field read of a local built here, a `let` of a call that a
      `return` may carry, a call on the right of `and`/`or`) and build only those; "may answer a view"

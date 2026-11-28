@@ -4,8 +4,9 @@
 //
 // An object records where it was made and a state. A `drop` node ends it -- what a `take`
 // leaves behind, and the values pir.drops ends in an arm or on a path -- and any later
-// use of it stops the run, as does a read of the field a take moved out. Under
-// `--pir=plan` the objects still `LIVE` when the run ends are listed, grouped by `site`.
+// use of it stops the run, as does a read of the field a take moved out. With the plan
+// (not `--pir=off`) the objects still `LIVE` when the run ends are listed, grouped by
+// `site`.
 
 import std.collections.vec
 import std.collections.map

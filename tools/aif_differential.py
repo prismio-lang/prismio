@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Differential test: the in-compiler AIF engine against the Python oracle.
 
-    python tools/aif_differential.py [--compiler build/aif2.exe] [--plan]
+    python tools/aif_differential.py [--compiler build/aif2.exe] [--pir-off]
 
 Runs `prismio aif <src> --summary` and `tools/aif_oracle/aif.py <dump>` over the
 same sources, under both collection-ownership settings, and compares the tier
@@ -123,15 +123,16 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, cwd=REPO, **kw)
 
 
-def compare(compiler, source, owned, dumps, plan):
+def compare(compiler, source, owned, dumps, pir_off):
     # Both implementations default to owned collections as of 2026-08-08, which
     # is what `prismio build` analyses with. The second arm has to *ask* for the
     # pre-Level-4 model now; passing nothing would run the same analysis twice
     # and the pass would agree by construction.
     flags = [] if owned else ["--copyable-collections"]
-    # `--plan` runs both sides over PIR's moves at last use: the compiler makes the
-    # plan, and the oracle reads which reads it took from the dump.
-    planned = ["--pir=plan"] if plan else []
+    # Both sides run over PIR's moves at last use, the default: the compiler makes the
+    # plan, and the oracle reads which reads it took from the dump. `--pir-off`
+    # compares the analysis without it.
+    planned = ["--pir=off"] if pir_off else []
 
     # The compiler's Theta_stack is in bytes; the oracle reads a JSON dump with
     # no layout in it and can only count fields. Comparing in fields mode keeps
@@ -195,7 +196,8 @@ def under_neutral_name(compiler):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--compiler", default="build/aif2.exe")
-    ap.add_argument("--plan", action="store_true", help="compare under --pir=plan")
+    ap.add_argument("--pir-off", action="store_true", help="compare under --pir=off")
+    ap.add_argument("--plan", action="store_true", help="no effect: the plan is the default")
     ap.add_argument("sources", nargs="*")
     args = ap.parse_args()
 
@@ -303,7 +305,7 @@ def main():
     print(f"AIF differential test -- {args.compiler} vs tools/aif_oracle/aif.py\n")
     for src in sources:
         for owned in (False, True):
-            problem = compare(args.compiler, src, owned, dumps, args.plan)
+            problem = compare(args.compiler, src, owned, dumps, args.pir_off)
             tag = "owned" if owned else "as-is"
             if problem:
                 failures.append(problem)

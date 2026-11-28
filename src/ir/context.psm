@@ -99,7 +99,7 @@ let mut irSpawnArgCounter = 0
 // address to copy from. Dotted like `sc.` for the same reason.
 let mut irElemSpillCounter = 0
 
-// The temporaries that end in the `and`/`or` arm being generated (`--pir=plan`), a
+// The temporaries that end in the `and`/`or` arm being generated (the PIR plan), a
 // stack across nested arms: the call, its value once generated, and how it is released.
 // Empty vectors until the first one, which is what `irArmCount` says.
 let mut irArmCount = 0

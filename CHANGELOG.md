@@ -7,20 +7,33 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ## [0.3.0] - Unreleased
 
+### Changed
+
+- **PIR's plan runs on every build** (of a file or a project, `aif`, `dump-ast`, `--emit plib`). PIR is a stage of the compiler
+  like the AST and LLVM IR, so the leaks stages P2 and P3 close (below) are closed without a flag. `--pir=off`, given to `build`
+  or `run` with a source file, to `aif` or to `dump-ast`, leaves the plan out, for comparisons; `--pir=plan` is still accepted
+  there and names the default. Measured 2026-11-28, `build src/main.psm -o x.ll`,
+  default against `--pir=off`, median of 5: **8.7% more instructions** (62.90 G against 57.87 G), 11.7% more wall time (2.97 s
+  against 2.66 s) and **16.2% more peak memory** (1,707 MiB against 1,470 MiB). That is over the 5% budget the default was
+  held to, and accepted; bringing it under is the first item of 0.4 (`docs/PIR_PLAN.md` §20.5). The compiler's own IR is
+  identical with the plan on and off (it releases none of the compiler's values yet) and a fixpoint over two generations. Of
+  `tests/` and `benchmarks/hosted/prismio/` five programs' IR moves, all fixtures of the plan (`test_205`, `test_273`,
+  `test_399`, `test_406`, `test_407`); the benchmarks' IR is identical, and `--pir=off` emits what the compiler did before
+  (up to the standard library's own paths). `tests/` and the PIR probes leak 942 blocks under `--verify` against 4,942 with
+  `--pir=off`, 0 violations in both. `test_205` and `test_273` are now held at 0 leaked (10 and 300 before).
+
 ### Added
 
-- **PIR stage P3, first slice: drops on exit edges (`--pir=plan`, `docs/PIR_PLAN.md` §20.3).** In 0.3 `--pir=plan` is an **opt-in,
-  experimental leak fix**: off by default because of what it costs to compile with (below). Two shapes today's codegen leaks and PIR
+- **PIR stage P3, first slice: drops on exit edges (`docs/PIR_PLAN.md` §20.3).** Two shapes codegen alone leaks and PIR
   can prove (`src/pir/drops.psm`). An owned temporary on the right of `and`/`or` that an element is read off, or whose callee may hand
   it back, is released at the end of that arm (`words(i)[0].length`: 300 of 601 blocks leaked, now 0). A binding some `return` carries
   out under another name (`let t = a; return t`) is released on every other path (`test_205`: 10 -> 0). Codegen releases only where it
   released nothing and the analysis says the value is this frame's. The interpreter ends the object at each drop and stops on any later
-  use. Off by default: with the plan off the emitted program is unchanged, and with it four of the earlier programs of `tests/` and
-  the probes move (`test_205`, `test_273`, `test_399`, `field_out_of_dying_struct`), taking them from 3,635 to 785 leaked blocks under
-  `--verify`, 0 violations. `test_406` (910 -> 0) and `test_407` (386 -> 146, the shapes that must be declined) are in the `pir_plan`
-  check. Building the compiler with the plan on costs 8.8% more instructions than with it off (10.5% before the view
-  fixed point rebuilt each caller once a round instead of once per view it calls: 1,775 -> 1,375 rebuilds, same PIR), about 12%
-  more wall time and 16% more peak memory. `--pir-coverage`, measured again with references refused (`address of a place`): 4,748 of
+  use. When the slice landed, four of the earlier programs of `tests/` and
+  the probes moved with the plan (`test_205`, `test_273`, `test_399`, `field_out_of_dying_struct`), taking them from 3,635 to 785
+  leaked blocks under `--verify`, 0 violations. `test_406` (910 -> 0) and `test_407` (386 -> 146, the shapes that must be declined)
+  are in the `pir_plan` check. The view fixed point rebuilds each caller once a round instead of once per view it calls (1,775 ->
+  1,375 rebuilds, same PIR; 10.5% -> 8.8% more instructions then, building the compiler). `--pir-coverage`, measured again with references refused (`address of a place`): 4,748 of
   4,759 functions of the compiler (the 11 are indirect calls), all 985 of `std`, 2,402 of 2,528 of the tests' own functions, 282 of 288
   of the hosted benchmarks'.
 
@@ -44,16 +57,16 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   bytes inside its fixed size, no NUL in `text`) and answers `false` having changed nothing. `__builtin_cstring` and
   `__builtin_cstring_at` now set the borrowed bit themselves (`fatBorrowedFromPtr`). A compiler from the committed seed still bootstraps. `tests/args_views_probe.psm`, `args_views`, whose `--verify` ledger shows no leak and nothing freeing `argv`.
 
-- **PIR stage P2, first slice: move at last use (`--pir=plan`, `docs/PIR_PLAN.md` §20.2).** A field or match
+- **PIR stage P2, first slice: move at last use (`docs/PIR_PLAN.md` §20.2).** A field or match
   payload read out of a struct or enum that is built here, handed to no call and dead afterwards is moved out of
-  it: the slot is nulled and whoever receives the value releases it. Off by default, and without a take the
-  emitted program is byte-identical (checked over `tests/`, the hosted benchmarks and the compiler's own source:
+  it: the slot is nulled and whoever receives the value releases it. Without a take the emitted program is
+  byte-identical (checked over `tests/`, the hosted benchmarks and the compiler's own source:
   only `test_273` and the new `test_399` change). Under `--verify` the 900-block leak of a field returned or
   pushed out of a dying struct (`RESEARCH_BUILD_LIST.md` §2.2) and `test_273`'s 300 of 400 are 0. The analysis,
-  the oracle (`aif_differential.py --plan`), `prismio aif --pir=plan` and `dump-ast --pir=plan` read the same
+  the oracle (`aif_differential.py`), `prismio aif` and `dump-ast` read the same
   take sites; `pir_verify` checks that nothing uses a taken local afterwards, and `--pir-run` stops if the run
   does.
-- **PIR, the middle IR, stages P0 and P0b (`docs/PIR_PLAN.md`).** `src/pir/` builds PIR-H from the checked tree: branch regions for `if`, `match`, `and`/`or` and `??`, loop regions with `break`/`continue` and labels, versioned places for fields, elements and globals, struct and array literals, and value modes taken from sema (a call that may answer a view of an argument is a `view`). Closures called as values, trait objects, tasks, `async`, `region` and `scope` are refused by name. `prismio build x.psm --emit-pir[=<file>]` writes the verified dump; `--pir-coverage` reports covered functions, refusals, ownership counts and a static estimate of values today's code does not release. Neither changes the program, and without them PIR does not run. Covered: 4,373 of 4,383 functions of the compiler's own source and all 985 of `std`.
+- **PIR, the middle IR, stages P0 and P0b (`docs/PIR_PLAN.md`).** `src/pir/` builds PIR-H from the checked tree: branch regions for `if`, `match`, `and`/`or` and `??`, loop regions with `break`/`continue` and labels, versioned places for fields, elements and globals, struct and array literals, and value modes taken from sema (a call that may answer a view of an argument is a `view`). Closures called as values, trait objects, tasks, `async`, `region` and `scope` are refused by name. `prismio build x.psm --emit-pir[=<file>]` writes the verified dump; `--pir-coverage` reports covered functions, refusals, ownership counts and a static estimate of values today's code does not release. Neither changes the program. Covered: 4,373 of 4,383 functions of the compiler's own source and all 985 of `std`.
 - **PIR stage P1, the interpreter (`docs/PIR_PLAN.md` §14).** `prismio build x.psm --pir-run` interprets `main` over PIR-H instead of building it, with the language's semantics (a struct or `Vec` is a handle, containers and strings are interpreter objects, failures end with the compiled program's message and status), exits with the program's status, and reports on standard error every view read after the place it was read from was written. A program that reaches an unmodelled runtime call or an uncovered function ends with `pir ineligible:` and status 125. `tools/pir_differential.py` runs every test, benchmark and probe both ways and compares output and status. PIR now builds `assert` as a branch (its message is evaluated only when it fails), counts a `repeat` range upwards only, marks an inclusive slice, and records which argument each extra call result hands back.
 - **The standard library can be a tree (nothing is moved yet).** `import std.a.b` is `std/a/b.psm` in a checkout and `stdlib/a/b.plib` once installed. A directory with no file of its name is a package: `import app.net` reads every module in `app/net/`, as `import app.net.*` does (a file and a directory of one name coexist, and the import means the file), and `import app.net.connect` selects a declaration from all of them. A path segment that begins with `_` seals the module to the modules under that segment's parent: `app.net._wire.frame` may be imported from `app.net.*` and from nowhere else (`P1122`, ``is sealed inside `app.net` ``), and the library index never offers a sealed module. A library file may begin with a `module` header (`module prelude freestanding`, `module freestanding(runtime)`) and mark the declarations the language depends on with `lang("id")` before a function, struct, enum or trait, or before a `fn` inside a trait; both are only recorded so far (`P3021`..`P3025` for a misplaced or malformed one), and `module`, `prelude`, `freestanding`, `runtime` and `lang` are contextual words in the token tables, the JetBrains plugin included. `tests/test_396_package_import.psm`, `neg_419`..`neg_423`, and the new `std_layout` check in the suite (a faked checkout, so the library's own layout is what is tested). Behaviour-preserving: the IR of the 415 programs of `tests/` and `benchmarks/hosted/prismio/` that build is byte-identical to the baseline's, the compiler's own is a fixpoint over two generations, the suite is 832/832 and the AIF differential agrees on all 19 sources.
 - **`const` holds a `String`.** `const CODE = "text"` is a constant, and so is `const ALIAS = CODE`, in any order; the compiler puts the text where the name is used. A `String` is a constant only as a whole: `const JOINED = BASE.concat("cd")` and `const SAME = "a" == "a"` are errors that say what is allowed, and a `const fn` still takes, builds and returns only integers and `Bool`. Strings stay out of the expression interpreter, where an operand read as an integer would be quietly wrong. (`tests/test_395_const_string.psm`, `neg_417_const_string_expression.psm`, `neg_418_const_string_type_mismatch.psm`)
