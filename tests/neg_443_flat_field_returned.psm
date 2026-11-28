@@ -1,0 +1,13 @@
+// expect-error: P4116
+// expect-error: cannot move a flat struct out of a borrowed value
+// A field of a parameter returned.
+
+struct State { world: Int }
+struct Box { s: State }
+enum Wrap { One(State), Nothing }
+
+fn get(b: Box) -> State { return b.s }
+
+fn main() -> Int {
+    return get(Box { s: State { world: 1 } }).world
+}

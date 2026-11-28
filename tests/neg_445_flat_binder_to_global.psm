@@ -1,0 +1,15 @@
+// expect-error: P4116
+// expect-error: cannot move a flat struct out of a borrowed value
+// A payload binder kept in a global.
+
+struct State { world: Int }
+struct Box { s: State }
+enum Wrap { One(State), Nothing }
+
+let mut kept: State
+
+fn main() -> Int {
+    let e = Wrap.One(State { world: 1 })
+    match e { Wrap.One(s) => { kept = s } _ => {} }
+    return 0
+}

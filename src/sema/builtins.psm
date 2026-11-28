@@ -1256,6 +1256,7 @@ private fn semaCheckBuiltinVecOps(module: ASTNode, call: ASTNode, name: String, 
         // This also recovers the loop case for free -- `ir_binding_predates_loop`
         // already refuses a move that repeats on the next iteration, which is the
         // same double release written differently.
+        semaViewsStoreFlat(module, ptr_to_node(a0.next))
         semaConsumeOperand(ptr_to_node(a0.next))
         return true
     }
@@ -1363,6 +1364,7 @@ private fn semaCheckBuiltinVecOps(module: ASTNode, call: ASTNode, name: String, 
         if (elemT.kind == TypeKind.DATAVIEW) {
             semaErrorAt(valueNode, "a DataView cannot be stored directly in a Vec")
         }
+        semaViewsStoreFlat(module, valueNode)
         semaConsumeOperand(valueNode)
         return true
     }

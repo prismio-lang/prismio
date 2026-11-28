@@ -1430,6 +1430,24 @@ class Engine:
                 self.constraints.append(('escape_caller', v, fn))
             return
 
+        # REQUIREMENTS 18. A payload arm binds names out of the scrutinee's fields, and
+        # a binder of a reference is a view of the scrutinee: storing it is storing a
+        # view. The scrutinee is evaluated once. Mirrors src/aif/walk.psm.
+        if k == 'MATCH_STATEMENT':
+            scrutinee = VS_EMPTY
+            scrutinee_type = ''
+            if n['c1']:
+                scrutinee = self.sites_of(n['c1'][0], fn, scope)
+                scrutinee_type = base_type(n['c1'][0].get('ty', ''))
+            for one in n['c2']:
+                self.env_enter()
+                self.bind_payload_arm(one, scrutinee_type, scrutinee, fn, scope)
+                self.walk(one, fn, scope)
+                self.env_leave()
+            for c in n['c3']:
+                self.walk(c, fn, scope)
+            return
+
         # An arm's binders are in scope for that arm alone.
         arm = (k == 'MATCH_ARM')
         if arm:
@@ -1445,6 +1463,20 @@ class Engine:
                     self.sites_of(c, fn, scope)
         if arm:
             self.env_leave()
+
+    def bind_payload_arm(self, arm, scrutinee_type, scrutinee, fn, scope):
+        if not arm.get('s2') or not arm['c1'] or arm['c1'][0]['k'] != 'CALL_EXPR':
+            return
+        for index, binder in enumerate(arm['c1'][0]['c2']):
+            ty = binder.get('ty', '')
+            field = self.ref(('field', scrutinee_type, '%s$%d' % (arm['s2'], index)))
+            bound = field
+            if binder.get('take'):
+                bound = self.taken(field, fn, scope)
+            elif self.m.is_ref(ty):
+                bound = vs_view_of(field, scrutinee)
+            self.note_var_scope(fn, binder['s1'], scope)
+            self.constraints.append(('bind', self.var_key(fn, binder['s1']), bound))
 
     # -- fixed point ---------------------------------------------------------
 

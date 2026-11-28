@@ -203,6 +203,7 @@ public const DIAG_SEMA_FOREIGN_PRODUCE_SELF_RELEASED = "P4112"
 public const DIAG_SEMA_DIVISION_BY_ZERO = "P4113"
 public const DIAG_SEMA_SHIFT_OUT_OF_RANGE = "P4114"
 public const DIAG_SEMA_ELEMENT_PASSED_INOUT = "P4115"
+public const DIAG_SEMA_FLAT_MOVE_FROM_BORROW = "P4116"
 // --- P5xxx: the memory analysis (AIF) --------------------------------------
 
 public const DIAG_AIF_PROFILE_MATCHED_NOTHING = "P5001"

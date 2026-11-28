@@ -65,6 +65,18 @@ argument of the type the call returns, which the callee may hand back. The copy 
 only if the element is written after it crossed. An element passed `inout` to such a call cannot be a
 copy and is refused (P4115). Passing the Vec and index through calls is PIR 0.4 work.
 
+### Only a plain struct is refused on its way out of a borrow
+
+**Deferred.** Moving a plain-data struct out of a borrow into longer-lived storage is refused (P4116),
+because storing its address left two owners of it. Rust refuses every move of a value that is not
+`Copy` out of a borrow. Measured on 2026-11-28 that would reject 188 places in `src/`, `std/` and
+`ums/`, 56 in `tests/` and 5 website examples, most of them `return param` and `return self.field`
+of values that are counted and sound today (E-PASS), so it was not taken. A `String`, a `Vec` and a
+struct that owns memory move as before.
+
+A `copyOf` written as `return self` does not copy a plain struct. The compiler copies such a struct
+field by field and does not call `copyOf` for it.
+
 ### An element of a global `Vec` passed to a function that grows it writes outside a block
 
 **Unsound**, found 2026-11-28, on the compiler before that day's changes too. AddressSanitizer
@@ -468,24 +480,6 @@ explicit worklist (`RESULTS-recursive-release-depth.md`).
 default sources (re-run 2026-11-28)**, in both collection models: `[owned]`, the default, and
 `[as-is]`, the pre-Level-4 `--copyable-collections` model that stays as the second arm, and
 with `--plan`. Two programs outside that set still disagree:
-
-### An enum payload matched twice and stored twice reads freed memory
-
-**Unsound.** Found 2026-11-28, on the compiler before that day's changes too. A flat struct is stored
-inline, so the first push copies the payload's box and releases it, and the second push reads it:
-
-```prismio
-struct State { world: Int }
-enum Wrap { One(State), Nothing }
-
-let e = Wrap.One(State { world: 1 })
-match e { Wrap.One(s) => { a.push(s) } _ => {} }
-match e { Wrap.One(t) => { b.push(t) } _ => {} }   // a[0].world and b[0].world read 0
-```
-
-`--verify` reports 0 violations (one block leaked), since a read is not in the ledger. With a payload
-that owns a `Vec` the values read correctly and one block leaks. The engine and the oracle also tier it
-differently (engine T3, oracle T2). Sema lets one payload be bound and stored by each `match`.
 
 ### A struct pushed into a Vec in a loop (`test_164_array_fields`)
 

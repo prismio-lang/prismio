@@ -572,6 +572,7 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
             // half of the use-after-free in KNOWN_ISSUES.md: the caller freed
             // the Option before reading the String it had just handed back.
             nodeSetType(name, payloadT)
+            semaViewsBindPayload(module, name)
         }
         payload = ptr_to_node(payload).next
         binder = name.next

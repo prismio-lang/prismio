@@ -3530,6 +3530,11 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
         semaExpectAssignable(value, "assignment", targetT, valueT)
         semaCheckArrayCopy(value, targetT, valueT)
     }
+    // A global keeps what it is given, and so does a binding given a payload binder.
+    if (target.kind == NodeKind.IDENTIFIER_EXPR
+            and (ir_var_is_global(target.s1) == 1 or value.kind == NodeKind.IDENTIFIER_EXPR)) {
+        semaViewsStoreFlat(module, value)
+    }
     semaMoveOperand(value)
     ir_set_reinit_target("")
     if (target.kind == NodeKind.IDENTIFIER_EXPR and targetT.kind == TypeKind.SLICE) {
@@ -3615,6 +3620,7 @@ private fn semaReturn(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) 
             }
         }
         semaViewsCopyReturned(module, ptr_to_node(stmt.child1))
+        semaViewsStoreFlat(module, ptr_to_node(stmt.child1))
     } else {
         semaExpectAssignable(stmt, "return", expectedReturn, typeVoid())
     }

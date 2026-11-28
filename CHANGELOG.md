@@ -288,6 +288,16 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **A plain struct held inside something else could be stored by address.** A field of plain data, or a `match`
+  payload, pushed or inserted into a `Vec`, kept in a global or returned left the new holder pointing into the old one:
+  wrong values, and AddressSanitizer reported overflows and bad frees in safe code (one push of a payload was enough).
+  Out of a borrow (a field of a parameter or an element, a payload binder) this is now an error,
+  `cannot move a flat struct out of a borrowed value` (`P4116`); a type with `impl Copy` is copied instead, and so is a
+  field of a value the function owns, or one handed to a call that returns its type. No place in `src/`, `std/`,
+  `tests/`, the benchmarks or either site's examples is rejected. The Python oracle now binds `match` payloads as the
+  engine does (it bound nothing), which ends the engine/oracle disagreement on an enum payload matched and stored twice.
+  `tests/test_414`, `test_415`, `neg_441`-`neg_446`.
+
 - **A view of an element a Vec stores inline read freed memory.** `let held = v[0]` kept the element's address, and a
   push that grew the Vec freed the storage under it (`held.x` printed 0; AddressSanitizer reports a use-after-free,
   `--verify` nothing). A view is now the Vec and an index, as SPEC §8.4 has it: a binding that holds one looks the

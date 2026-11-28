@@ -1,0 +1,27 @@
+// One enum payload that owns a Vec, matched twice and stored in two Vecs: both read it.
+// A binder is a view of what it was matched out of, so the analysis counts the payload;
+// the engine and the oracle agree on it (tools/aif_differential.py lists this file).
+
+import std.io
+
+struct State { world: Vec<Int> }
+enum Wrap { One(State), Nothing }
+
+fn fill(inout a: Vec<State>, inout b: Vec<State>) {
+    let e = Wrap.One(State { world: [41, 42] })
+    match e { Wrap.One(s) => { a.push(s) } _ => {} }
+    match e { Wrap.One(t) => { b.push(t) } _ => {} }
+}
+
+fn main() -> Int {
+    let mut a: Vec<State> = []
+    let mut b: Vec<State> = []
+    fill(a, b)
+    let noise: Vec<Int> = [9, 9, 9, 9, 9, 9, 9, 9]
+    if (noise[7] != 9 or a[0].world[0] != 41 or b[0].world[1] != 42) {
+        println("FAIL")
+        return 1
+    }
+    println("ok")
+    return 0
+}

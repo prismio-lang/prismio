@@ -1,0 +1,14 @@
+// expect-error: P4116
+// expect-error: cannot move a flat struct out of a borrowed value
+// A payload binder pushed into a Vec.
+
+struct State { world: Int }
+struct Box { s: State }
+enum Wrap { One(State), Nothing }
+
+fn main() -> Int {
+    let mut a: Vec<State> = []
+    let e = Wrap.One(State { world: 1 })
+    match e { Wrap.One(s) => { a.push(s) } _ => {} }
+    return 0
+}

@@ -1,0 +1,14 @@
+// expect-error: P4116
+// expect-error: cannot move a flat struct out of a borrowed value
+// A payload binder assigned to a binding that outlives the arm.
+
+struct State { world: Int }
+struct Box { s: State }
+enum Wrap { One(State), Nothing }
+
+fn main() -> Int {
+    let mut out = State { world: 0 }
+    let e = Wrap.One(State { world: 1 })
+    match e { Wrap.One(s) => { out = s } _ => {} }
+    return out.world
+}

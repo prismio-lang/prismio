@@ -1,0 +1,112 @@
+// A struct of plain data held inside something else -- a field, a payload -- stored where
+// it outlives what holds it. Out of a value the function owns the store gets a copy; out
+// of a borrow it is refused (neg_441-446) unless the type is `Copy`, which is copied, or
+// the program builds the new value itself, here a `clone` method. Each Vec and global below
+// is read after the holder is gone and other allocations have been made.
+
+import std.io
+
+struct State { world: Int }
+struct Box { s: State }
+struct Mark { at: Int }
+impl Copy for Mark { fn copyOf(self) -> Self { return Mark { at: self.at } } }
+struct Shelf { mark: Mark }
+enum Wrap { One(State), Nothing }
+enum Held { Some(Mark), Empty }
+
+impl State {
+    fn clone(self) -> State { return State { world: self.world } }
+}
+
+let mut kept: State
+
+fn fail(message: String) -> Int {
+    println("FAIL", message)
+    return 1
+}
+
+fn noise() -> Int {
+    let v: Vec<Int> = [9, 9, 9, 9, 9, 9, 9, 9]
+    let w: Vec<Int> = [8, 8, 8, 8]
+    return v[7] + w[3]
+}
+
+// Owned bases: copies.
+fn ownedPush() -> Vec<State> {
+    let mut a: Vec<State> = []
+    let bx = Box { s: State { world: 41 } }
+    a.push(bx.s)
+    a.insert(0, bx.s)
+    return a
+}
+
+fn ownedReturn() -> State {
+    let bx = Box { s: State { world: 42 } }
+    return bx.s
+}
+
+fn keep() {
+    let bx = Box { s: State { world: 43 } }
+    kept = bx.s
+}
+
+fn temporary() -> Vec<State> {
+    let mut a: Vec<State> = []
+    a.push(ownedBox().s)
+    return a
+}
+
+fn ownedBox() -> Box { return Box { s: State { world: 44 } } }
+
+fn same(s: State) -> State { return s }
+
+fn handedBack() -> Vec<State> {
+    let mut a: Vec<State> = []
+    let bx = Box { s: State { world: 45 } }
+    a.push(same(bx.s))
+    return a
+}
+
+// Borrowed bases of a `Copy` type: copied.
+fn markOf(shelf: Shelf) -> Mark { return shelf.mark }
+
+fn marks(held: Held) -> Vec<Mark> {
+    let mut a: Vec<Mark> = []
+    match held { Held.Some(m) => { a.push(m) } _ => {} }
+    match held { Held.Some(n) => { a.push(n) } _ => {} }
+    return a
+}
+
+// Borrowed bases of any other type: the program says what it means.
+fn stateOf(bx: Box) -> State { return bx.s.clone() }
+
+fn states(e: Wrap) -> Vec<State> {
+    let mut a: Vec<State> = []
+    match e { Wrap.One(s) => { a.push(s.clone()) } _ => {} }
+    match e { Wrap.One(t) => { a.push(State { world: t.world + 1 }) } _ => {} }
+    return a
+}
+
+fn main() -> Int {
+    let pushed = ownedPush()
+    let returned = ownedReturn()
+    keep()
+    let temp = temporary()
+    let back = handedBack()
+    let mark = markOf(Shelf { mark: Mark { at: 46 } })
+    let twice = marks(Held.Some(Mark { at: 47 }))
+    let cloned = stateOf(Box { s: State { world: 48 } })
+    let both = states(Wrap.One(State { world: 49 }))
+    if (noise() != 17) { return fail("noise") }
+    if (pushed.length != 2 or pushed[0].world != 41 or pushed[1].world != 41) { return fail("owned push") }
+    if (returned.world != 42) { return fail("owned return") }
+    if (kept.world != 43) { return fail("global") }
+    if (temp[0].world != 44) { return fail("temporary") }
+    if (back[0].world != 45) { return fail("handed back") }
+    if (mark.at != 46) { return fail("Copy return") }
+    if (twice.length != 2 or twice[0].at != 47 or twice[1].at != 47) { return fail("Copy payload") }
+    if (cloned.world != 48) { return fail("clone") }
+    if (both.length != 2 or both[0].world != 49 or both[1].world != 50) { return fail("payload clone") }
+    println("ok")
+    return 0
+}

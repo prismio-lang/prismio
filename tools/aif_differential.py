@@ -295,6 +295,8 @@ def main():
         # E-PASS: a parameter handed back is a view of the argument. Nothing above
         # passes a named value through a function and stores the result.
         sources.append(Path("tests/test_405_pass_through_two_owners.psm"))
+        # A payload binder is a view of its scrutinee: storing it counts the payload.
+        sources.append(Path("tests/test_415_payload_stored_twice.psm"))
 
     dumps = {}
     failures = []

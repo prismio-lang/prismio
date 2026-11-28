@@ -17,19 +17,34 @@ import symbols.bindings
 import symbols.declarations
 import common.diagnostics
 import common.diag_codes
+import common.lang_items
 
 // The bindings of the function being checked that hold a view, and the Vec each is
 // rooted at: parallel columns, the latest declaration of a name last.
 let mut viewNames: Vec<String>
 let mut viewRoots: Vec<String>
 
+// The bindings of the function being checked that hold a struct stored inline in
+// something else: a payload binder, and a name given such a value or a field of a borrow.
+let mut borrowedFlat: Vec<String>
+
 internal fn semaViewsReset() {
     viewNames = []
     viewRoots = []
+    borrowedFlat = []
+}
+
+// A `match` arm binds a payload held inline in the value matched, which the binding
+// borrows.
+internal fn semaViewsBindPayload(module: ASTNode, binder: ASTNode) {
+    if (semaViewIsFlatStruct(module, binder)) { borrowedFlat.push(binder.s1.clone()) }
 }
 
 // A `let` or an assignment gave `name` this value.
 internal fn semaViewsBind(module: ASTNode, name: String, value: ASTNode) {
+    if (semaViewIsFlatStruct(module, value) and semaViewsIsBorrowed(value)) {
+        borrowedFlat.push(name.clone())
+    }
     let root = semaViewRoot(module, value)
     viewNames.push(name.clone())
     viewRoots.push(root)
@@ -82,6 +97,54 @@ private fn semaViewIsFlatStruct(module: ASTNode, value: ASTNode) -> Bool {
     return structDeclIsPodIn(module, t.name, 0, true)
 }
 
+// Whether `value` is storage inside something this function does not own: a field reached
+// through a parameter, a payload binder, an element or another borrow, or such a binding.
+private fn semaViewsIsBorrowed(value: ASTNode) -> Bool {
+    if (value.kind == NodeKind.IDENTIFIER_EXPR) { return borrowedFlat.contains(value.s1) }
+    if (value.kind != NodeKind.MEMBER_ACCESS_EXPR) { return false }
+    let mut root = value
+    while (root.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(root.child1)) {
+        root = ptr_to_node(root.child1)
+    }
+    if (root.kind == NodeKind.IDENTIFIER_EXPR) {
+        return borrowedFlat.contains(root.s1) or ir_is_borrowed(root.s1) == 1
+    }
+    return semaIsElementRead(root) or root.kind == NodeKind.INDEX_EXPR
+}
+
+// A plain struct held inside something else -- a field, or a payload binder -- is moved into
+// storage that outlives what holds it: pushed or inserted, kept in a global or in a binding,
+// or returned. The value is that holder's storage, so storing its address leaves two owners
+// of it. Out of a borrow this is refused, unless the type is `Copy`; out of a value this
+// function owns, and for a `Copy` type, the store gets a copy.
+internal fn semaViewsStoreFlat(module: ASTNode, value: ASTNode) {
+    if (semaViewIsFlatStruct(module, value) == false) { return }
+    let field = value.kind == NodeKind.MEMBER_ACCESS_EXPR
+        and semaViewsIsField(value)
+    if (field == false and (value.kind != NodeKind.IDENTIFIER_EXPR
+            or borrowedFlat.contains(value.s1) == false)) {
+        return
+    }
+    // `let x = v[0]` and the like are a borrowed binding already, which a push refuses.
+    if (value.kind == NodeKind.IDENTIFIER_EXPR and ir_is_borrowed(value.s1) == 1) { return }
+    let name = nodeGetType(value).name
+    if (semaViewsIsBorrowed(value)
+            and semaTypeImplementsNamedTrait(module, name, langName(LangItem.COPY)) == false) {
+        diag_error_at_code(DIAG_SEMA_FLAT_MOVE_FROM_BORROW, value.file, value.line, value.col, value.len,
+            "cannot move a flat struct out of a borrowed value")
+        diag_note("write `impl Copy for ".concat(name, " { ... }` if it can be copied, or store a new value built from its fields"))
+        return
+    }
+    semaViewsCopy(module, value)
+}
+
+// A field read, as against an enum variant written the same way.
+private fn semaViewsIsField(value: ASTNode) -> Bool {
+    if (nodeIsNull(value.child1)) { return false }
+    let object = ptr_to_node(value.child1)
+    return nodeHasType(object) and nodeGetType(object).kind == TypeKind.STRUCT
+}
+
 // `return v[0]`: the caller gets the element as it is now.
 internal fn semaViewsCopyReturned(module: ASTNode, value: ASTNode) {
     if (semaViewRoot(module, value).equals("")) { return }
@@ -100,6 +163,13 @@ internal fn semaViewsCopyArguments(module: ASTNode, call: ASTNode, fnNode: ASTNo
         let argument = ptr_to_node(argPtr)
         let following = argument.next
         let root = semaViewRoot(module, argument)
+        if (root.equals("") and ptr_to_node(paramPtr).s2.equals("inout") == false
+                and (argument.kind == NodeKind.MEMBER_ACCESS_EXPR or semaViewsIsBorrowed(argument))
+                and semaViewIsFlatStruct(module, argument)
+                and semaViewsReturnsType(module, fnNode, argument)) {
+            // A field or a payload the callee may hand back, to be stored.
+            semaViewsCopy(module, argument)
+        }
         if (root.equals("") == false) {
             let writes = ptr_to_node(paramPtr).s2.equals("inout")
             let changeable = ir_var_is_global(root) == 1

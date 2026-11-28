@@ -1,0 +1,15 @@
+// expect-error: P4116
+// expect-error: cannot move a flat struct out of a borrowed value
+// A field of an element, inserted into another Vec.
+
+struct State { world: Int }
+struct Box { s: State }
+enum Wrap { One(State), Nothing }
+
+fn main() -> Int {
+    let mut a: Vec<State> = []
+    let mut b: Vec<Box> = []
+    b.push(Box { s: State { world: 1 } })
+    a.insert(0, b[0].s)
+    return 0
+}
